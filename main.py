@@ -17,8 +17,8 @@ def evaluar():
 
     try:
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
-        h2h = obtener_h2h(jugador_id, rival_id)
-        ultimos5 = obtener_ultimos_partidos(player_id=jugador_id)
+        ultimos5 = obtener_ultimos_partidos(jugador_id)
+        h2h = obtener_h2h_extend(jugador_id, rival_id)
 
         return jsonify({
             "jugador_id": jugador_id,
@@ -30,8 +30,8 @@ def evaluar():
             "victorias_en_superficie": jugador_stats["victorias_en_superficie"],
             "partidos_en_superficie": jugador_stats["partidos_en_superficie"],
             "porcentaje_superficie": jugador_stats["porcentaje_superficie"],
-            "h2h": h2h,
-            "ultimos_5_ganados": ultimos5
+            "ultimos_5_ganados": ultimos5,
+            "h2h": h2h
         })
 
     except Exception as e:
@@ -85,15 +85,21 @@ def obtener_ultimos_partidos(player_id):
     ganados = sum(1 for m in matches if m.get("winner_id") == player_id)
     return ganados
 
-def obtener_h2h(player_id, rival_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/head_to_head/{player_id}/{rival_id}.json?api_key={API_KEY}"
+def obtener_h2h_extend(jugador_id, rival_id):
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json?api_key={API_KEY}"
     r = requests.get(url)
     if r.status_code != 200:
         return "Sin datos"
     data = r.json()
-    return f"{data.get('player1_wins', 0)} - {data.get('player2_wins', 0)}"
+    partidos = data.get("summaries", [])
+    ganados = sum(1 for p in partidos if p.get("winner_id") == jugador_id)
+    perdidos = sum(1 for p in partidos if p.get("winner_id") == rival_id)
+    return f"{ganados} - {perdidos}"
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
+     
+  
+
 
 
