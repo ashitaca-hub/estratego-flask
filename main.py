@@ -17,7 +17,7 @@ def evaluar():
 
     try:
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
-        ultimos5 = obtener_ultimos_partidos(jugador_id)
+        ultimos5 = obtener_ultimos5_summaries(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
 
         return jsonify({
@@ -75,14 +75,15 @@ def obtener_estadisticas_jugador(player_id):
         "porcentaje_superficie": round(porcentaje_clay, 1)
     }
 
-def obtener_ultimos_partidos(player_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/players/{player_id}/profile.json?api_key={API_KEY}"
+def obtener_ultimos5_summaries(player_id):
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
     r = requests.get(url)
     if r.status_code != 200:
         return -1
     data = r.json()
-    matches = data.get("matches", [])[:5]
-    ganados = sum(1 for m in matches if m.get("winner_id") == player_id)
+    eventos = [e for e in data.get("summaries", []) if e.get("status", {}).get("match_status") == "ended"]
+    eventos = sorted(eventos, key=lambda x: x.get("sport_event", {}).get("start_time", ""), reverse=True)[:5]
+    ganados = sum(1 for e in eventos if e.get("winner_id") == player_id)
     return ganados
 
 def obtener_h2h_extend(jugador_id, rival_id):
