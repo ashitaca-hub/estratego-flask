@@ -17,7 +17,7 @@ def evaluar():
 
     try:
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
-        ultimos5 = obtener_ultimos5_summaries(jugador_id)
+        ultimos5 = obtener_ultimos5_score(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
 
         return jsonify({
@@ -75,15 +75,34 @@ def obtener_estadisticas_jugador(player_id):
         "porcentaje_superficie": round(porcentaje_clay, 1)
     }
 
-def obtener_ultimos5_summaries(player_id):
+def obtener_ultimos5_score(player_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
     r = requests.get(url)
     if r.status_code != 200:
         return -1
+
     data = r.json()
     eventos = [e for e in data.get("summaries", []) if e.get("status", {}).get("match_status") == "ended"]
     eventos = sorted(eventos, key=lambda x: x.get("sport_event", {}).get("start_time", ""), reverse=True)[:5]
-    ganados = sum(1 for e in eventos if e.get("winner_id") == player_id)
+
+    ganados = 0
+    for e in eventos:
+        competitors = e.get("sport_event", {}).get("competitors", [])
+        scores = e.get("sport_event_status", {})
+        home_score = scores.get("home_score")
+        away_score = scores.get("away_score")
+
+        if len(competitors) != 2 or home_score is None or away_score is None:
+            continue
+
+        home_id = competitors[0].get("id")
+        away_id = competitors[1].get("id")
+
+        if home_id == player_id and home_score > away_score:
+            ganados += 1
+        elif away_id == player_id and away_score > home_score:
+            ganados += 1
+
     return ganados
 
 def obtener_h2h_extend(jugador_id, rival_id):
