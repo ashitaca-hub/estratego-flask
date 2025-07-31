@@ -3,7 +3,7 @@ import requests
 
 app = Flask(__name__)
 
-API_KEY = "TU_API_KEY"  # ← Reemplaza con tu API KEY de Sportradar
+API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # ← Reemplaza con tu API KEY de Sportradar
 
 @app.route('/', methods=['POST'])
 def evaluar():
