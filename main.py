@@ -1,9 +1,10 @@
 from flask import Flask, request, jsonify
 import requests
+import unicodedata
 
 app = Flask(__name__)
 
-API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # ← Reemplaza con tu API KEY de Sportradar
+API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # Reemplaza esto con tu API Key real de Sportradar
 
 @app.route('/', methods=['POST'])
 def evaluar():
@@ -30,14 +31,26 @@ def evaluar():
         "h2h": h2h
     })
 
+def normalizar(texto):
+    return unicodedata.normalize('NFKD', texto.lower()).encode('ascii', 'ignore').decode('utf-8')
+
 def buscar_id_por_nombre(nombre):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/players.json?api_key={API_KEY}"
     r = requests.get(url)
     if r.status_code != 200:
         return None
+
+    nombre_norm = normalizar(nombre)
+    candidatos = []
+
     for p in r.json().get("players", []):
-        if nombre.lower() in p["name"].lower():
-            return p["id"]
+        nombre_jugador = normalizar(p["name"])
+        if nombre_norm in nombre_jugador or nombre_jugador.startswith(nombre_norm.split()[0]):
+            candidatos.append(p)
+
+    if candidatos:
+        return candidatos[0]["id"]
+
     return None
 
 def obtener_ultimos_resultados(player_id):
