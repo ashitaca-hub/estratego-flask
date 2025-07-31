@@ -55,3 +55,6 @@ def obtener_h2h(player_id, rival_id):
         return "Sin datos"
     data = r.json()
     return f"{data.get('player1_wins', 0)} - {data.get('player2_wins', 0)}"
+
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=10000)
