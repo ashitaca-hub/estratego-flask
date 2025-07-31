@@ -18,6 +18,7 @@ def evaluar():
     try:
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
         h2h = obtener_h2h(jugador_id, rival_id)
+        ultimos5 = obtener_ultimos_partidos(player_id=jugador_id)
 
         return jsonify({
             "jugador_id": jugador_id,
@@ -26,10 +27,11 @@ def evaluar():
             "victorias_totales_2025": jugador_stats["victorias_totales"],
             "partidos_totales_2025": jugador_stats["partidos_totales"],
             "victorias_porcentaje": jugador_stats["porcentaje_victorias"],
-            "victorias_en_supertficie": jugador_stats["victorias_en_superficie"],
+            "victorias_en_superficie": jugador_stats["victorias_en_superficie"],
             "partidos_en_superficie": jugador_stats["partidos_en_superficie"],
-            "porcentaje_en_superficie": jugador_stats["porcentaje_superficie"],
-            "h2h": h2h
+            "porcentaje_superficie": jugador_stats["porcentaje_superficie"],
+            "h2h": h2h,
+            "ultimos_5_ganados": ultimos5
         })
 
     except Exception as e:
@@ -42,7 +44,6 @@ def obtener_estadisticas_jugador(player_id):
         raise Exception("No se pudo obtener el perfil del jugador")
 
     data = r.json()
-
     ranking = data["competitor_rankings"][0]["rank"]
     total_wins = 0
     total_matches = 0
@@ -57,7 +58,6 @@ def obtener_estadisticas_jugador(player_id):
                 played = stats.get("matches_played", 0)
                 total_wins += wins
                 total_matches += played
-
                 if "clay" in surface["type"]:
                     clay_wins += wins
                     clay_matches += played
@@ -74,6 +74,16 @@ def obtener_estadisticas_jugador(player_id):
         "partidos_en_superficie": clay_matches,
         "porcentaje_superficie": round(porcentaje_clay, 1)
     }
+
+def obtener_ultimos_partidos(player_id):
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/players/{player_id}/profile.json?api_key={API_KEY}"
+    r = requests.get(url)
+    if r.status_code != 200:
+        return -1
+    data = r.json()
+    matches = data.get("matches", [])[:5]
+    ganados = sum(1 for m in matches if m.get("winner_id") == player_id)
+    return ganados
 
 def obtener_h2h(player_id, rival_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/head_to_head/{player_id}/{rival_id}.json?api_key={API_KEY}"
