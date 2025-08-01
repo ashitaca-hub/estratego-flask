@@ -80,7 +80,8 @@ def obtener_ultimos5_winnerid(player_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
     r = requests.get(url)
     if r.status_code != 200:
-        return -1, []
+        print(f"Error API Sportradar: {r.status_code} - {r.text}")
+    return -1, ["❌ Error al consultar API"]
 
     data = r.json()
     eventos_validos = [
