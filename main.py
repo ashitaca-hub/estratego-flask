@@ -17,7 +17,7 @@ def evaluar():
 
     try:
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
-        ultimos5 = obtener_ultimos5_winnerid(jugador_id)
+        ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
 
         return jsonify({
@@ -31,6 +31,7 @@ def evaluar():
             "partidos_en_superficie": jugador_stats["partidos_en_superficie"],
             "porcentaje_superficie": jugador_stats["porcentaje_superficie"],
             "ultimos_5_ganados": ultimos5,
+            "ultimos_5_detalle": detalle5,
             "h2h": h2h
         })
 
