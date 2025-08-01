@@ -18,6 +18,7 @@ def evaluar():
     try:
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
         ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id)
+        torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
 
         return jsonify({
@@ -32,6 +33,8 @@ def evaluar():
             "porcentaje_superficie": jugador_stats["porcentaje_superficie"],
             "ultimos_5_ganados": ultimos5,
             "ultimos_5_detalle": detalle5,
+            "torneo_local": torneo_local,
+            "torneo_nombre": nombre_torneo,
             "h2h": h2h
         })
 
@@ -116,6 +119,36 @@ def obtener_h2h_extend(jugador_id, rival_id):
     ganados = sum(1 for p in partidos if p.get("winner_id") == jugador_id)
     perdidos = sum(1 for p in partidos if p.get("winner_id") == rival_id)
     return f"{ganados} - {perdidos}"
+
+def evaluar_torneo_favorito(player_id):
+    # Obtener país del jugador
+    perfil_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    perfil = requests.get(perfil_url, headers=headers)
+    if perfil.status_code != 200:
+        return "❌", "Error perfil"
+
+    jugador = perfil.json().get("competitor", {})
+    jugador_pais = jugador.get("country", "").lower()
+
+    # Obtener torneo del último partido
+    resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
+    resumen = requests.get(resumen_url, headers=headers)
+    if resumen.status_code != 200:
+        return "❌", "Error torneo"
+
+    summaries = resumen.json().get("summaries", [])
+    if not summaries:
+        return "❌", "Sin partidos"
+
+    grupo = summaries[0].get("sport_event", {}).get("sport_event_context", {}).get("groups", [{}])[0]
+    torneo = grupo.get("name", "").lower()
+
+    resultado = "✔" if jugador_pais and jugador_pais in torneo else "✘"
+    return resultado, torneo
+
+
+
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
