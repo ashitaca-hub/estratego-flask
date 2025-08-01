@@ -77,14 +77,14 @@ def obtener_estadisticas_jugador(player_id):
     }
 
 def obtener_ultimos5_winnerid(player_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
-    r = requests.get(url)
-    
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    r = requests.get(url, headers=headers)
     if r.status_code != 200:
         return -1, ["❌ Error al consultar API"]
 
     data = r.json()
-    summaries = data.get("summaries", [])[:5]  # ✅ últimos 5 partidos recientes
+    summaries = data.get("summaries", [])[:5]
     ganados = 0
     detalle = []
 
@@ -106,8 +106,9 @@ def obtener_ultimos5_winnerid(player_id):
 
 
 def obtener_h2h_extend(jugador_id, rival_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json?api_key={API_KEY}"
-    r = requests.get(url)
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    r = requests.get(url, headers=headers)
     if r.status_code != 200:
         return "Sin datos"
     data = r.json()
