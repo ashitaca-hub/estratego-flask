@@ -77,10 +77,9 @@ def obtener_estadisticas_jugador(player_id):
     }
 
 def obtener_ultimos5_winnerid(player_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
-    r = requests.get(url, headers=headers)
-
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
+    r = requests.get(url)
+    
     if r.status_code != 200:
         return -1, ["❌ Error al consultar API"]
 
