@@ -82,14 +82,23 @@ def obtener_ultimos5_winnerid(player_id):
         return -1
 
     data = r.json()
-    eventos = [e for e in data.get("summaries", []) if e.get("status", {}).get("match_status") == "ended"]
-    eventos = sorted(eventos, key=lambda x: x.get("sport_event", {}).get("start_time", ""), reverse=True)[:5]
 
-    ganados = 0
-    for e in eventos:
-        winner_id = e.get("sport_event_status", {}).get("winner_id")
-        if winner_id == player_id:
-            ganados += 1
+    # Filtrar partidos finalizados y con winner_id válido
+    eventos_validos = [
+        e for e in data.get("summaries", [])
+        if e.get("status", {}).get("match_status") == "ended"
+        and e.get("sport_event_status", {}).get("winner_id")
+    ]
+
+    # Ordenar por start_time si está disponible
+    eventos_validos = sorted(
+        eventos_validos,
+        key=lambda x: x.get("sport_event", {}).get("start_time", ""),
+        reverse=True
+    )
+
+    ultimos = eventos_validos[:5]
+    ganados = sum(1 for e in ultimos if e["sport_event_status"]["winner_id"] == player_id)
     return ganados
 
 def obtener_h2h_extend(jugador_id, rival_id):
