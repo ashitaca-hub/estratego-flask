@@ -77,38 +77,33 @@ def obtener_estadisticas_jugador(player_id):
     }
 
 def obtener_ultimos5_winnerid(player_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
-    r = requests.get(url)
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    r = requests.get(url, headers=headers)
+
     if r.status_code != 200:
-        print(f"Error API Sportradar: {r.status_code} - {r.text}")
-    return -1, ["❌ Error al consultar API"]
+        return -1, ["❌ Error al consultar API"]
 
     data = r.json()
-    eventos_validos = [
-        e for e in data.get("summaries", [])
-        if e.get("status", {}).get("match_status") == "ended"
-        and e.get("sport_event_status", {}).get("winner_id")
-    ]
-
-    eventos_validos = sorted(
-        eventos_validos,
-        key=lambda x: x.get("sport_event", {}).get("start_time", ""),
-        reverse=True
-    )
-
-    ultimos = eventos_validos[:5]
-    detalle = []
+    summaries = data.get("summaries", [])[:5]  # ✅ últimos 5 partidos recientes
     ganados = 0
+    detalle = []
 
-    for e in ultimos:
-        fecha = e.get("sport_event", {}).get("start_time", "sin fecha")[:10]
-        winner_id = e.get("sport_event_status", {}).get("winner_id")
-        resultado = "✔" if winner_id == player_id else "✘"
-        if resultado == "✔":
+    for s in summaries:
+        winner_id = s.get("sport_event_status", {}).get("winner_id")
+        if not winner_id:
+            resultado = "—"
+        elif winner_id == player_id:
+            resultado = "✔ Ganado"
             ganados += 1
-        detalle.append(f"{resultado} {fecha}")
+        else:
+            resultado = "✘ Perdido"
+
+        rival = next((c for c in s["sport_event"]["competitors"] if c["id"] != player_id), {}).get("name", "¿?")
+        detalle.append(f"{resultado} vs {rival}")
 
     return ganados, detalle
+
 
 
 def obtener_h2h_extend(jugador_id, rival_id):
