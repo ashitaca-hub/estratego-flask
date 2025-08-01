@@ -79,6 +79,7 @@ def obtener_ultimos5_winnerid(player_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
     r = requests.get(url)
     if r.status_code != 200:
+        print("Error:", r.status_code, r.text)
         return -1
 
     data = r.json()
@@ -90,7 +91,7 @@ def obtener_ultimos5_winnerid(player_id):
         and e.get("sport_event_status", {}).get("winner_id")
     ]
 
-    # Ordenar por start_time si está disponible
+    # Ordenar por fecha descendente
     eventos_validos = sorted(
         eventos_validos,
         key=lambda x: x.get("sport_event", {}).get("start_time", ""),
@@ -98,8 +99,17 @@ def obtener_ultimos5_winnerid(player_id):
     )
 
     ultimos = eventos_validos[:5]
+
+    print("---- Últimos 5 partidos evaluados ----")
+    for i, e in enumerate(ultimos, start=1):
+        fecha = e.get("sport_event", {}).get("start_time", "sin fecha")
+        ganador = e["sport_event_status"].get("winner_id", "desconocido")
+        print(f"{i}. Fecha: {fecha} | Winner ID: {ganador}")
+
     ganados = sum(1 for e in ultimos if e["sport_event_status"]["winner_id"] == player_id)
+    print(f"Total ganados por {player_id}: {ganados}")
     return ganados
+
 
 def obtener_h2h_extend(jugador_id, rival_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json?api_key={API_KEY}"
