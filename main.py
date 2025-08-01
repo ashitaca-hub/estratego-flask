@@ -79,19 +79,15 @@ def obtener_ultimos5_winnerid(player_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json?api_key={API_KEY}"
     r = requests.get(url)
     if r.status_code != 200:
-        print("Error:", r.status_code, r.text)
-        return -1
+        return -1, []
 
     data = r.json()
-
-    # Filtrar partidos finalizados y con winner_id válido
     eventos_validos = [
         e for e in data.get("summaries", [])
         if e.get("status", {}).get("match_status") == "ended"
         and e.get("sport_event_status", {}).get("winner_id")
     ]
 
-    # Ordenar por fecha descendente
     eventos_validos = sorted(
         eventos_validos,
         key=lambda x: x.get("sport_event", {}).get("start_time", ""),
@@ -99,16 +95,18 @@ def obtener_ultimos5_winnerid(player_id):
     )
 
     ultimos = eventos_validos[:5]
+    detalle = []
+    ganados = 0
 
-    print("---- Últimos 5 partidos evaluados ----")
-    for i, e in enumerate(ultimos, start=1):
-        fecha = e.get("sport_event", {}).get("start_time", "sin fecha")
-        ganador = e["sport_event_status"].get("winner_id", "desconocido")
-        print(f"{i}. Fecha: {fecha} | Winner ID: {ganador}")
+    for e in ultimos:
+        fecha = e.get("sport_event", {}).get("start_time", "sin fecha")[:10]
+        winner_id = e.get("sport_event_status", {}).get("winner_id")
+        resultado = "✔" if winner_id == player_id else "✘"
+        if resultado == "✔":
+            ganados += 1
+        detalle.append(f"{resultado} {fecha}")
 
-    ganados = sum(1 for e in ultimos if e["sport_event_status"]["winner_id"] == player_id)
-    print(f"Total ganados por {player_id}: {ganados}")
-    return ganados
+    return ganados, detalle
 
 
 def obtener_h2h_extend(jugador_id, rival_id):
