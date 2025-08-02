@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from datetime import datetime, timezone
 import requests
 import unicodedata
 
@@ -20,6 +21,7 @@ def evaluar():
         ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id)
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
+        estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id)
 
         return jsonify({
             "jugador_id": jugador_id,
@@ -35,6 +37,8 @@ def evaluar():
             "ultimos_5_detalle": detalle5,
             "torneo_local": torneo_local,
             "torneo_nombre": nombre_torneo,
+            "estado_fisico": estado_fisico,
+            "dias_sin_jugar": dias_sin_jugar,
             "h2h": h2h
         })
 
@@ -147,13 +151,36 @@ def evaluar_torneo_favorito(player_id):
     resultado = "✔" if jugador_pais and jugador_pais in torneo else "✘"
     return resultado, torneo
 
+def evaluar_actividad_reciente(player_id):
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    r = requests.get(url, headers=headers)
+    if r.status_code != 200:
+        return "❌", "Error resumen"
 
+    summaries = r.json().get("summaries", [])
+    if not summaries:
+        return "❌", "Sin partidos"
+
+    for e in summaries:
+        fecha_str = e.get("sport_event", {}).get("start_time")
+        if fecha_str:
+            try:
+                fecha = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
+                ahora = datetime.now(timezone.utc)
+                dias = (ahora - fecha).days
+                return "✔" if dias <= 30 else "✘", f"{dias} días sin competir"
+            except Exception:
+                continue
+
+    return "❌", "Fecha inválida"
 
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
