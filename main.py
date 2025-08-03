@@ -118,11 +118,22 @@ def obtener_h2h_extend(jugador_id, rival_id):
     r = requests.get(url, headers=headers)
     if r.status_code != 200:
         return "Sin datos"
+
     data = r.json()
-    partidos = data.get("summaries", [])
-    ganados = sum(1 for p in partidos if p.get("winner_id") == jugador_id)
-    perdidos = sum(1 for p in partidos if p.get("winner_id") == rival_id)
+    partidos = data.get("last_meetings", [])  # ✅ CORREGIDO
+
+    ganados = 0
+    perdidos = 0
+
+    for p in partidos:
+        winner_id = p.get("sport_event_status", {}).get("winner_id")  # ✅ ACCESO CORRECTO
+        if winner_id == jugador_id:
+            ganados += 1
+        elif winner_id == rival_id:
+            perdidos += 1
+
     return f"{ganados} - {perdidos}"
+
 
 def evaluar_torneo_favorito(player_id):
     # Obtener país del jugador
@@ -180,6 +191,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
