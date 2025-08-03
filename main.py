@@ -22,6 +22,9 @@ def evaluar():
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
         estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id)
+        puntos_defendidos = obtener_puntos_defendidos(jugador_id)
+        motivacion_por_puntos = "✔" if puntos_defendidos >= 45 else "✘"
+        
 
         return jsonify({
             "jugador_id": jugador_id,
@@ -39,6 +42,8 @@ def evaluar():
             "torneo_nombre": nombre_torneo,
             "estado_fisico": estado_fisico,
             "dias_sin_jugar": dias_sin_jugar,
+            "puntos_defendidos": puntos_defendidos,
+            "motivacion_por_puntos": motivacion_por_puntos,
             "h2h": h2h
         })
 
@@ -187,10 +192,74 @@ def evaluar_actividad_reciente(player_id):
     return "❌", "Fecha inválida"
 
 
+def obtener_puntos_defendidos(player_id):
+    # Paso 1: obtener todos los seasons
+    url_seasons = "https://api.sportradar.com/tennis/trial/v3/en/seasons.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    r_seasons = requests.get(url_seasons, headers=headers)
+    if r_seasons.status_code != 200:
+        return 0
+
+    all_seasons = r_seasons.json().get("seasons", [])
+
+    # Paso 2: obtener nombre del torneo actual desde últimos partidos
+    resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
+    resumen = requests.get(resumen_url, headers=headers)
+    if resumen.status_code != 200:
+        return 0
+
+    summaries = resumen.json().get("summaries", [])
+    if not summaries:
+        return 0
+
+    grupo = summaries[0].get("sport_event", {}).get("sport_event_context", {}).get("groups", [{}])[0]
+    torneo_nombre = grupo.get("name", "")
+    torneo_nombre_base = torneo_nombre.lower().split(",")[0].strip()  # "Wimbledon" de "Wimbledon, London, GB"
+
+    # Paso 3: buscar season pasada con nombre coincidente
+    hoy = datetime.today()
+    año_pasado = hoy.year - 1
+    season_id_pasada = None
+
+    for s in all_seasons:
+        if s["year"] == str(año_pasado) and torneo_nombre_base.lower() in s["name"].lower():
+            season_id_pasada = s["id"]
+            break
+
+    if not season_id_pasada:
+        return 0
+
+    # Paso 4: consultar las rondas del torneo pasado
+    url_rounds = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id_pasada}/stages_groups_cup_rounds.json"
+    r_rounds = requests.get(url_rounds, headers=headers)
+    if r_rounds.status_code != 200:
+        return 0
+
+    data = r_rounds.json()
+    max_order = 0
+
+    for stage in data.get("stages", []):
+        for group in stage.get("groups", []):
+            for cup_round in group.get("cup_rounds", []):
+                if cup_round.get("winner_id") == player_id:
+                    order = cup_round.get("order", 0)
+                    if order > max_order:
+                        max_order = order
+
+    # Mapeo simplificado de orden a puntos
+    puntos_por_ronda = {
+        1: 10, 2: 45, 3: 90, 4: 180, 5: 360,
+        6: 720, 7: 1200, 8: 2000
+    }
+
+    return puntos_por_ronda.get(max_order, 0)
+
+
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
