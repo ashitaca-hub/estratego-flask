@@ -256,7 +256,7 @@ def obtener_puntos_defendidos(player_id):
         if ganador != player_id:
             continue
 
-        ronda = match.get("sport_event", {}).get("sport_event_context", {}).get("round", {}).get("name", "")
+        ronda = match.get("sport_event", {}).get("sport_event_context", {}).get("round", {}).get("name", "").lower()
         if ronda in orden_rondas:
             if not ronda_maxima or orden_rondas.index(ronda) > orden_rondas.index(ronda_maxima):
                 ronda_maxima = ronda
@@ -273,6 +273,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
