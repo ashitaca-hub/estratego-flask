@@ -200,6 +200,7 @@ def obtener_puntos_defendidos(player_id):
     # 1. Obtener seasons
     r_seasons = requests.get("https://api.sportradar.com/tennis/trial/v3/en/seasons.json", headers=headers)
     if r_seasons.status_code != 200:
+        print("❌ Error al obtener seasons")
         return 0, "Error temporadas", "✘", "—"
     seasons = r_seasons.json().get("seasons", [])
 
@@ -207,16 +208,19 @@ def obtener_puntos_defendidos(player_id):
     resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
     r_resumen = requests.get(resumen_url, headers=headers)
     if r_resumen.status_code != 200:
+        print("❌ Error al obtener summaries del jugador")
         return 0, "Error resumen", "✘", "—"
 
     summaries = r_resumen.json().get("summaries", [])
     if not summaries:
+        print("⚠️ No se encontraron partidos recientes para el jugador")
         return 0, "Sin partidos", "✘", "—"
 
     contexto = summaries[0].get("sport_event", {}).get("sport_event_context", {})
     competition = contexto.get("competition", {})
     torneo_nombre = competition.get("name", "Desconocido")
     competition_id = competition.get("id", "")
+    print(f"🎾 Torneo actual detectado: {torneo_nombre}")
 
     # 3. Buscar edición anterior del torneo
     hoy = datetime.today()
@@ -224,14 +228,16 @@ def obtener_puntos_defendidos(player_id):
     season_anterior = next((s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id), None)
 
     if not season_anterior:
+        print("❌ No se encontró torneo del año pasado para este competition_id")
         return 0, torneo_nombre, "✘", "—"
 
     season_id = season_anterior["id"]
 
-    # 4. Obtener todos los partidos del torneo anterior
+    # 4. Obtener partidos del torneo anterior
     url_torneo = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
     r_torneo = requests.get(url_torneo, headers=headers)
     if r_torneo.status_code != 200:
+        print("❌ Error al obtener partidos del torneo anterior")
         return 0, torneo_nombre, "✘", "—"
 
     data = r_torneo.json().get("summaries", [])
@@ -252,12 +258,13 @@ def obtener_puntos_defendidos(player_id):
     orden_rondas = list(puntos_por_ronda.keys())
 
     for match in data:
-        ganador = match.get("sport_event_status", {}).get("winner_id")
-        if ganador != player_id:
+        winner = match.get("sport_event_status", {}).get("winner_id", "").lower()
+        ronda = match.get("sport_event", {}).get("sport_event_context", {}).get("round", {}).get("name", "").lower()
+        if not winner or not ronda:
             continue
 
-        ronda = match.get("sport_event", {}).get("sport_event_context", {}).get("round", {}).get("name", "").lower()
-        if ronda in orden_rondas:
+        print(f"🔍 Ronda: {ronda}, Winner: {winner} vs {player_id.lower()}")
+        if winner == player_id.lower() and ronda in orden_rondas:
             if not ronda_maxima or orden_rondas.index(ronda) > orden_rondas.index(ronda_maxima):
                 ronda_maxima = ronda
 
@@ -265,14 +272,16 @@ def obtener_puntos_defendidos(player_id):
     motivacion = "✔" if puntos >= 45 else "✘"
     ronda_str = ronda_maxima if ronda_maxima else "—"
 
+    print(f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}")
+
     return puntos, torneo_nombre, motivacion, ronda_str
 
 
-    
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
