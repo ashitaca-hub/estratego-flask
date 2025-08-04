@@ -202,7 +202,7 @@ def obtener_puntos_defendidos(player_id):
     r_seasons = requests.get("https://api.sportradar.com/tennis/trial/v3/en/seasons.json", headers=headers)
     if r_seasons.status_code != 200:
         print("❌ Error al obtener seasons")
-        return 0, "Error temporadas", "✘", "—"
+        return 0, "Error temporadas", "✘", "—", "❌ Error al obtener seasons"
     seasons = r_seasons.json().get("seasons", [])
 
     # 2. Obtener torneo actual desde últimos partidos
@@ -210,12 +210,12 @@ def obtener_puntos_defendidos(player_id):
     r_resumen = requests.get(resumen_url, headers=headers)
     if r_resumen.status_code != 200:
         print("❌ Error al obtener summaries del jugador")
-        return 0, "Error resumen", "✘", "—"
+        return 0, "Error resumen", "✘", "—", "❌ Error al obtener summaries del jugador"
 
     summaries = r_resumen.json().get("summaries", [])
     if not summaries:
         print("⚠️ No se encontraron partidos recientes para el jugador")
-        return 0, "Sin partidos", "✘", "—"
+        return 0, "Sin partidos", "✘", "—", "⚠️ No se encontraron partidos recientes para el jugador"
 
     contexto = summaries[0].get("sport_event", {}).get("sport_event_context", {})
     competition = contexto.get("competition", {})
@@ -230,7 +230,7 @@ def obtener_puntos_defendidos(player_id):
 
     if not season_anterior:
         print("❌ No se encontró torneo del año pasado para este competition_id")
-        return 0, torneo_nombre, "✘", "—"
+        return 0, torneo_nombre, "✘", "—", "❌ Error al obtener partidos del torneo anterior", "❌ No se encontró torneo del año pasado para este competition_id"
 
     season_id = season_anterior["id"]
 
@@ -239,7 +239,7 @@ def obtener_puntos_defendidos(player_id):
     r_torneo = requests.get(url_torneo, headers=headers)
     if r_torneo.status_code != 200:
         print("❌ Error al obtener partidos del torneo anterior")
-        return 0, torneo_nombre, "✘", "—"
+        return 0, torneo_nombre, "✘", "—", "❌ Error al obtener partidos del torneo anterior", "❌ No se encontró torneo del año pasado para este competition_id"
 
     data = r_torneo.json().get("summaries", [])
     ronda_maxima = None
@@ -282,6 +282,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
