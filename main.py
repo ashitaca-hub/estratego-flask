@@ -23,7 +23,6 @@ def evaluar():
         h2h = obtener_h2h_extend(jugador_id, rival_id)
         estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id)
         puntos_defendidos, torneo_actual, motivacion_por_puntos = obtener_puntos_defendidos(jugador_id)
-        motivacion_por_puntos = "✔" if puntos_defendidos >= 45 else "✘"
         
 
         return jsonify({
@@ -195,76 +194,74 @@ def evaluar_actividad_reciente(player_id):
 
 def obtener_puntos_defendidos(player_id):
     from datetime import datetime
-
     headers = {"accept": "application/json", "x-api-key": API_KEY}
 
-    # 1. Obtener temporadas disponibles
-    url_seasons = "https://api.sportradar.com/tennis/trial/v3/en/seasons.json"
-    r_seasons = requests.get(url_seasons, headers=headers)
+    # 1. Obtener seasons
+    r_seasons = requests.get("https://api.sportradar.com/tennis/trial/v3/en/seasons.json", headers=headers)
     if r_seasons.status_code != 200:
         return 0, "Error temporadas", "✘"
+    seasons = r_seasons.json().get("seasons", [])
 
-    all_seasons = r_seasons.json().get("seasons", [])
-
-    # 2. Obtener torneo actual desde el último partido
+    # 2. Obtener torneo actual desde últimos partidos
     resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
-    resumen = requests.get(resumen_url, headers=headers)
-    if resumen.status_code != 200:
+    r_resumen = requests.get(resumen_url, headers=headers)
+    if r_resumen.status_code != 200:
         return 0, "Error resumen", "✘"
 
-    summaries = resumen.json().get("summaries", [])
+    summaries = r_resumen.json().get("summaries", [])
     if not summaries:
         return 0, "Sin partidos", "✘"
 
-    sport_event = summaries[0].get("sport_event", {})
-    torneo_contexto = sport_event.get("sport_event_context", {})
-    competition_id = torneo_contexto.get("competition", {}).get("id", "")
-    torneo_nombre = torneo_contexto.get("competition", {}).get("name", "Desconocido")
+    evento = summaries[0].get("sport_event", {})
+    contexto = evento.get("sport_event_context", {})
+    competition = contexto.get("competition", {})
+    torneo_nombre = competition.get("name", "Desconocido")
+    competition_id = competition.get("id", "")
 
-    # 3. Buscar season del año pasado con mismo competition_id
+    # 3. Buscar edición anterior por competition_id + año
     hoy = datetime.today()
-    año_pasado = hoy.year - 1
-    season_id_pasada = None
+    año_pasado = str(hoy.year - 1)
+    season_anterior = next((s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id), None)
 
-    for s in all_seasons:
-        if s["year"] == str(año_pasado) and s["competition_id"] == competition_id:
-            season_id_pasada = s["id"]
-            break
-
-    if not season_id_pasada:
+    if not season_anterior:
         return 0, torneo_nombre, "✘"
 
-    # 4. Buscar hasta qué ronda llegó el jugador
-    url_rounds = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id_pasada}/stages_groups_cup_rounds.json"
-    r_rounds = requests.get(url_rounds, headers=headers)
-    if r_rounds.status_code != 200:
+    season_id_pasada = season_anterior["id"]
+
+    # 4. Consultar info del torneo anterior
+    url_info = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id_pasada}/info.json"
+    r_info = requests.get(url_info, headers=headers)
+    if r_info.status_code != 200:
         return 0, torneo_nombre, "✘"
 
-    data = r_rounds.json()
+    data = r_info.json()
+    stages = data.get("stages", [])
     max_order = 0
 
-    for stage in data.get("stages", []):
+    for stage in stages:
         for group in stage.get("groups", []):
-            for cup_round in group.get("cup_rounds", []):
-                if cup_round.get("winner_id") == player_id:
-                    order = cup_round.get("order", 0)
+            for round_data in group.get("cup_rounds", []):
+                if round_data.get("winner_id") == player_id:
+                    order = round_data.get("order", 0)
                     if order > max_order:
                         max_order = order
 
+    # 5. Traducir orden a puntos ATP (ajustable)
     puntos_por_ronda = {
-        1: 10, 2: 45, 3: 90, 4: 180, 5: 360,
-        6: 720, 7: 1200, 8: 2000
+        1: 10, 2: 45, 3: 90, 4: 180,
+        5: 360, 6: 720, 7: 1200, 8: 2000
     }
-
     puntos = puntos_por_ronda.get(max_order, 0)
     motivacion = "✔" if puntos >= 45 else "✘"
-    return puntos, torneo_nombre, motivacion
-    
 
+    return puntos, torneo_nombre, motivacion
+
+    
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
