@@ -22,7 +22,7 @@ def evaluar():
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
         estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id)
-        puntos_defendidos, torneo_actual = obtener_puntos_defendidos(jugador_id)
+        puntos_defendidos, torneo_actual, motivacion_por_puntos = obtener_puntos_defendidos(jugador_id)
         motivacion_por_puntos = "✔" if puntos_defendidos >= 45 else "✘"
         
 
@@ -43,8 +43,8 @@ def evaluar():
             "estado_fisico": estado_fisico,
             "dias_sin_jugar": dias_sin_jugar,
             "puntos_defendidos": puntos_defendidos,
-            "motivacion_por_puntos": motivacion_por_puntos,
             "torneo_actual": torneo_actual,
+            "motivacion_por_puntos": motivacion_por_puntos,
             "h2h": h2h
         })
 
@@ -265,6 +265,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
