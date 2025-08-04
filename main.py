@@ -226,7 +226,16 @@ def obtener_puntos_defendidos(player_id):
 
     if season_id_directa:
         season_id = season_id_directa
-        log_debug = f"🎯 Equivalencia directa: {season_id_actual} → {season_id}"
+        log_debug = f"🎯 Usando season equivalente: {season_id_actual} → {season_id}"
+    else:
+        season_anterior = next(
+            (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
+            None
+        )
+        if not season_anterior:
+            return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
+        season_id = season_anterior["id"]
+        log_debug = f"🔁 Usando season encontrada: {season_id}" f"🎯 Equivalencia directa: {season_id_actual} → {season_id}"
     else:
         season_anterior = next(
             (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
