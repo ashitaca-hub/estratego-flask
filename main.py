@@ -22,9 +22,9 @@ def evaluar():
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
         estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id)
-        puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima = obtener_puntos_defendidos(jugador_id)
+        puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug = obtener_puntos_defendidos(jugador_id)
 
- 
+
         return jsonify({
             "jugador_id": jugador_id,
             "rival_id": rival_id,
@@ -45,6 +45,7 @@ def evaluar():
             "torneo_actual": torneo_actual,
             "motivacion_por_puntos": motivacion_por_puntos,
             "ronda_maxima": ronda_maxima,
+            "log_debug": log_debug,
             "h2h": h2h
         })
 
@@ -272,15 +273,16 @@ def obtener_puntos_defendidos(player_id):
     motivacion = "✔" if puntos >= 45 else "✘"
     ronda_str = ronda_maxima if ronda_maxima else "—"
 
-    print(f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}")
+    log_debug = f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}"
+    return puntos, torneo_nombre, motivacion, ronda_str, log_debug
 
-    return puntos, torneo_nombre, motivacion, ronda_str
 
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
