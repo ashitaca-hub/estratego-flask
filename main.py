@@ -223,14 +223,23 @@ def obtener_puntos_defendidos(player_id):
     competition_id = competition.get("id", "")
     print(f"🎾 Torneo actual detectado: {torneo_nombre}")
 
-    # 3. Buscar edición anterior del torneo
+     # 3. Buscar edición anterior del torneo
+    # 🔁 Equivalencias manuales para torneos con sede alternada
+    equivalencias_torneos = {
+        "sr:competition:8285": "sr:competition:8284",  # Toronto → Montreal
+        "sr:competition:8284": "sr:competition:8285",  # Montreal → Toronto
+        # Puedes añadir más aquí si es necesario
+    }
+
+    competition_id_pasado = equivalencias_torneos.get(competition_id, competition_id)
+
     hoy = datetime.today()
     año_pasado = str(hoy.year - 1)
-    season_anterior = next((s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id), None)
+    season_anterior = next((s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id_pasado), None)
 
     if not season_anterior:
         print("❌ No se encontró torneo del año pasado para este competition_id")
-        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
+        return 0, torneo_nombre, "✘", "—", "❌ Error al obtener partidos del torneo anterior", "❌ No se encontró torneo del año pasado para este competition_id"
 
     season_id = season_anterior["id"]
 
@@ -282,6 +291,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
