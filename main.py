@@ -230,7 +230,7 @@ def obtener_puntos_defendidos(player_id):
 
     if not season_anterior:
         print("❌ No se encontró torneo del año pasado para este competition_id")
-        return 0, torneo_nombre, "✘", "—", "❌ Error al obtener partidos del torneo anterior", "❌ No se encontró torneo del año pasado para este competition_id"
+        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
 
     season_id = season_anterior["id"]
 
@@ -239,7 +239,7 @@ def obtener_puntos_defendidos(player_id):
     r_torneo = requests.get(url_torneo, headers=headers)
     if r_torneo.status_code != 200:
         print("❌ Error al obtener partidos del torneo anterior")
-        return 0, torneo_nombre, "✘", "—", "❌ Error al obtener partidos del torneo anterior", "❌ No se encontró torneo del año pasado para este competition_id"
+        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
 
     data = r_torneo.json().get("summaries", [])
     ronda_maxima = None
@@ -282,6 +282,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
