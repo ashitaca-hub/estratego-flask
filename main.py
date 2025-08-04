@@ -194,43 +194,51 @@ def evaluar_actividad_reciente(player_id):
 
 
 def obtener_puntos_defendidos(player_id):
-    url_seasons = "https://api.sportradar.com/tennis/trial/v3/en/seasons.json"
+    from datetime import datetime
+
     headers = {"accept": "application/json", "x-api-key": API_KEY}
+
+    # 1. Obtener temporadas disponibles
+    url_seasons = "https://api.sportradar.com/tennis/trial/v3/en/seasons.json"
     r_seasons = requests.get(url_seasons, headers=headers)
     if r_seasons.status_code != 200:
-        return 0, "Error seasons"
+        return 0, "Error temporadas", "✘"
 
     all_seasons = r_seasons.json().get("seasons", [])
 
+    # 2. Obtener torneo actual desde el último partido
     resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
     resumen = requests.get(resumen_url, headers=headers)
     if resumen.status_code != 200:
-        return 0, "Error resumen"
+        return 0, "Error resumen", "✘"
 
     summaries = resumen.json().get("summaries", [])
     if not summaries:
-        return 0, "Sin partidos"
+        return 0, "Sin partidos", "✘"
 
-    grupo = summaries[0].get("sport_event", {}).get("sport_event_context", {}).get("groups", [{}])[0]
-    torneo_nombre = grupo.get("name", "")
-    torneo_base = torneo_nombre.lower().split(",")[0].strip()
+    sport_event = summaries[0].get("sport_event", {})
+    torneo_contexto = sport_event.get("sport_event_context", {})
+    competition_id = torneo_contexto.get("competition", {}).get("id", "")
+    torneo_nombre = torneo_contexto.get("competition", {}).get("name", "Desconocido")
 
+    # 3. Buscar season del año pasado con mismo competition_id
     hoy = datetime.today()
     año_pasado = hoy.year - 1
     season_id_pasada = None
 
     for s in all_seasons:
-        if s["year"] == str(año_pasado) and torneo_base in s["name"].lower():
+        if s["year"] == str(año_pasado) and s["competition_id"] == competition_id:
             season_id_pasada = s["id"]
             break
 
     if not season_id_pasada:
-        return 0, torneo_nombre
+        return 0, torneo_nombre, "✘"
 
+    # 4. Buscar hasta qué ronda llegó el jugador
     url_rounds = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id_pasada}/stages_groups_cup_rounds.json"
     r_rounds = requests.get(url_rounds, headers=headers)
     if r_rounds.status_code != 200:
-        return 0, torneo_nombre
+        return 0, torneo_nombre, "✘"
 
     data = r_rounds.json()
     max_order = 0
@@ -249,14 +257,15 @@ def obtener_puntos_defendidos(player_id):
     }
 
     puntos = puntos_por_ronda.get(max_order, 0)
-    return puntos, torneo_nombre
-
-
+    motivacion = "✔" if puntos >= 45 else "✘"
+    return puntos, torneo_nombre, motivacion
+    
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
