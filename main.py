@@ -213,15 +213,6 @@ def obtener_puntos_defendidos(player_id):
     print(f"🎾 Torneo actual detectado: {torneo_nombre}")
 
      # 3. Buscar edición anterior del torneo
-    # 🔁 Equivalencias manuales para torneos con sede alternada
-    equivalencias_torneos = {
-        "sr:competition:8285": "sr:competition:8284",  # Toronto → Montreal
-        "sr:competition:8284": "sr:competition:8285",  # Montreal → Toronto
-        # Puedes añadir más aquí si es necesario
-    }
-
-    competition_id_pasado = equivalencias_torneos.get(competition_id, competition_id)
-
     hoy = datetime.today()
     año_pasado = str(hoy.year - 1)
     
