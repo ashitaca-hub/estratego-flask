@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone
 import requests
-import unicodedata
 
 app = Flask(__name__)
 
@@ -184,7 +183,6 @@ def evaluar_actividad_reciente(player_id, resumen_data):
 
 
 def obtener_puntos_defendidos(player_id):
-    from datetime import datetime
     headers = {"accept": "application/json", "x-api-key": API_KEY}
 
     # 1. Obtener seasons
@@ -227,6 +225,7 @@ def obtener_puntos_defendidos(player_id):
     if season_id_directa is not None:
         season_id = season_id_directa
         log_debug = f"🎯 Usando season equivalente: {season_id_actual} → {season_id}"
+        season_anterior = next((s for s in seasons if s["id"] == season_id), None)
     else:
         season_anterior = next(
             (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
@@ -235,25 +234,7 @@ def obtener_puntos_defendidos(player_id):
         if not season_anterior:
             return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
         season_id = season_anterior["id"]
-        log_debug = f"🔁 Usando season encontrada: {season_id}" f"🎯 Usando season equivalente: {season_id_actual} → {season_id}"
-    else:
-        season_anterior = next(
-            (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
-            None
-        )
-        if not season_anterior:
-            return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
-        season_id = season_anterior["id"]
-        log_debug = f"🔁 Usando season encontrada: {season_id}" f"🎯 Equivalencia directa: {season_id_actual} → {season_id}"
-    else:
-        season_anterior = next(
-            (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
-            None
-        )
-        if not season_anterior:
-            return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
-        season_id = season_anterior["id"]
-        log_debug = f"🔁 Season encontrada por competition_id: {season_id}"
+        log_debug = f"🔁 Usando season encontrada: {season_id}"
 
     if not season_anterior:
         print("❌ No se encontró torneo del año pasado para este competition_id")
