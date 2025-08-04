@@ -28,7 +28,7 @@ def evaluar():
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id, resumen_data)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
         estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id, resumen_data)
-        puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug = obtener_puntos_defendidos(jugador_id)
+        puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug, _ = obtener_puntos_defendidos(jugador_id)
 
 
         return jsonify({
@@ -55,6 +55,24 @@ def evaluar():
             "h2h": h2h
         })
 
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/proximos_partidos', methods=['POST'])
+def proximos_partidos():
+    data = request.get_json()
+    jugador_id = data.get("jugador")
+
+    if not jugador_id:
+        return jsonify({"error": "Falta ID de jugador"}), 400
+
+    try:
+        _, _, _, _, _, season_id = obtener_puntos_defendidos(jugador_id)
+        if not season_id:
+            return jsonify({"error": "No se encontró season_id"}), 500
+        partidos = obtener_proximos_partidos(season_id)
+        return jsonify({"season_id": season_id, "partidos": partidos})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -184,12 +202,13 @@ def evaluar_actividad_reciente(player_id, resumen_data):
 
 def obtener_puntos_defendidos(player_id):
     headers = {"accept": "application/json", "x-api-key": API_KEY}
+    season_id = None
 
     # 1. Obtener seasons
     r_seasons = requests.get("https://api.sportradar.com/tennis/trial/v3/en/seasons.json", headers=headers)
     if r_seasons.status_code != 200:
         print("❌ Error al obtener seasons")
-        return 0, "Error temporadas", "✘", "—", "❌ Error al obtener seasons"
+        return 0, "Error temporadas", "✘", "—", "❌ Error al obtener seasons", season_id
     seasons = r_seasons.json().get("seasons", [])
 
     # 2. Obtener torneo actual desde últimos partidos
@@ -197,12 +216,12 @@ def obtener_puntos_defendidos(player_id):
     r_resumen = requests.get(resumen_url, headers=headers)
     if r_resumen.status_code != 200:
         print("❌ Error al obtener summaries del jugador")
-        return 0, "Error resumen", "✘", "—", "❌ Error al obtener summaries del jugador"
+        return 0, "Error resumen", "✘", "—", "❌ Error al obtener summaries del jugador", season_id
 
     summaries = r_resumen.json().get("summaries", [])
     if not summaries:
         print("⚠️ No se encontraron partidos recientes para el jugador")
-        return 0, "Sin partidos", "✘", "—", "⚠️ No se encontraron partidos recientes para el jugador"
+        return 0, "Sin partidos", "✘", "—", "⚠️ No se encontraron partidos recientes para el jugador", season_id
 
     contexto = summaries[0].get("sport_event", {}).get("sport_event_context", {})
     competition = contexto.get("competition", {})
@@ -232,13 +251,13 @@ def obtener_puntos_defendidos(player_id):
             None
         )
         if not season_anterior:
-            return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
+            return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id", season_id
         season_id = season_anterior["id"]
         log_debug = f"🔁 Usando season encontrada: {season_id}"
 
     if not season_anterior:
         print("❌ No se encontró torneo del año pasado para este competition_id")
-        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
+        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id", season_id
 
     season_id = season_anterior["id"]
 
@@ -247,7 +266,7 @@ def obtener_puntos_defendidos(player_id):
     r_torneo = requests.get(url_torneo, headers=headers)
     if r_torneo.status_code != 200:
         print("❌ Error al obtener partidos del torneo anterior")
-        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
+        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id", season_id
 
     data = r_torneo.json().get("summaries", [])
     ronda_maxima = None
@@ -282,7 +301,33 @@ def obtener_puntos_defendidos(player_id):
     ronda_str = ronda_maxima if ronda_maxima else "—"
 
     log_debug = f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}"
-    return puntos, torneo_nombre, motivacion, ronda_str, log_debug
+    return puntos, torneo_nombre, motivacion, ronda_str, log_debug, season_id
+
+
+def obtener_proximos_partidos(season_id):
+    url = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    r = requests.get(url, headers=headers)
+    if r.status_code != 200:
+        raise Exception("Error al obtener próximos partidos")
+
+    proximos = []
+    for evento in r.json().get("summaries", []):
+        status = evento.get("sport_event_status", {}).get("status")
+        if status != "not_started":
+            continue
+
+        sport_event = evento.get("sport_event", {})
+        start_time = sport_event.get("start_time")
+        competitors = [c.get("name") for c in sport_event.get("competitors", [])]
+        round_name = sport_event.get("sport_event_context", {}).get("round", {}).get("name")
+        proximos.append({
+            "start_time": start_time,
+            "competitors": competitors,
+            "round": round_name
+        })
+
+    return proximos
 
 
 
