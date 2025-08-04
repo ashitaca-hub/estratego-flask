@@ -17,11 +17,18 @@ def evaluar():
         return jsonify({"error": "Faltan IDs de jugador o rival"}), 400
 
     try:
+        resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/summaries.json"
+        headers = {"accept": "application/json", "x-api-key": API_KEY}
+        r_resumen = requests.get(resumen_url, headers=headers)
+        if r_resumen.status_code != 200:
+            return jsonify({"error": "❌ Error al obtener summaries.json"}), 500
+        resumen_data = r_resumen.json()
+
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
-        ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id)
-        torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id)
+        ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id, resumen_data)
+        torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id, resumen_data)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
-        estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id)
+        estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id, resumen_data)
         puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug = obtener_puntos_defendidos(jugador_id)
 
 
@@ -90,15 +97,8 @@ def obtener_estadisticas_jugador(player_id):
         "porcentaje_superficie": round(porcentaje_clay, 1)
     }
 
-def obtener_ultimos5_winnerid(player_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        return -1, ["❌ Error al consultar API"]
-
-    data = r.json()
-    summaries = data.get("summaries", [])[:5]
+def obtener_ultimos5_winnerid(player_id, resumen_data):
+    summaries = resumen_data.get("summaries", [])[:5]
     ganados = 0
     detalle = []
 
@@ -142,7 +142,7 @@ def obtener_h2h_extend(jugador_id, rival_id):
     return f"{ganados} - {perdidos}"
 
 
-def evaluar_torneo_favorito(player_id):
+def evaluar_torneo_favorito(player_id, resumen_data):
     # Obtener país del jugador
     perfil_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json"
     headers = {"accept": "application/json", "x-api-key": API_KEY}
@@ -154,12 +154,7 @@ def evaluar_torneo_favorito(player_id):
     jugador_pais = jugador.get("country", "").lower()
 
     # Obtener torneo del último partido
-    resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
-    resumen = requests.get(resumen_url, headers=headers)
-    if resumen.status_code != 200:
-        return "❌", "Error torneo"
-
-    summaries = resumen.json().get("summaries", [])
+    summaries = resumen_data.get("summaries", [])
     if not summaries:
         return "❌", "Sin partidos"
 
@@ -169,14 +164,8 @@ def evaluar_torneo_favorito(player_id):
     resultado = "✔" if jugador_pais and jugador_pais in torneo else "✘"
     return resultado, torneo
 
-def evaluar_actividad_reciente(player_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        return "❌", "Error resumen"
-
-    summaries = r.json().get("summaries", [])
+def evaluar_actividad_reciente(player_id, resumen_data):
+    summaries = resumen_data.get("summaries", [])
     if not summaries:
         return "❌", "Sin partidos"
 
@@ -291,7 +280,6 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
-
 
 
 
