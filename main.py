@@ -222,44 +222,19 @@ def obtener_puntos_defendidos(player_id):
     }
 
     season_id_actual = contexto.get("season", {}).get("id", "")
-    season_id_directa = season_equivalencias.get(season_id_actual)
-
-    if season_id_directa is not None:
-        season_id = season_id_directa
-        log_debug = f"🎯 Usando season equivalente: {season_id_actual} → {season_id}"
+    season_log = ""
+    season_id = season_equivalencias.get(season_id_actual)
+    if season_id:
+        season_log = f"🎯 Usando season equivalente: {season_id_actual} → {season_id}"
     else:
         season_anterior = next(
             (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
-            None
+            None,
         )
         if not season_anterior:
             return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
         season_id = season_anterior["id"]
-        log_debug = f"🔁 Usando season encontrada: {season_id}" f"🎯 Usando season equivalente: {season_id_actual} → {season_id}"
-    else:
-        season_anterior = next(
-            (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
-            None
-        )
-        if not season_anterior:
-            return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
-        season_id = season_anterior["id"]
-        log_debug = f"🔁 Usando season encontrada: {season_id}" f"🎯 Equivalencia directa: {season_id_actual} → {season_id}"
-    else:
-        season_anterior = next(
-            (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
-            None
-        )
-        if not season_anterior:
-            return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
-        season_id = season_anterior["id"]
-        log_debug = f"🔁 Season encontrada por competition_id: {season_id}"
-
-    if not season_anterior:
-        print("❌ No se encontró torneo del año pasado para este competition_id")
-        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
-
-    season_id = season_anterior["id"]
+        season_log = f"🔁 Usando season encontrada: {season_id}"
 
     # 4. Obtener partidos del torneo anterior
     url_torneo = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
@@ -300,7 +275,10 @@ def obtener_puntos_defendidos(player_id):
     motivacion = "✔" if puntos >= 45 else "✘"
     ronda_str = ronda_maxima if ronda_maxima else "—"
 
-    log_debug = f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}"
+    log_debug = (
+        f"{season_log} | "
+        f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}"
+    )
     return puntos, torneo_nombre, motivacion, ronda_str, log_debug
 
 
