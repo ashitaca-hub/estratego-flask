@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 from datetime import datetime, timezone
 import requests
 import unicodedata
+from requests.exceptions import Timeout
+
+# Todas las solicitudes HTTP usan un timeout de 10 segundos para evitar bloqueos prolongados.
 
 app = Flask(__name__)
 
@@ -19,7 +22,8 @@ def evaluar():
     try:
         resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/summaries.json"
         headers = {"accept": "application/json", "x-api-key": API_KEY}
-        r_resumen = requests.get(resumen_url, headers=headers)
+        # timeout=10 evita que la solicitud quede esperando indefinidamente
+        r_resumen = requests.get(resumen_url, headers=headers, timeout=10)
         if r_resumen.status_code != 200:
             return jsonify({"error": "❌ Error al obtener summaries.json"}), 500
         resumen_data = r_resumen.json()
@@ -56,12 +60,16 @@ def evaluar():
             "h2h": h2h
         })
 
+    except Timeout:
+        # Error controlado cuando la API externa no responde a tiempo
+        return jsonify({"error": "La solicitud a Sportradar excedió el tiempo de espera"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 def obtener_estadisticas_jugador(player_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json?api_key={API_KEY}"
-    r = requests.get(url)
+    # Se establece timeout para evitar esperas indefinidas
+    r = requests.get(url, timeout=10)
     if r.status_code != 200:
         raise Exception("No se pudo obtener el perfil del jugador")
 
@@ -122,7 +130,8 @@ def obtener_ultimos5_winnerid(player_id, resumen_data):
 def obtener_h2h_extend(jugador_id, rival_id):
     url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json"
     headers = {"accept": "application/json", "x-api-key": API_KEY}
-    r = requests.get(url, headers=headers)
+    # Timeout de 10 segundos al consultar el historial de enfrentamientos
+    r = requests.get(url, headers=headers, timeout=10)
     if r.status_code != 200:
         return "Sin datos"
 
@@ -146,7 +155,8 @@ def evaluar_torneo_favorito(player_id, resumen_data):
     # Obtener país del jugador
     perfil_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json"
     headers = {"accept": "application/json", "x-api-key": API_KEY}
-    perfil = requests.get(perfil_url, headers=headers)
+    # Timeout de 10 segundos al obtener el perfil del jugador
+    perfil = requests.get(perfil_url, headers=headers, timeout=10)
     if perfil.status_code != 200:
         return "❌", "Error perfil"
 
@@ -188,7 +198,8 @@ def obtener_puntos_defendidos(player_id):
     headers = {"accept": "application/json", "x-api-key": API_KEY}
 
     # 1. Obtener seasons
-    r_seasons = requests.get("https://api.sportradar.com/tennis/trial/v3/en/seasons.json", headers=headers)
+    # Timeout de 10 segundos al obtener las temporadas
+    r_seasons = requests.get("https://api.sportradar.com/tennis/trial/v3/en/seasons.json", headers=headers, timeout=10)
     if r_seasons.status_code != 200:
         print("❌ Error al obtener seasons")
         return 0, "Error temporadas", "✘", "—", "❌ Error al obtener seasons"
@@ -196,7 +207,8 @@ def obtener_puntos_defendidos(player_id):
 
     # 2. Obtener torneo actual desde últimos partidos
     resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
-    r_resumen = requests.get(resumen_url, headers=headers)
+    # Timeout de 10 segundos al obtener los resúmenes
+    r_resumen = requests.get(resumen_url, headers=headers, timeout=10)
     if r_resumen.status_code != 200:
         print("❌ Error al obtener summaries del jugador")
         return 0, "Error resumen", "✘", "—", "❌ Error al obtener summaries del jugador"
@@ -263,7 +275,8 @@ def obtener_puntos_defendidos(player_id):
 
     # 4. Obtener partidos del torneo anterior
     url_torneo = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
-    r_torneo = requests.get(url_torneo, headers=headers)
+    # Timeout de 10 segundos al obtener partidos del torneo anterior
+    r_torneo = requests.get(url_torneo, headers=headers, timeout=10)
     if r_torneo.status_code != 200:
         print("❌ Error al obtener partidos del torneo anterior")
         return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
