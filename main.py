@@ -224,7 +224,24 @@ def obtener_puntos_defendidos(player_id):
 
     hoy = datetime.today()
     año_pasado = str(hoy.year - 1)
+    
+    # 🧩 Equivalencia directa entre seasons para torneos con sede rotativa
+    season_equivalencias = {
+        "sr:season:124689": "sr:season:111494"  # Toronto 2025 → Montreal 2024
+        # Puedes añadir más pares aquí
+    }
+
+    season_id_actual = contexto.get("season", {}).get("id", "")
+    season_id_directa = season_equivalencias.get(season_id_actual)
+    if season_id_directa:
+        season_id = season_id_directa
+    else:
+
     season_anterior = next((s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id_pasado), None)
+    if not season_anterior:
+        print("❌ No se encontró torneo del año pasado para este competition_id")
+        return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id"
+    season_id = season_anterior["id"]
 
     if not season_anterior:
         print("❌ No se encontró torneo del año pasado para este competition_id")
