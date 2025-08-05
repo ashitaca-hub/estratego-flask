@@ -7,6 +7,11 @@ import os
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Captura excepciones no controladas y devuelve un JSON."""
+    return jsonify({"error": str(e)}), 500
+
 API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # Reemplaza esto con tu API Key real de Sportradar
 
 @app.route('/', methods=['POST'])
