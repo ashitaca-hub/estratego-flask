@@ -36,3 +36,31 @@ POST /proximos_partidos
   ]
 }
 ```
+
+## Endpoint `/proximos_partidos_por_torneo`
+
+Permite obtener los próximos partidos de un torneo específico a partir de su nombre completo (incluyendo el año).
+
+### Request
+
+```
+POST /proximos_partidos_por_torneo
+{
+  "torneo": "ATP Toronto, Canada Men Singles 2025"
+}
+```
+
+### Response
+
+```
+{
+  "season_id": "sr:season:98765",
+  "partidos": [
+    {
+      "start_time": "2025-08-01T10:00:00Z",
+      "competitors": ["Jugador A", "Jugador B"],
+      "round": "1st_round"
+    }
+  ]
+}
+```

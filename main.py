@@ -96,6 +96,25 @@ def proximos_partidos():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/proximos_partidos_por_torneo', methods=['POST'])
+def proximos_partidos_por_torneo():
+    """Obtiene los próximos partidos a partir del nombre completo de un torneo."""
+
+    data = request.get_json()
+    if not data or "torneo" not in data:
+        return jsonify({"error": "Falta 'torneo' en la solicitud"}), 400
+
+    torneo_full = data["torneo"]
+    try:
+        season_id = buscar_season_id_por_nombre(torneo_full)
+        if not season_id:
+            return jsonify({"error": "Torneo no encontrado"}), 404
+        partidos = obtener_proximos_partidos(season_id)
+        return jsonify({"season_id": season_id, "partidos": partidos})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
     """Obtiene estadísticas recientes del jugador.
 
@@ -391,6 +410,27 @@ def obtener_puntos_defendidos(player_id):
 
     log_debug = f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}"
     return puntos, torneo_nombre, motivacion, ronda_str, log_debug, season_id
+
+def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
+    """Busca el identificador de temporada a partir del nombre completo."""
+
+    url = "https://api.sportradar.com/tennis/trial/v3/en/seasons.json"
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise Exception("Error al obtener temporadas") from e
+
+    try:
+        nombre, year = torneo_full.rsplit(" ", 1)
+    except ValueError:
+        return None
+
+    for season in r.json().get("seasons", []):
+        if season.get("name") == nombre and str(season.get("year")) == year:
+            return season.get("id")
+    return None
 
 
 def obtener_proximos_partidos(season_id: str) -> list[dict]:
