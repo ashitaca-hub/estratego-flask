@@ -8,6 +8,20 @@ API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # Reemplaza esto con tu AP
 
 @app.route('/', methods=['POST'])
 def evaluar():
+    """Endpoint principal para evaluar enfrentamientos.
+
+    Obtiene los identificadores de jugador y rival desde la solicitud
+    POST y recopila diferentes métricas desde la API de Sportradar para
+    devolver un resumen del duelo.
+
+    Args:
+        None: Los datos se obtienen directamente de ``request``.
+
+    Returns:
+        flask.Response: Respuesta JSON con las estadísticas calculadas
+        o un mensaje de error.
+    """
+
     data = request.get_json()
     jugador_id = data.get("jugador")
     rival_id = data.get("rival")
@@ -77,7 +91,19 @@ def proximos_partidos():
         return jsonify({"error": str(e)}), 500
 
 def obtener_estadisticas_jugador(player_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json?api_key={API_KEY}"
+    """Obtiene estadísticas recientes del jugador.
+
+    Args:
+        player_id (str): Identificador del jugador en Sportradar.
+
+    Returns:
+        dict: Información de ranking, victorias totales y rendimiento en
+        superficie de arcilla.
+    """
+
+    url = (
+        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json?api_key={API_KEY}"
+    )
     r = requests.get(url)
     if r.status_code != 200:
         raise Exception("No se pudo obtener el perfil del jugador")
@@ -115,6 +141,17 @@ def obtener_estadisticas_jugador(player_id):
     }
 
 def obtener_ultimos5_winnerid(player_id, resumen_data):
+    """Resume los resultados de los últimos cinco partidos.
+
+    Args:
+        player_id (str): Identificador del jugador.
+        resumen_data (dict): Datos de los resúmenes recientes del jugador.
+
+    Returns:
+        tuple: Cantidad de encuentros ganados y lista descriptiva de cada
+        partido.
+    """
+
     summaries = resumen_data.get("summaries", [])[:5]
     ganados = 0
     detalle = []
@@ -137,7 +174,20 @@ def obtener_ultimos5_winnerid(player_id, resumen_data):
 
 
 def obtener_h2h_extend(jugador_id, rival_id):
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json"
+    """Obtiene el historial directo entre dos jugadores.
+
+    Args:
+        jugador_id (str): Identificador del jugador principal.
+        rival_id (str): Identificador del rival.
+
+    Returns:
+        str: Registro de victorias y derrotas en formato ``"X - Y"`` o
+        ``"Sin datos"`` si la consulta falla.
+    """
+
+    url = (
+        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json"
+    )
     headers = {"accept": "application/json", "x-api-key": API_KEY}
     r = requests.get(url, headers=headers)
     if r.status_code != 200:
@@ -160,6 +210,16 @@ def obtener_h2h_extend(jugador_id, rival_id):
 
 
 def evaluar_torneo_favorito(player_id, resumen_data):
+    """Indica si el último torneo jugado es en el país del jugador.
+
+    Args:
+        player_id (str): Identificador del jugador.
+        resumen_data (dict): Resúmenes recientes para obtener el torneo actual.
+
+    Returns:
+        tuple: Marca ``"✔"`` o ``"✘"`` y nombre del torneo evaluado.
+    """
+
     # Obtener país del jugador
     perfil_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json"
     headers = {"accept": "application/json", "x-api-key": API_KEY}
@@ -182,6 +242,16 @@ def evaluar_torneo_favorito(player_id, resumen_data):
     return resultado, torneo
 
 def evaluar_actividad_reciente(player_id, resumen_data):
+    """Evalúa la actividad competitiva más reciente del jugador.
+
+    Args:
+        player_id (str): Identificador del jugador.
+        resumen_data (dict): Datos de resumen con los últimos partidos.
+
+    Returns:
+        tuple: Indicador ``"✔"`` o ``"✘"`` y mensaje con días sin competir.
+    """
+
     summaries = resumen_data.get("summaries", [])
     if not summaries:
         return "❌", "Sin partidos"
@@ -201,6 +271,17 @@ def evaluar_actividad_reciente(player_id, resumen_data):
 
 
 def obtener_puntos_defendidos(player_id):
+    """Calcula los puntos que el jugador debe defender en el torneo actual.
+
+    Args:
+        player_id (str): Identificador del jugador.
+
+    Returns:
+        tuple: Puntos a defender, nombre del torneo, indicador de
+        motivación ("✔" o "✘"), ronda alcanzada, mensaje de depuración y
+        el ``season_id`` asociado.
+    """
+
     headers = {"accept": "application/json", "x-api-key": API_KEY}
     season_id = None
 
