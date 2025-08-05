@@ -56,9 +56,12 @@ def evaluar():
         h2h = obtener_h2h_extend(jugador_id, rival_id)
         estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id, resumen_data)
         puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug, _ = obtener_puntos_defendidos(jugador_id)
-        cambio_superficie_bool = True
+        cambio_superficie_bool = False
         if superficie_objetivo:
-            cambio_superficie_bool = viene_de_cambio_de_superficie(jugador_id, superficie_objetivo)
+            if superficie_objetivo:
+    cambio_superficie_bool = viene_de_cambio_de_superficie(
+        jugador_id, superficie_objetivo
+    )
 
 
         return jsonify({
@@ -526,6 +529,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
