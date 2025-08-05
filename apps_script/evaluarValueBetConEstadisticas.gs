@@ -19,11 +19,17 @@ function evaluarValueBetConEstadisticas() {
     return;
   }
 
+  const superficieObjetivo = hojaFiltro.getRange(row, 16).getValue().toString().trim();
+
   const url = "https://estratego-api.onrender.com/";
   const payload = {
     "jugador": idJugador,
     "rival": idRival
   };
+
+  if (superficieObjetivo) {
+    payload.superficie_objetivo = superficieObjetivo;
+  }
 
   const options = {
     method: "post",

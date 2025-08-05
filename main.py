@@ -58,10 +58,9 @@ def evaluar():
         puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug, _ = obtener_puntos_defendidos(jugador_id)
         cambio_superficie_bool = False
         if superficie_objetivo:
-            if superficie_objetivo:
-    cambio_superficie_bool = viene_de_cambio_de_superficie(
-        jugador_id, superficie_objetivo
-    )
+            cambio_superficie_bool = viene_de_cambio_de_superficie(
+                jugador_id, superficie_objetivo
+            )
 
 
         return jsonify({
