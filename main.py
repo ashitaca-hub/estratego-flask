@@ -406,9 +406,11 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
 
     url = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
     headers = {"accept": "application/json", "x-api-key": API_KEY}
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        raise Exception("Error al obtener próximos partidos")
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise Exception("Error al obtener próximos partidos") from e
 
     proximos = []
     for evento in r.json().get("summaries", []):
