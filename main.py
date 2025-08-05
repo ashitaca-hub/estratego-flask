@@ -92,11 +92,13 @@ def proximos_partidos():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-def obtener_estadisticas_jugador(player_id):
+def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
     """Obtiene estadísticas recientes del jugador.
 
     Args:
         player_id (str): Identificador del jugador en Sportradar.
+        year (int, optional): Año del que se tomarán las estadísticas.
+            Por defecto se utiliza el año actual.
 
     Returns:
         dict: Información de ranking, victorias totales y rendimiento en
@@ -118,7 +120,7 @@ def obtener_estadisticas_jugador(player_id):
     clay_matches = 0
 
     for periodo in data.get("periods", []):
-        if periodo["year"] == 2025:
+        if periodo["year"] == year:
             for surface in periodo["surfaces"]:
                 stats = surface["statistics"]
                 wins = stats.get("matches_won", 0)
