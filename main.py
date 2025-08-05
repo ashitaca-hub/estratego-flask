@@ -315,7 +315,7 @@ def obtener_puntos_defendidos(player_id):
     logging.info("🎾 Torneo actual detectado: %s", torneo_nombre)
 
      # 3. Buscar edición anterior del torneo
-    hoy = datetime.today()
+    hoy = datetime.now(timezone.utc)
     año_pasado = str(hoy.year - 1)
     
     # 🧩 Equivalencia directa entre seasons para torneos con sede rotativa
