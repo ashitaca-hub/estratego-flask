@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import requests
 import logging
 import os
+import re
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -427,13 +428,14 @@ def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
     except requests.exceptions.RequestException as e:
         raise Exception("Error al obtener temporadas") from e
 
-    try:
-        nombre, year = torneo_full.rsplit(" ", 1)
-    except ValueError:
-        return None
+    torneo_cf = torneo_full.casefold()
+    match = re.search(r"(\d{4})$", torneo_full)
+    year = match.group(1) if match else None
 
     for season in r.json().get("seasons", []):
-        if season.get("name") == nombre and str(season.get("year")) == year:
+        season_name = season.get("name", "").casefold()
+        season_year = str(season.get("year"))
+        if season_name == torneo_cf and (year is None or season_year == year):
             return season.get("id")
     return None
 
