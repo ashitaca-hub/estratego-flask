@@ -2,11 +2,12 @@ from flask import Flask, request, jsonify
 from datetime import datetime, timezone
 import requests
 import logging
+import os
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # Reemplaza esto con tu API Key real de Sportradar
+API_KEY = os.environ.get("SPORTRADAR_API_KEY")  # API Key leída de la variable de entorno
 
 @app.route('/', methods=['POST'])
 def evaluar():
