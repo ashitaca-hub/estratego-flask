@@ -37,6 +37,7 @@ def evaluar():
 
     jugador_id = data.get("jugador")
     rival_id = data.get("rival")
+    superficie_objetivo = data.get("superficie_objetivo")
 
     if not jugador_id or not rival_id:
         return jsonify({"error": "Faltan IDs de jugador o rival"}), 400
@@ -55,6 +56,9 @@ def evaluar():
         h2h = obtener_h2h_extend(jugador_id, rival_id)
         estado_fisico, dias_sin_jugar = evaluar_actividad_reciente(jugador_id, resumen_data)
         puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug, _ = obtener_puntos_defendidos(jugador_id)
+        cambio_superficie_bool = True
+        if superficie_objetivo:
+            cambio_superficie_bool = viene_de_cambio_de_superficie(jugador_id, superficie_objetivo)
 
 
         return jsonify({
@@ -78,7 +82,8 @@ def evaluar():
             "motivacion_por_puntos": motivacion_por_puntos,
             "ronda_maxima": ronda_maxima,
             "log_debug": log_debug,
-            "h2h": h2h
+            "h2h": h2h,
+            "cambio_superficie": "✔" if cambio_superficie_bool else "✘"
         })
 
     except Exception as e:
@@ -240,6 +245,42 @@ def obtener_h2h_extend(jugador_id, rival_id):
             perdidos += 1
 
     return f"{ganados} - {perdidos}"
+
+
+def viene_de_cambio_de_superficie(jugador_id, superficie_objetivo):
+    """Determina si el jugador cambia de superficie respecto a su último partido.
+
+    Args:
+        jugador_id (str): Identificador del jugador en Sportradar.
+        superficie_objetivo (str): Superficie del próximo partido.
+
+    Returns:
+        bool: ``True`` si la superficie del último partido difiere de la
+        ``superficie_objetivo``; ``False`` en caso contrario o si la consulta
+        falla.
+    """
+
+    resumen_url = (
+        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/summaries.json"
+    )
+    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    resp = requests.get(resumen_url, headers=headers)
+    if resp.status_code != 200:
+        return False
+    data = resp.json()
+    summaries = data.get("summaries", [])
+    if not summaries:
+        return False
+    surface_actual = (
+        summaries[0]
+        .get("sport_event", {})
+        .get("sport_event_context", {})
+        .get("surface", {})
+        .get("name")
+    )
+    if not surface_actual or not superficie_objetivo:
+        return False
+    return surface_actual.lower() != superficie_objetivo.lower()
 
 
 def evaluar_torneo_favorito(player_id, resumen_data):
