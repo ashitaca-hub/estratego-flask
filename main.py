@@ -393,7 +393,17 @@ def obtener_puntos_defendidos(player_id):
     return puntos, torneo_nombre, motivacion, ronda_str, log_debug, season_id
 
 
-def obtener_proximos_partidos(season_id):
+def obtener_proximos_partidos(season_id: str) -> list[dict]:
+    """Obtiene los próximos partidos para una temporada concreta.
+
+    Args:
+        season_id (str): Identificador de la temporada según Sportradar.
+
+    Returns:
+        list[dict]: Lista con la información de cada partido pendiente,
+        incluyendo ``start_time``, los ``competitors`` y la ``round``.
+    """
+
     url = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
     headers = {"accept": "application/json", "x-api-key": API_KEY}
     r = requests.get(url, headers=headers)
