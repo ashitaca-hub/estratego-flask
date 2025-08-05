@@ -1,6 +1,14 @@
 # estratego-flask
 Repositorio para servidor puente en Render.com usando Flask
 
+## Configuración de la API Key
+
+Define la variable de entorno `SPORTRADAR_API_KEY` con tu clave de Sportradar antes de ejecutar la aplicación:
+
+```bash
+export SPORTRADAR_API_KEY="tu_api_key"
+```
+
 ## Endpoint `/proximos_partidos`
 
 Permite obtener los próximos partidos (aún no iniciados) de la temporada donde compite un jugador.
