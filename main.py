@@ -25,6 +25,9 @@ def evaluar():
     """
 
     data = request.get_json()
+    if data is None:
+        return jsonify({"error": "No se proporcionaron datos JSON en la solicitud"}), 400
+
     jugador_id = data.get("jugador")
     rival_id = data.get("rival")
 
