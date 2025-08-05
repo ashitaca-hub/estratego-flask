@@ -7,7 +7,7 @@ import os
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-API_KEY = os.environ.get("SPORTRADAR_API_KEY")  # API Key leída de la variable de entorno
+API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # Reemplaza esto con tu API Key real de Sportradar
 
 @app.route('/', methods=['POST'])
 def evaluar():
@@ -424,6 +424,7 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
