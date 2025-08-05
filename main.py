@@ -428,6 +428,8 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
             "round": round_name
         })
 
+    proximos.sort(key=lambda p: (p["start_time"] is None, p["start_time"] or ""))
+
     return proximos
 
 
