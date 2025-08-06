@@ -140,7 +140,7 @@ function colorPorSuperficie(superficie) {
     clay: "#D35400",
     grass: "#27AE60"
   };
-  if (!superficie) {
+  if (typeof superficie !== "string" || superficie.trim() === "") {
     return "#BDC3C7"; // color neutro para desconocidos
   }
   const clave = superficie.toLowerCase();
