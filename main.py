@@ -51,6 +51,9 @@ def evaluar():
         resumen_data = r_resumen.json()
 
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
+        superficie_favorita, porcentaje_superficie_favorita = calcular_superficie_favorita(
+            jugador_id
+        )
         ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id, resumen_data)
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id, resumen_data)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
@@ -73,6 +76,8 @@ def evaluar():
             "victorias_en_superficie": jugador_stats["victorias_en_superficie"],
             "partidos_en_superficie": jugador_stats["partidos_en_superficie"],
             "porcentaje_superficie": jugador_stats["porcentaje_superficie"],
+            "superficie_favorita": superficie_favorita,
+            "porcentaje_superficie_favorita": porcentaje_superficie_favorita,
             "ultimos_5_ganados": ultimos5,
             "ultimos_5_detalle": detalle5,
             "torneo_local": torneo_local,
@@ -179,6 +184,42 @@ def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
         "partidos_en_superficie": clay_matches,
         "porcentaje_superficie": round(porcentaje_clay, 1)
     }
+
+
+def calcular_superficie_favorita(player_id):
+    """Calcula la superficie donde el jugador tiene mejor porcentaje de victorias."""
+
+    url = (
+        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json?api_key={API_KEY}"
+    )
+    r = requests.get(url)
+    if r.status_code != 200:
+        raise Exception("No se pudo obtener el perfil del jugador")
+
+    data = r.json()
+
+    superficie_stats = {}
+    for periodo in data.get("periods", []):
+        for surface in periodo.get("surfaces", []):
+            nombre = surface.get("type")
+            stats = surface.get("statistics", {})
+            wins = stats.get("matches_won", 0)
+            played = stats.get("matches_played", 0)
+            if nombre not in superficie_stats:
+                superficie_stats[nombre] = {"won": 0, "played": 0}
+            superficie_stats[nombre]["won"] += wins
+            superficie_stats[nombre]["played"] += played
+
+    mejor_superficie = None
+    mejor_porcentaje = -1
+    for nombre, stats in superficie_stats.items():
+        played = stats["played"]
+        porcentaje = (stats["won"] / played * 100) if played else 0
+        if porcentaje > mejor_porcentaje:
+            mejor_porcentaje = porcentaje
+            mejor_superficie = nombre
+
+    return mejor_superficie, round(mejor_porcentaje, 1)
 
 def obtener_ultimos5_winnerid(player_id, resumen_data):
     """Resume los resultados de los últimos cinco partidos.
