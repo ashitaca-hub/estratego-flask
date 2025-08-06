@@ -140,8 +140,9 @@ function buscarPlayerInfo(nombre, hoja) {
 
 function colorPorSuperficie(superficie) {
   const colores = {
-    hard: "#4A90E2",
-    clay: "#D35400",
+    hardcourt_outdoor: "#4A90E2",
+    hardcourt_indoor: "#5DADE2",
+    red_clay: "#D35400",
     grass: "#27AE60"
   };
   if (typeof superficie !== "string" || superficie.trim() === "") {
