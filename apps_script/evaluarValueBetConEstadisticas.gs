@@ -144,11 +144,13 @@ function colorPorSuperficie(superficie) {
     hardcourt_outdoor: "#4A90E2",
     hardcourt_indoor: "#5DADE2",
     red_clay: "#D35400",
-    grass: "#27AE60"
+    clay: "#D35400",
+    grass: "#27AE60",
+    hard: "#4A90E2"
   };
   if (typeof superficie !== "string" || superficie.trim() === "") {
     return "#BDC3C7"; // color neutro para desconocidos
   }
-  const clave = superficie.toLowerCase();
+  const clave = superficie.toLowerCase().replace(/\s+/g, "_");
   return colores[clave] || "#BDC3C7";
 }
