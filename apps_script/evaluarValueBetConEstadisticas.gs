@@ -101,6 +101,7 @@ const resumenTexto = [
   `${parseInt(result.ultimos_5_ganados) >= 3 ? "✔" : "✘"} Ganó ${result.ultimos_5_ganados}/5`,
   `${result.victorias_porcentaje > 60 ? "✔" : "✘"} Win% anual: ${result.victorias_porcentaje}%`,
   `${result.porcentaje_superficie > 60 ? "✔" : "✘"} Superficie: ${result.porcentaje_superficie}%`,
+  `${result.superficie_favorita ? "✔" : "✘"} Mejor superficie: ${result.superficie_favorita} (${result.porcentaje_superficie_favorita}%)`,
   `${result.ranking <= 30 ? "✔" : "✘"} Ranking: ${result.ranking}`,
   `${winsJugador > winsRival ? "✔" : "✘"} H2H: ${result.h2h}`,
   `${result.torneo_local === "✔" ? "✔" : "✘"} Torneo: ${result.torneo_nombre}`,
