@@ -11,20 +11,23 @@ function evaluarValueBetConEstadisticas() {
     return;
   }
 
-  const idJugador = buscarPlayerID(nombreJugador, hojaIDs);
-  const idRival = buscarPlayerID(nombreRival, hojaIDs);
+  const infoJugador = buscarPlayerInfo(nombreJugador, hojaIDs);
+  const infoRival = buscarPlayerInfo(nombreRival, hojaIDs);
 
-  if (!idJugador || !idRival) {
+  if (!infoJugador || !infoRival) {
     hojaFiltro.getRange(row, 3).setValue("❌ ID no encontrado");
     return;
   }
+
+  hojaFiltro.getRange(row, 1).setBackground(colorPorSuperficie(infoJugador.superficie));
+  hojaFiltro.getRange(row, 2).setBackground(colorPorSuperficie(infoRival.superficie));
 
   const superficieObjetivo = hojaFiltro.getRange(row, 16).getValue().toString().trim();
 
   const url = "https://estratego-api.onrender.com/";
   const payload = {
-    "jugador": idJugador,
-    "rival": idRival
+    "jugador": infoJugador.id,
+    "rival": infoRival.id
   };
 
   if (superficieObjetivo) {
@@ -120,13 +123,26 @@ hojaFiltro.getRange(row, 14).setValue(resumenTexto);
 
 }
 
-function buscarPlayerID(nombre, hoja) {
-  const datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, 2).getValues();
+function buscarPlayerInfo(nombre, hoja) {
+  const datos = hoja.getRange(2, 1, hoja.getLastRow() - 1, 3).getValues();
   const normalizado = nombre.toLowerCase().trim();
   for (let i = 0; i < datos.length; i++) {
     if (datos[i][0].toLowerCase().trim() === normalizado) {
-      return datos[i][1];
+      return { id: datos[i][1], superficie: datos[i][2] };
     }
   }
   return null;
+}
+
+function colorPorSuperficie(superficie) {
+  const colores = {
+    hard: "#4A90E2",
+    clay: "#D35400",
+    grass: "#27AE60"
+  };
+  if (!superficie) {
+    return "#BDC3C7"; // color neutro para desconocidos
+  }
+  const clave = superficie.toLowerCase();
+  return colores[clave] || "#BDC3C7";
 }
