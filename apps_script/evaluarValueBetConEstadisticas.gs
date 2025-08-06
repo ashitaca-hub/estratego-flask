@@ -49,6 +49,10 @@ function evaluarValueBetConEstadisticas() {
   const result = JSON.parse(response.getContentText());
   Logger.log(result.ultimos_5_detalle);
 
+  hojaFiltro.getRange(row, 17)
+            .setBackground(colorPorSuperficie(result.superficie_favorita));
+  hojaFiltro.getRange(row, 18).setValue(result.porcentaje_superficie_favorita);
+
 
   if (result.error) {
     hojaFiltro.getRange(row, 3).setValue("❌ " + result.error);
