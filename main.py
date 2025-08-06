@@ -461,7 +461,13 @@ def obtener_puntos_defendidos(player_id):
     return puntos, torneo_nombre, motivacion, ronda_str, log_debug, season_id
 
 def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
-    """Busca el identificador de temporada a partir del nombre completo."""
+    """Busca el identificador de temporada a partir del nombre completo.
+
+    La búsqueda es flexible: se ignoran mayúsculas, espacios y signos de
+    puntuación, y se permite proporcionar solo una parte del nombre del
+    torneo. Si se incluye un año en ``torneo_full`` se intenta filtrar por
+    dicho año.
+    """
 
     url = "https://api.sportradar.com/tennis/trial/v3/en/seasons.json"
     headers = {"accept": "application/json", "x-api-key": API_KEY}
@@ -471,15 +477,26 @@ def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
     except requests.exceptions.RequestException as e:
         raise Exception("Error al obtener temporadas") from e
 
-    torneo_cf = torneo_full.casefold()
-    match = re.search(r"(\d{4})$", torneo_full)
-    year = match.group(1) if match else None
+    tokens = re.findall(r"[a-z0-9]+", torneo_full.casefold())
+    year = None
+    tokens_without_year = []
+    for tok in tokens:
+        if len(tok) == 4 and tok.isdigit():
+            year = tok
+        else:
+            tokens_without_year.append(tok)
 
     for season in r.json().get("seasons", []):
-        season_name = season.get("name", "").casefold()
+        season_name = season.get("name", "")
+        season_cf = season_name.casefold()
         season_year = str(season.get("year"))
-        if season_name == torneo_cf and (year is None or season_year == year):
+
+        if year and season_year != year:
+            continue
+
+        if all(tok in season_cf for tok in tokens_without_year):
             return season.get("id")
+
     return None
 
 
