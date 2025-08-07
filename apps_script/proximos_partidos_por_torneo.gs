@@ -1,22 +1,39 @@
-function fetchProximosPartidosPorTorneo(torneo) {
-  var url = 'https://example.com/proximos_partidos_por_torneo';
-  var payload = { torneo: torneo };
-  var options = {
+function insertarProximosPartidosDesdeCelda() {
+  const ss     = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet  = ss.getActiveSheet();
+  const torneo = sheet.getActiveCell().getValue().trim();
+
+  const url = 'https://estratego-api.onrender.com/proximos_partidos_por_torneo';
+  const params = {
     method: 'post',
     contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
+    payload: JSON.stringify({ torneo }),
+    muteHttpExceptions: true
   };
-  var resp = UrlFetchApp.fetch(url, options);
-  var code = resp.getResponseCode();
-  if (code !== 200) {
-    console.error(resp.getContentText());
-    return null;
+
+  const resp = UrlFetchApp.fetch(url, params);
+  const data = JSON.parse(resp.getContentText());
+  const partidos = data.partidos || [];
+
+  // --- evitar conflicto de nombre ---
+  let nuevaHoja = ss.getSheetByName('ProximosPartidos');
+  if (nuevaHoja) {
+    nuevaHoja.clear();                    // o ss.deleteSheet(nuevaHoja);
+  } else {
+    nuevaHoja = ss.insertSheet('ProximosPartidos');
   }
-  var contentType = resp.getHeaders()['Content-Type'] || '';
-  if (!contentType.includes('application/json')) {
-    console.error('Respuesta no JSON: ' + contentType);
-    return null;
-  }
-  return JSON.parse(resp.getContentText());
+  // -----------------------------------
+
+  nuevaHoja.appendRow(['start_time', 'competidor1', 'competidor2', 'round', 'torneo']);
+
+  const formatName = n => {
+    const parts = n.split(',');
+    return parts.length === 2 ? `${parts[1].trim()} ${parts[0].trim()}` : n;
+  };
+
+  partidos.forEach(p => {
+    const [c1, c2] = p.competitors.map(formatName);
+    nuevaHoja.appendRow([p.start_time, c1, c2, p.round, torneo]);
+  });
+
 }
