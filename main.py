@@ -527,6 +527,8 @@ def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
         else:
             tokens_without_year.append(tok)
 
+    matches = []
+
     for season in r.json().get("seasons", []):
         season_name = season.get("name", "")
         season_cf = season_name.casefold()
@@ -536,9 +538,16 @@ def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
             continue
 
         if all(tok in season_cf for tok in tokens_without_year):
-            return season.get("id")
+            matches.append(season)
 
-    return None
+    if not matches:
+        return None
+
+    if year:
+        return matches[0].get("id")
+
+    latest = max(matches, key=lambda s: s.get("year", 0))
+    return latest.get("id")
 
 
 def obtener_proximos_partidos(season_id: str) -> list[dict]:
