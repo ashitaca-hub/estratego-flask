@@ -18,7 +18,16 @@ function insertarProximosPartidosDesdeCelda() {
   };
 
   const resp = UrlFetchApp.fetch(url, params);
+  Logger.log(resp.getResponseCode());
+  Logger.log(resp.getContentText());
+  const code = resp.getResponseCode();
   const data = JSON.parse(resp.getContentText());
+  if (data.error || code !== 200) {
+    const mensaje = data.error || `Error HTTP ${code}`;
+    Logger.log(mensaje);
+    SpreadsheetApp.getUi().alert(mensaje);
+    return;
+  }
   const partidos = data.partidos || [];
 
   // --- evitar conflicto de nombre ---

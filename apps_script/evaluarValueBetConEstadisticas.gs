@@ -46,6 +46,8 @@ function evaluarValueBetConEstadisticas() {
   };
 
   const response = UrlFetchApp.fetch(url, options);
+  Logger.log(response.getResponseCode());
+  Logger.log(response.getContentText());
   const result = JSON.parse(response.getContentText());
   Logger.log(result.ultimos_5_detalle);
 
