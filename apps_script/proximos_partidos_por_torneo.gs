@@ -1,7 +1,13 @@
 function insertarProximosPartidosDesdeCelda() {
   const ss     = SpreadsheetApp.getActiveSpreadsheet();
   const sheet  = ss.getActiveSheet();
-  const torneo = sheet.getActiveCell().getValue().trim();
+  let torneo   = sheet.getActiveCell().getValue().trim();
+
+  if (!/\d{4}/.test(torneo)) {
+    const year = new Date().getFullYear();
+    torneo = `${torneo} ${year}`;
+    SpreadsheetApp.getUi().alert(`Año ${year} añadido automáticamente.`);
+  }
 
   const url = 'https://estratego-api.onrender.com/proximos_partidos_por_torneo';
   const params = {
