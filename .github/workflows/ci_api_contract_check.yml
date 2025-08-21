@@ -1,5 +1,5 @@
 
-name: Contract check against estratego-db
+name: Contract check against estratego-db (curl)
 
 on:
   workflow_dispatch:
@@ -14,29 +14,50 @@ jobs:
   contract-check:
     runs-on: ubuntu-latest
     env:
-      # Set once at job level so we can reference env.DATABASE_URL in `if:` safely
-      DB_REPO: ashitaca-hub/estratego-db            # TODO: cambia a <tu-org>/estratego-db
-      GH_TOKEN: ${{ secrets.DB_CONTRACT_PAT }}  # opcional si el repo DB es privado
-      DATABASE_URL: ${{ secrets.DATABASE_URL }} # opcional para check en vivo
+      DB_REPO: ashitaca-hub/estratego-db            # <-- Cambia a <tu-org>/estratego-db
+      DB_CONTRACT_PAT: ${{ secrets.DB_CONTRACT_PAT }}  # PAT con 'Contents: Read' y 'Metadata: Read' en repo privado DB
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}       # opcional para check en vivo
 
     steps:
       - name: Checkout API repo
         uses: actions/checkout@v4
 
-      - name: Install gh and yq
+      - name: Install tools (jq, yq, curl provided)
         run: |
-          if [ -n "${GH_TOKEN}" ]; then
-            echo "$GH_TOKEN" | gh auth login --with-token
-          fi
+          sudo apt-get update
+          sudo apt-get install -y jq
           curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
 
-      - name: Download latest CONTRACT_DB.yml from estratego-db releases
+      - name: Download CONTRACT_DB.yml from latest release (private repo via REST API)
+        env:
+          AUTH: ${{ env.DB_CONTRACT_PAT }}
         run: |
-          gh release download -R "$DB_REPO" -p "CONTRACT_DB.yml" --clobber || {
-            echo "::error::No se pudo descargar CONTRACT_DB.yml del repo $DB_REPO. ¿Es privado? ¿Existe el release?";
-            exit 1;
-          }
+          if [ -z "$AUTH" ]; then
+            echo "::error::Falta el secreto DB_CONTRACT_PAT con permisos de lectura sobre $DB_REPO"
+            exit 1
+          fi
+          echo "Consultando último release de $DB_REPO ..."
+          curl -sSL -H "Authorization: token $AUTH"                -H "Accept: application/vnd.github+json"                "https://api.github.com/repos/$DB_REPO/releases/latest"                -o release.json
+
+          if [ ! -s release.json ]; then
+            echo "::error::No se obtuvo respuesta del API releases/latest"
+            exit 1
+          fi
+
+          ASSET_ID=$(jq -r '.assets[] | select(.name=="CONTRACT_DB.yml") | .id' release.json)
+          if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
+            echo "::error::Asset 'CONTRACT_DB.yml' no encontrado en el último release."
+            echo "Activos encontrados:"
+            jq -r '.assets[].name' release.json || true
+            exit 1
+          fi
+
+          echo "Descargando asset id=$ASSET_ID ..."
+          curl -sSL -H "Authorization: token $AUTH"                -H "Accept: application/octet-stream"                "https://api.github.com/repos/$DB_REPO/releases/assets/$ASSET_ID"                -o CONTRACT_DB.yml
+
+          test -s CONTRACT_DB.yml || { echo "::error::Descarga vacía de CONTRACT_DB.yml"; exit 1; }
+          echo "OK: CONTRACT_DB.yml descargado"
 
       - name: Show contract
         run: |
