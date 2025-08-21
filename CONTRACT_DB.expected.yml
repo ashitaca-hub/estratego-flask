@@ -1,0 +1,14 @@
+# Contract the API expects from estratego-db
+expected_major: 1   # Accepts any 1.x.y contract
+required:
+  views:
+    court_speed_rankig_norm:
+      columns:
+        - tournament_name
+        - surface
+        - speed_rank
+        - category
+  rpcs:
+    - get_player_hist_features
+    - get_matchup_hist_vector
+    - get_tourney_meta
