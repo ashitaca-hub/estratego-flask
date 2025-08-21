@@ -14,21 +14,29 @@ jobs:
   contract-check:
     runs-on: ubuntu-latest
     env:
-      DB_REPO: your-org/estratego-db   # TODO: cambia a <tu-org>/estratego-db
-      GH_TOKEN: ${{ secrets.DB_CONTRACT_PAT }}  # (opcional) PAT con permiso 'repo' si el DB repo es privado
+      # Set once at job level so we can reference env.DATABASE_URL in `if:` safely
+      DB_REPO: your-org/estratego-db            # TODO: cambia a <tu-org>/estratego-db
+      GH_TOKEN: ${{ secrets.DB_CONTRACT_PAT }}  # opcional si el repo DB es privado
+      DATABASE_URL: ${{ secrets.DATABASE_URL }} # opcional para check en vivo
+
     steps:
       - name: Checkout API repo
         uses: actions/checkout@v4
 
       - name: Install gh and yq
         run: |
-          echo "$GH_TOKEN" | gh auth login --with-token || true
+          if [ -n "${GH_TOKEN}" ]; then
+            echo "$GH_TOKEN" | gh auth login --with-token
+          fi
           curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
 
       - name: Download latest CONTRACT_DB.yml from estratego-db releases
         run: |
-          gh release download -R "$DB_REPO" -p "CONTRACT_DB.yml" --clobber
+          gh release download -R "$DB_REPO" -p "CONTRACT_DB.yml" --clobber || {
+            echo "::error::No se pudo descargar CONTRACT_DB.yml del repo $DB_REPO. ¿Es privado? ¿Existe el release?";
+            exit 1;
+          }
 
       - name: Show contract
         run: |
@@ -77,9 +85,7 @@ jobs:
           echo "All required RPCs present."
 
       - name: (Optional) Live DB check (schema sanity)
-        if: ${{ secrets.DATABASE_URL != '' }}
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        if: ${{ env.DATABASE_URL != '' }}
         run: |
           sudo apt-get update && sudo apt-get install -y postgresql-client
           echo "== Checking live DB schema =="
