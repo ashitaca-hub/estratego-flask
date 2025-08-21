@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Set once at job level so we can reference env.DATABASE_URL in `if:` safely
-      DB_REPO: your-org/estratego-db            # TODO: cambia a <tu-org>/estratego-db
+      DB_REPO: ashitaca-hub/estratego-db            # TODO: cambia a <tu-org>/estratego-db
       GH_TOKEN: ${{ secrets.DB_CONTRACT_PAT }}  # opcional si el repo DB es privado
       DATABASE_URL: ${{ secrets.DATABASE_URL }} # opcional para check en vivo
 
