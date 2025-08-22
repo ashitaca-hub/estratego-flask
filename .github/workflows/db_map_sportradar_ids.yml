@@ -12,6 +12,7 @@ on:
       p1_name:
         description: "Nombre del Player 1 (si no pasas UUID). Se usa ILIKE '%nombre%'"
         required: false
+        default: "Carlos Alcaraz"
       p2_srid:
         description: "SR competitor number del Player 2 (ej. 407573)"
         required: false
@@ -21,6 +22,7 @@ on:
       p2_name:
         description: "Nombre del Player 2 (si no pasas UUID). ILIKE '%nombre%'"
         required: false
+        default: "Alexander Zaverev"
       run_smoke:
         description: "Probar /matchup tras mapear (true/false)"
         required: false
