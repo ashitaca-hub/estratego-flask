@@ -589,12 +589,137 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
 
     return proximos
 
+# ======== Estratego: endpoint /matchup (añadido) ========
+from services import supabase_fs as FS
+from services import sportradar_now as SR
+from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
+
+try:
+    app  # si tu archivo ya define app = Flask(...)
+except NameError:
+    from flask import Flask
+    app = Flask(__name__)
+
+from flask import request, jsonify
+
+def _h2h_wr_bayes(w: int, l: int, alpha: int = 10) -> float:
+    return (w + 0.5 * alpha) / (w + l + alpha)
+
+@app.post("/matchup")
+def matchup():
+    body = request.get_json(force=True, silent=True) or {}
+    years_back = int(body.get("years_back", 4))
+    tourney = body.get("tournament", {}) or {}
+    tname = tourney.get("name") or tourney.get("tourney_name") or ""
+    month = int(tourney.get("month") or 1)
+
+    p_id = body.get("player_id")
+    o_id = body.get("opponent_id")
+    player = body.get("player")
+    opponent = body.get("opponent")
+
+    # 1) ΔHist desde Supabase FS
+    try:
+        hist = FS.get_matchup_hist_vector(p_id=p_id, o_id=o_id, yrs=years_back, tname=tname, month=month)
+    except Exception:
+        hist = {
+            "surface": "hard",
+            "speed_bucket": "Medium",
+            "hist_win_surface_p": 0.55, "hist_win_surface_o": 0.55,
+            "hist_win_speed_p": 0.55,   "hist_win_speed_o": 0.55,
+            "hist_win_month_p": 0.55,   "hist_win_month_o": 0.55,
+            "d_hist_surface": 0.0, "d_hist_speed": 0.0, "d_hist_month": 0.0,
+        }
+
+    # 2) Señales "Now" (Sportradar)
+    try:
+        profile_p = SR.get_profile(p_id) if p_id else {}
+        profile_o = SR.get_profile(o_id) if o_id else {}
+        last10_p = SR.get_last10(p_id) if p_id else []
+        last10_o = SR.get_last10(o_id) if o_id else []
+        ytd_p = SR.get_ytd_record(p_id) if p_id else {"wins":0, "losses":0}
+        ytd_o = SR.get_ytd_record(o_id) if o_id else {"wins":0, "losses":0}
+        h2h_w, h2h_l = SR.get_h2h(p_id, o_id) if p_id and o_id else (0, 0)
+    except Exception:
+        profile_p, profile_o, last10_p, last10_o = {}, {}, [], []
+        ytd_p, ytd_o = {"wins":0, "losses":0}, {"wins":0, "losses":0}
+        h2h_w, h2h_l = 0, 0
+
+    now_p = SR.compute_now_features(profile_p, last10_p, ytd_p)
+    now_o = SR.compute_now_features(profile_o, last10_o, ytd_o)
+
+    # 3) Flags
+    surf_change_p = 1 if (now_p.get("last_surface") and now_p["last_surface"] != str(hist.get("surface","")).lower()) else 0
+    surf_change_o = 1 if (now_o.get("last_surface") and now_o["last_surface"] != str(hist.get("surface","")).lower()) else 0
+
+    is_local_p = 1 if body.get("country") and body.get("player_country") and body["country"] == body["player_country"] else 0
+    is_local_o = 1 if body.get("country") and body.get("opponent_country") and body["country"] == body["opponent_country"] else 0
+
+    mot_p = int(body.get("mot_points_p") or 0)
+    mot_o = int(body.get("mot_points_o") or 0)
+
+    # 4) Deltas Now
+    rank_p = now_p.get("ranking_now") or 999
+    rank_o = now_o.get("ranking_now") or 999
+    d_rank_norm   = clamp((rank_o - rank_p) / 100.0, -1, 1)
+    d_ytd         = clamp(now_p["winrate_ytd"]    - now_o["winrate_ytd"],    -0.25, 0.25)
+    d_last10      = clamp(now_p["winrate_last10"] - now_o["winrate_last10"], -0.25, 0.25)
+    d_h2h         = clamp(((h2h_w + 5) / max(1, (h2h_w + h2h_l + 10))) - ((h2h_l + 5) / max(1, (h2h_w + h2h_l + 10))), -0.25, 0.25)
+    d_inactive    = clamp(-(now_p["days_inactive"] - now_o["days_inactive"]) / 30.0, -0.25, 0.25)
+
+    # 5) Deltas Hist
+    d_hist_surface = clamp(hist.get("d_hist_surface", 0.0), -0.25, 0.25)
+    d_hist_speed   = clamp(hist.get("d_hist_speed",   0.0), -0.25, 0.25)
+    d_hist_month   = clamp(hist.get("d_hist_month",   0.0), -0.25, 0.25)
+
+    # 6) Score lineal + ajustes
+    sum_linear = (
+        WEIGHTS["rank_norm"]   * d_rank_norm   +
+        WEIGHTS["ytd"]         * d_ytd         +
+        WEIGHTS["last10"]      * d_last10      +
+        WEIGHTS["h2h"]         * d_h2h         +
+        WEIGHTS["inactive"]    * d_inactive    +
+        WEIGHTS["hist_surface"]* d_hist_surface+
+        WEIGHTS["hist_speed"]  * d_hist_speed  +
+        WEIGHTS["hist_month"]  * d_hist_month
+    )
+    sum_linear += ADJUSTS["surf_change"] * (surf_change_p - surf_change_o)
+    sum_linear += ADJUSTS["local"]       * (is_local_p - is_local_o)
+    sum_linear += ADJUSTS["mot_points"]  * (mot_p - mot_o)
+
+    prob_player = logistic(sum_linear)
+
+    return jsonify({
+        "ok": True,
+        "prob_player": prob_player,
+        "surface": hist.get("surface"),
+        "speed_bucket": hist.get("speed_bucket"),
+        "inputs": {
+            "player": player, "opponent": opponent,
+            "player_id": p_id, "opponent_id": o_id,
+            "tournament": {"name": tname, "month": month},
+            "years_back": years_back
+        },
+        "features": {
+            "deltas": {
+                "rank_norm": d_rank_norm,
+                "ytd": d_ytd, "last10": d_last10, "h2h": d_h2h, "inactive": d_inactive,
+                "hist_surface": d_hist_surface, "hist_speed": d_hist_speed, "hist_month": d_hist_month
+            },
+            "flags": {
+                "surf_change_p": surf_change_p, "surf_change_o": surf_change_o,
+                "is_local_p": is_local_p, "is_local_o": is_local_o, "mot_p": mot_p, "mot_o": mot_o
+            }
+        }
+    })
+# ======== fin añadido /matchup ========
 
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
