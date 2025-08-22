@@ -29,3 +29,52 @@ def get_matchup_hist_vector(p_id: str, o_id: str, yrs: int, tname: str, month: i
 def get_tourney_meta(tname: str):
     data = rpc("get_tourney_meta", {"tname": tname})
     return (data[0] if isinstance(data, list) and data else {}) or {}
+
+import urllib.parse
+
+def rest_get(table: str, params: dict, select="*"):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError("Missing SUPABASE_URL / SUPABASE_KEY")
+    base = SUPABASE_URL.rstrip("/") + "/rest/v1/" + table
+    q = {"select": select}
+    q.update(params or {})
+    url = base + "?" + urllib.parse.urlencode(q, doseq=True)
+    r = requests.get(url, headers=HEADERS_SB, timeout=HTTP_TIMEOUT)
+    if r.status_code >= 300:
+        raise RuntimeError(f"GET {table} failed: {r.status_code} {r.text}")
+    return r.json()
+
+def resolve_player_uuid_by_sr(sr_id: str) -> str | None:
+    if not sr_id:
+        return None
+    # Acepta formatos "sr:competitor:1234" o solo "1234"
+    sr = sr_id.split(":")[-1]
+    rows = rest_get("players",
+        {"ext_sportradar_id": f"eq.{sr}"}, select="player_id,name,ext_sportradar_id")
+    return rows[0]["player_id"] if rows else None
+
+def resolve_player_uuid_by_name(name: str) -> str | None:
+    if not name:
+        return None
+    # Si tienes view pública 'players_min', úsala; si no, tabla 'players'
+    for table in ("players_min", "players"):
+        try:
+            rows = rest_get(table,
+                {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
+            if rows:
+                return rows[0]["player_id"]
+        except Exception:
+            continue
+    return None
+
+def tourney_meta_by_name_like(tname: str) -> dict:
+    """Fallback REST si la RPC get_tourney_meta no devuelve nada."""
+    if not tname:
+        return {}
+    try:
+        rows = rest_get("court_speed_rankig_norm",
+            {"tournament_name": f"ilike.*{tname}*", "limit": 1},
+            select="tournament_name,surface,speed_rank,category")
+        return rows[0] if rows else {}
+    except Exception:
+        return {}
