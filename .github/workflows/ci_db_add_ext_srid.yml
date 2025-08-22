@@ -1,0 +1,45 @@
+name: db-migration-add-ext-srid
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "sql/migrations/2025_08_22_add_ext_sportradar_id.sql"
+      - ".github/workflows/ci_db_add_ext_srid.yml"
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }} # cadena de conexión Postgres/Supabase (service_role)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verificar que existe el SQL
+        run: |
+          test -f sql/migrations/2025_08_22_add_ext_sportradar_id.sql || \
+            (echo "sql/migrations/2025_08_22_add_ext_sportradar_id.sql not found" && exit 1)
+
+      - name: Instalar psql
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Aplicar migración
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Falta secrets.DATABASE_URL (usa la service_role)"; exit 1; fi
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -f sql/migrations/2025_08_22_add_ext_sportradar_id.sql
+
+      - name: Verificación rápida
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='players' AND column_name='ext_sportradar_id';
+          "
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\di+ public.players_ext_srid_uidx"
