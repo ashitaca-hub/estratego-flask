@@ -589,7 +589,9 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
 
     return proximos
 
-# ======== Estratego: endpoint /matchup (añadido) ========
+
+
+# ======== Estratego: endpoint /matchup (REEMPLAZO) ========
 from services import supabase_fs as FS
 from services import sportradar_now as SR
 from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
@@ -601,9 +603,77 @@ except NameError:
     app = Flask(__name__)
 
 from flask import request, jsonify
+import re, requests, urllib.parse
 
-def _h2h_wr_bayes(w: int, l: int, alpha: int = 10) -> float:
-    return (w + 0.5 * alpha) / (w + l + alpha)
+UUID_RE = re.compile(r"^[0-9a-fA-F-]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+
+def _rest_get(table: str, params: dict, select: str = "*"):
+    """GET sencillo contra PostgREST usando las credenciales de FS (Service Role recomendado)."""
+    base = FS.SUPABASE_URL.rstrip("/") + "/rest/v1/" + table
+    q = {"select": select}
+    q.update(params or {})
+    url = base + "?" + urllib.parse.urlencode(q, doseq=True)
+    r = requests.get(url, headers=FS.HEADERS_SB, timeout=FS.HTTP_TIMEOUT)
+    if r.status_code >= 300:
+        raise RuntimeError(f"GET {table} failed: {r.status_code} {r.text}")
+    return r.json()
+
+def _normalize_sr_id(val: str | None) -> str | None:
+    """Asegura formato 'sr:competitor:ID' si nos pasan solo el número."""
+    if not val:
+        return None
+    s = str(val)
+    if s.startswith("sr:"):
+        return s
+    # si viene '12345'
+    return f"sr:competitor:{s}"
+
+def _resolve_player_uuid_by_sr(sr_id: str | None) -> str | None:
+    """Mapea Sportradar ID -> UUID de tu tabla players (usa ext_sportradar_id)."""
+    if not sr_id:
+        return None
+    short = sr_id.split(":")[-1]  # 'sr:competitor:1234' -> '1234'
+    rows = _rest_get("players", {"ext_sportradar_id": f"eq.{short}", "limit": 1}, select="player_id,name,ext_sportradar_id")
+    return rows[0]["player_id"] if rows else None
+
+def _resolve_player_uuid_by_name(name: str | None) -> str | None:
+    """Búsqueda laxa por nombre. Si tienes view 'players_min', prueba primero ahí."""
+    if not name:
+        return None
+    for table in ("players_min", "players"):
+        try:
+            rows = _rest_get(table, {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
+            if rows:
+                return rows[0]["player_id"]
+        except Exception:
+            continue
+    return None
+
+def _resolve_uuid(pid, pname, psrid) -> str | None:
+    """Devuelve player_uuid con prioridad: uuid explícito > sr_id > nombre."""
+    if pid and UUID_RE.match(str(pid)):
+        return pid
+    sr = psrid or (pid if (pid and str(pid).startswith("sr:")) else None)
+    u = _resolve_player_uuid_by_sr(sr) if sr else None
+    if u:
+        return u
+    if pname:
+        u = _resolve_player_uuid_by_name(pname)
+        if u:
+            return u
+    return None
+
+def _tourney_meta_fallback(tname: str) -> dict:
+    """Fallback REST si la RPC get_tourney_meta no devuelve nada."""
+    if not tname:
+        return {}
+    try:
+        rows = _rest_get("court_speed_rankig_norm",
+                         {"tournament_name": f"ilike.*{tname}*", "limit": 1},
+                         select="tournament_name,surface,speed_rank,category")
+        return rows[0] if rows else {}
+    except Exception:
+        return {}
 
 @app.post("/matchup")
 def matchup():
@@ -613,33 +683,59 @@ def matchup():
     tname = tourney.get("name") or tourney.get("tourney_name") or ""
     month = int(tourney.get("month") or 1)
 
-    p_id = body.get("player_id")
-    o_id = body.get("opponent_id")
+    # Acepta también player_sr_id/opponent_sr_id
+    p_id_in = body.get("player_id")
+    o_id_in = body.get("opponent_id")
+    p_sr_id = body.get("player_sr_id")
+    o_sr_id = body.get("opponent_sr_id")
+
     player = body.get("player")
     opponent = body.get("opponent")
 
-    # 1) ΔHist desde Supabase FS
+    # 0) Resolver UUIDs contra tu DB (para el FS)
+    p_uuid = _resolve_uuid(p_id_in, player, p_sr_id)
+    o_uuid = _resolve_uuid(o_id_in, opponent, o_sr_id)
+
+    # 1) Meta de torneo (RPC -> fallback REST)
+    meta = {}
     try:
-        hist = FS.get_matchup_hist_vector(p_id=p_id, o_id=o_id, yrs=years_back, tname=tname, month=month)
+        meta = FS.get_tourney_meta(tname) or {}
     except Exception:
+        meta = {}
+    if not meta:
+        meta = _tourney_meta_fallback(tname) or {}
+
+    surface_default = (meta.get("surface") or "hard").lower()
+    speed_bucket_meta = meta.get("speed_bucket")  # puede venir de la RPC (si usas la vista _fs)
+
+    # 2) ΔHist desde FS si tenemos ambos UUIDs
+    hist = {}
+    if p_uuid and o_uuid:
+        try:
+            hist = FS.get_matchup_hist_vector(p_id=p_uuid, o_id=o_uuid, yrs=years_back, tname=tname, month=month) or {}
+        except Exception:
+            hist = {}
+
+    # fallback: al menos meta de torneo y bucket neutro
+    if not hist:
         hist = {
-            "surface": "hard",
-            "speed_bucket": "Medium",
-            "hist_win_surface_p": 0.55, "hist_win_surface_o": 0.55,
-            "hist_win_speed_p": 0.55,   "hist_win_speed_o": 0.55,
-            "hist_win_month_p": 0.55,   "hist_win_month_o": 0.55,
+            "surface": surface_default,
+            "speed_bucket": speed_bucket_meta or "Medium",
             "d_hist_surface": 0.0, "d_hist_speed": 0.0, "d_hist_month": 0.0,
         }
 
-    # 2) Señales "Now" (Sportradar)
+    # 3) Señales "Now" (Sportradar) usando IDs SR originales si los hay
+    p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (p_id_in and str(p_id_in).startswith("sr:")) else None))
+    o_sr_norm = _normalize_sr_id(o_sr_id or (o_id_in if (o_id_in and str(o_id_in).startswith("sr:")) else None))
+
     try:
-        profile_p = SR.get_profile(p_id) if p_id else {}
-        profile_o = SR.get_profile(o_id) if o_id else {}
-        last10_p = SR.get_last10(p_id) if p_id else []
-        last10_o = SR.get_last10(o_id) if o_id else []
-        ytd_p = SR.get_ytd_record(p_id) if p_id else {"wins":0, "losses":0}
-        ytd_o = SR.get_ytd_record(o_id) if o_id else {"wins":0, "losses":0}
-        h2h_w, h2h_l = SR.get_h2h(p_id, o_id) if p_id and o_id else (0, 0)
+        profile_p = SR.get_profile(p_sr_norm) if p_sr_norm else {}
+        profile_o = SR.get_profile(o_sr_norm) if o_sr_norm else {}
+        last10_p  = SR.get_last10(p_sr_norm)  if p_sr_norm else []
+        last10_o  = SR.get_last10(o_sr_norm)  if o_sr_norm else []
+        ytd_p     = SR.get_ytd_record(p_sr_norm) if p_sr_norm else {"wins":0, "losses":0}
+        ytd_o     = SR.get_ytd_record(o_sr_norm) if o_sr_norm else {"wins":0, "losses":0}
+        h2h_w, h2h_l = SR.get_h2h(p_sr_norm, o_sr_norm) if p_sr_norm and o_sr_norm else (0, 0)
     except Exception:
         profile_p, profile_o, last10_p, last10_o = {}, {}, [], []
         ytd_p, ytd_o = {"wins":0, "losses":0}, {"wins":0, "losses":0}
@@ -648,7 +744,7 @@ def matchup():
     now_p = SR.compute_now_features(profile_p, last10_p, ytd_p)
     now_o = SR.compute_now_features(profile_o, last10_o, ytd_o)
 
-    # 3) Flags
+    # 4) Flags
     surf_change_p = 1 if (now_p.get("last_surface") and now_p["last_surface"] != str(hist.get("surface","")).lower()) else 0
     surf_change_o = 1 if (now_o.get("last_surface") and now_o["last_surface"] != str(hist.get("surface","")).lower()) else 0
 
@@ -658,7 +754,7 @@ def matchup():
     mot_p = int(body.get("mot_points_p") or 0)
     mot_o = int(body.get("mot_points_o") or 0)
 
-    # 4) Deltas Now
+    # 5) Deltas Now
     rank_p = now_p.get("ranking_now") or 999
     rank_o = now_o.get("ranking_now") or 999
     d_rank_norm   = clamp((rank_o - rank_p) / 100.0, -1, 1)
@@ -667,12 +763,12 @@ def matchup():
     d_h2h         = clamp(((h2h_w + 5) / max(1, (h2h_w + h2h_l + 10))) - ((h2h_l + 5) / max(1, (h2h_w + h2h_l + 10))), -0.25, 0.25)
     d_inactive    = clamp(-(now_p["days_inactive"] - now_o["days_inactive"]) / 30.0, -0.25, 0.25)
 
-    # 5) Deltas Hist
+    # 6) Deltas Hist (FS o fallback)
     d_hist_surface = clamp(hist.get("d_hist_surface", 0.0), -0.25, 0.25)
     d_hist_speed   = clamp(hist.get("d_hist_speed",   0.0), -0.25, 0.25)
     d_hist_month   = clamp(hist.get("d_hist_month",   0.0), -0.25, 0.25)
 
-    # 6) Score lineal + ajustes
+    # 7) Score lineal + ajustes
     sum_linear = (
         WEIGHTS["rank_norm"]   * d_rank_norm   +
         WEIGHTS["ytd"]         * d_ytd         +
@@ -692,11 +788,13 @@ def matchup():
     return jsonify({
         "ok": True,
         "prob_player": prob_player,
-        "surface": hist.get("surface"),
-        "speed_bucket": hist.get("speed_bucket"),
+        "surface": hist.get("surface", surface_default),
+        "speed_bucket": hist.get("speed_bucket", speed_bucket_meta or "Medium"),
         "inputs": {
             "player": player, "opponent": opponent,
-            "player_id": p_id, "opponent_id": o_id,
+            # devolvemos ambos: el uuid (para FS) y el id SR original si vino
+            "player_id": p_uuid or p_id_in, "opponent_id": o_uuid or o_id_in,
+            "player_sr_id": p_sr_norm, "opponent_sr_id": o_sr_norm,
             "tournament": {"name": tname, "month": month},
             "years_back": years_back
         },
@@ -712,13 +810,15 @@ def matchup():
             }
         }
     })
-# ======== fin añadido /matchup ========
+# ======== fin /matchup (REEMPLAZO) ========
+
 
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
