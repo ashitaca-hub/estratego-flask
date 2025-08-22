@@ -34,11 +34,9 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     env:
-      # Secrets recomendados (backend): service_role
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY: ${{ secrets.SR_API_KEY }}
-      # Inputs del dispatch
       IN_PLAYER: ${{ github.event.inputs.player }}
       IN_OPPONENT: ${{ github.event.inputs.opponent }}
       IN_TOURN: ${{ github.event.inputs.tournament }}
@@ -69,7 +67,6 @@ jobs:
 
       - name: Wait for app
         run: |
-          # Intentamos el POST hasta 30s para confirmar que está arriba
           for i in $(seq 1 30); do
             curl -fsS -X POST http://127.0.0.1:8080/matchup \
               -H "Content-Type: application/json" \
@@ -81,83 +78,58 @@ jobs:
         run: |
           PAYLOAD=$(jq -n --arg tn "${IN_TOURN:-Cincinnati}" --argjson mo ${IN_MONTH:-8} --argjson yr ${IN_YEARS:-4} \
                      '{tournament:{name:$tn,month:$mo}, years_back:$yr}')
-          echo "== Payload básico =="
-          echo "$PAYLOAD" | jq .
-
-          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup \
-                   -H "Content-Type: application/json" -d "$PAYLOAD")
-          echo "== Respuesta =="
-          echo "$RESP" | jq .
-
-          # Asserts mínimos
+          echo "== Payload básico ==" && echo "$PAYLOAD" | jq .
+          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+          echo "== Respuesta ==" && echo "$RESP" | jq .
           echo "$RESP" | jq -e '.ok == true' >/dev/null
           echo "$RESP" | jq -e 'has("prob_player")' >/dev/null
 
-      - name: Smoke avanzado (IDs SR o resolución por nombre vía Supabase)
+      - name: Smoke avanzado (IDs SR o nombres → UUID por Supabase)
+        if: ${{ env.IN_PLAYER != '' && env.IN_OPPONENT != '' }}
         env:
           PLAYER: ${{ env.IN_PLAYER }}
           OPPONENT: ${{ env.IN_OPPONENT }}
-        if: ${{ env.IN_PLAYER != '' && env.IN_OPPONENT != '' }}
         run: |
           set -e
-          # Construimos payload base
           TN="${IN_TOURN:-Cincinnati}"
           MO=${IN_MONTH:-8}
           YR=${IN_YEARS:-4}
 
-          mk_payload_sr () {
+          mk_payload () {
             jq -n \
               --arg p "$1" --arg o "$2" --arg tn "$TN" --argjson mo $MO --argjson yr $YR \
               '{player_id:$p, opponent_id:$o, tournament:{name:$tn,month:$mo}, years_back:$yr}'
           }
 
-          mk_payload_uuid () {
-            jq -n \
-              --arg p "$1" --arg o "$2" --arg tn "$TN" --argjson mo $MO --argjson yr $YR \
-              '{player_id:$p, opponent_id:$o, tournament:{name:$tn,month:$mo}, years_back:$yr}'
-          }
-
-          # Caso 1: si ambos inputs ya son sr:competitor:*
           if [[ "$PLAYER" == sr:competitor:* && "$OPPONENT" == sr:competitor:* ]]; then
-            PAYLOAD=$(mk_payload_sr "$PLAYER" "$OPPONENT")
+            PAYLOAD=$(mk_payload "$PLAYER" "$OPPONENT")
           else
-            # Caso 2: resolución por nombre -> UUID via Supabase (requiere secrets URL/KEY)
             if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
-              echo "::warning::No SUPABASE_URL/KEY. Saltamos resolución por nombre."
+              echo "::warning::Sin SUPABASE_URL/KEY; no se puede resolver por nombre. Saltando paso avanzado."
               exit 0
             fi
 
-            # Función para buscar UUID por nombre (ilike)
+            encode_uri () { printf '%s' "$1" | jq -sRr @uri; }
+
             find_uuid () {
               local NAME="$1"
-              # Ojo con el * del ilike: necesitamos url-encode
-              local NAME_Q
-              NAME_Q=$(python - <<PY
-import urllib.parse, os
-print(urllib.parse.quote(os.environ['NAME']))
-PY
-)
+              local NAME_Q; NAME_Q=$(encode_uri "$NAME")
               curl -sS "${SUPABASE_URL}/rest/v1/players?name=ilike.*${NAME_Q}*&select=player_id,name&limit=1" \
-                -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" | jq -r '.[0].player_id // empty'
+                -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
+                | jq -r '.[0].player_id // empty'
             }
 
-            P_UUID=$(NAME="$PLAYER" find_uuid)
-            O_UUID=$(NAME="$OPPONENT" find_uuid)
+            P_UUID=$(find_uuid "$PLAYER")
+            O_UUID=$(find_uuid "$OPPONENT")
             if [ -z "$P_UUID" ] || [ -z "$O_UUID" ]; then
-              echo "::warning::No se pudieron resolver UUIDs por nombre. Saltamos prueba avanzada."
+              echo "::warning::No se pudieron resolver UUIDs por nombre. Saltando paso avanzado."
               exit 0
             fi
-            PAYLOAD=$(mk_payload_uuid "$P_UUID" "$O_UUID")
+            PAYLOAD=$(mk_payload "$P_UUID" "$O_UUID")
           fi
 
-          echo "== Payload avanzado =="
-          echo "$PAYLOAD" | jq .
-
-          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup \
-                   -H "Content-Type: application/json" -d "$PAYLOAD")
-          echo "== Respuesta avanzada =="
-          echo "$RESP" | jq .
-
-          # Asserts básicos
+          echo "== Payload avanzado ==" && echo "$PAYLOAD" | jq .
+          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+          echo "== Respuesta avanzada ==" && echo "$RESP" | jq .
           echo "$RESP" | jq -e '.ok == true' >/dev/null
           echo "$RESP" | jq -e 'has("prob_player")' >/dev/null
