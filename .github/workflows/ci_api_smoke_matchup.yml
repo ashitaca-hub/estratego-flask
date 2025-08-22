@@ -1,0 +1,63 @@
+name: API smoke: /matchup
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "main.py"
+      - "services/**"
+      - "utils/**"
+      - ".github/workflows/ci_api_smoke_matchup.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      # Opcionales: si los pones, el endpoint intentará llamar a Supabase.
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SR_API_KEY: ${{ secrets.SR_API_KEY }}
+      FLASK_ENV: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install flask requests; fi
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Start app on :8080
+        run: |
+          # Arranca tu Flask app sin bloquear
+          nohup python -c "from main import app; app.run(host='127.0.0.1', port=8080)" >/dev/null 2>&1 &
+          # Espera a que esté arriba (máx 30s)
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/ && break || true
+            sleep 1
+          done || { echo 'App did not start in time'; exit 1; }
+
+      - name: Smoke call to /matchup (no IDs → no SR; FS hará fallback si falla)
+        run: |
+          PAYLOAD='{"tournament":{"name":"Cincinnati","month":8},"years_back":4}'
+          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+          echo "$RESP" | jq .
+          # Validaciones mínimas
+          echo "$RESP" | jq -e '.ok == true' >/dev/null
+          echo "$RESP" | jq -e 'has("prob_player")' >/dev/null
+
+      - name: Optional smoke with Supabase IDs (solo si tienes datos reales)
+        if: ${{ env.SUPABASE_URL != '' && env.SUPABASE_KEY != '' }}
+        run: |
+          # Si no tienes UUIDs reales en tu DB, este paso puede fallar (y está bien). Manténlo opcional.
+          PAYLOAD='{"player_id": null, "opponent_id": null, "tournament":{"name":"Cincinnati","month":8},"years_back":4}'
+          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD" || true)
+          echo "$RESP" | jq .
