@@ -22,7 +22,7 @@ on:
       p2_name:
         description: "Nombre del Player 2 (si no pasas UUID). ILIKE '%nombre%'"
         required: false
-        default: "Alexander Zaverev"
+        default: "Alexander Zverev"
       run_smoke:
         description: "Probar /matchup tras mapear (true/false)"
         required: false
