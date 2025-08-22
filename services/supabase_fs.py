@@ -78,3 +78,37 @@ def tourney_meta_by_name_like(tname: str) -> dict:
         return rows[0] if rows else {}
     except Exception:
         return {}
+
+import urllib.parse
+
+def rest_get(table: str, params: dict, select="*"):
+    base = SUPABASE_URL.rstrip("/") + "/rest/v1/" + table
+    q = {"select": select}; q.update(params or {})
+    url = base + "?" + urllib.parse.urlencode(q, doseq=True)
+    r = requests.get(url, headers=HEADERS_SB, timeout=HTTP_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+def rest_patch(table: str, where: dict, payload: dict):
+    base = SUPABASE_URL.rstrip("/") + "/rest/v1/" + table
+    url = base + "?" + urllib.parse.urlencode(where, doseq=True)
+    h = HEADERS_SB.copy(); h["Prefer"] = "return=minimal"
+    r = requests.patch(url, headers=h, json=payload, timeout=HTTP_TIMEOUT)
+    r.raise_for_status()
+    return True
+
+def resolve_player_uuid_by_name(name: str) -> str | None:
+    if not name: return None
+    for table in ("players_min", "players"):
+        try:
+            rows = rest_get(table, {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
+            if rows: return rows[0]["player_id"]
+        except Exception:
+            continue
+    return None
+
+def attach_sr_id_to_uuid(player_uuid: str, sr_num: str) -> bool:
+    if not (player_uuid and sr_num): return False
+    rest_patch("players", {"player_id": f"eq.{player_uuid}"}, {"ext_sportradar_id": sr_num})
+    return True
+
