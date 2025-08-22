@@ -6,11 +6,11 @@ on:
       player:
         description: "Player (sr:competitor:ID) o nombre (opcional)"
         required: false
-        default:  "Alexander Zverev"
+        default:  "sr:competitor:225050"
       opponent:
         description: "Opponent (sr:competitor:ID) o nombre (opcional)"
         required: false
-        default:  "Carlos Alcaraz"
+        default:  "sr:competitor:407573"
       tournament:
         description: "Nombre torneo (por defecto Cincinnati)"
         required: false
