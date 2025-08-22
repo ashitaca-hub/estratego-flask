@@ -32,9 +32,9 @@ jobs:
   map-and-verify:
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}   # service_role connection string
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}   # para el smoke opcional
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}   # para el smoke opcional
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}   # https://<ref>.supabase.co
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}   # service_role (secreta)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}   # opcional (solo para smoke, no necesario aquí)
       SR_API_KEY: ${{ secrets.SR_API_KEY }}       # opcional
       P1_SRID: ${{ github.event.inputs.p1_srid }}
       P1_UUID: ${{ github.event.inputs.p1_uuid }}
@@ -45,118 +45,107 @@ jobs:
       RUN_SMOKE: ${{ github.event.inputs.run_smoke }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install psql + jq
+      - name: Prechecks
         run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client jq
-
-      - name: Map Player 1 (SRID -> UUID)
-        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+            echo "::error::Faltan secrets SUPABASE_URL/SUPABASE_KEY"; exit 1; fi
           if [ -z "$P1_SRID" ]; then
             echo "::error::p1_srid es obligatorio"; exit 1; fi
 
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-            -v SRID1="${P1_SRID}" -v UUID1="${P1_UUID}" -v NAME1="${P1_NAME}" -c "
-          DO \$\$
-          DECLARE
-            v_uuid uuid := NULLIF(:'UUID1','')::uuid;
-            v_name text := NULLIF(:'NAME1','');
-            v_srid text := NULLIF(:'SRID1','');
-          BEGIN
-            IF v_uuid IS NULL THEN
-              IF v_name IS NOT NULL THEN
-                SELECT player_id INTO v_uuid
-                FROM public.players
-                WHERE name ILIKE '%'||v_name||'%'
-                LIMIT 1;
-              END IF;
-            END IF;
+      - name: Install jq + curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-            IF v_uuid IS NULL THEN
-              RAISE EXCEPTION 'No se encontró Player 1 (uuid/name).';
-            END IF;
-            IF v_srid IS NULL THEN
-              RAISE EXCEPTION 'Falta SRID para Player 1.';
-            END IF;
+      - name: Helpers (functions)
+        id: helpers
+        run: |
+          cat > helpers.sh <<'SH'
+          set -e
 
-            -- limpiar usos previos del mismo SRID
-            UPDATE public.players
-              SET ext_sportradar_id = NULL
-            WHERE ext_sportradar_id = v_srid AND player_id <> v_uuid;
+          auth_headers() {
+            echo "-H" "apikey: ${SUPABASE_KEY}" "-H" "Authorization: Bearer ${SUPABASE_KEY}" "-H" "Content-Type: application/json"
+          }
 
-            -- asignar al jugador destino
-            UPDATE public.players
-              SET ext_sportradar_id = v_srid
-            WHERE player_id = v_uuid;
-          END
-          \$\$;"
+          encode_uri() { printf '%s' "$1" | jq -sRr @uri; }
 
-      - name: Map Player 2 (SRID -> UUID) si viene
+          find_uuid_by_name() {
+            local NAME="$1"
+            local NAME_Q; NAME_Q=$(encode_uri "$NAME")
+            curl -sS "${SUPABASE_URL}/rest/v1/players?name=ilike.*${NAME_Q}*&select=player_id,name&limit=1" \
+              $(auth_headers) | jq -r '.[0].player_id // empty'
+          }
+
+          clear_srid() {
+            local SRID="$1"
+            curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${SRID}" \
+              $(auth_headers) -H "Prefer: return=representation" \
+              -d '{"ext_sportradar_id": null}' >/dev/null
+          }
+
+          set_player_srid() {
+            local UUID="$1"
+            local SRID="$2"
+            curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?player_id=eq.${UUID}" \
+              $(auth_headers) -H "Prefer: return=representation" \
+              -d "{\"ext_sportradar_id\": \"${SRID}\"}" >/dev/null
+          }
+
+          verify_srid() {
+            local SRID="$1"
+            curl -sS "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${SRID}&select=name,player_id,ext_sportradar_id&limit=3" \
+              $(auth_headers) | jq .
+          }
+          SH
+          chmod +x helpers.sh
+
+      - name: Map Player 1 (SRID → UUID)
+        run: |
+          . ./helpers.sh
+          UUID="$P1_UUID"
+          if [ -z "$UUID" ] && [ -n "$P1_NAME" ]; then
+            UUID=$(find_uuid_by_name "$P1_NAME")
+          fi
+          if [ -z "$UUID" ]; then
+            echo "::error::No se encontró Player 1 (uuid o name)"; exit 1; fi
+
+          echo "Limpiando SRID en otros jugadores si existe..."
+          clear_srid "$P1_SRID"
+
+          echo "Asignando SRID ${P1_SRID} a ${UUID}..."
+          set_player_srid "$UUID" "$P1_SRID"
+
+          echo "Verificación Player 1:"
+          . ./helpers.sh; verify_srid "$P1_SRID"
+
+      - name: Map Player 2 (opcional)
         if: ${{ env.P2_SRID != '' || env.P2_UUID != '' || env.P2_NAME != '' }}
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-            -v SRID2="${P2_SRID}" -v UUID2="${P2_UUID}" -v NAME2="${P2_NAME}" -c "
-          DO \$\$
-          DECLARE
-            v_uuid uuid := NULLIF(:'UUID2','')::uuid;
-            v_name text := NULLIF(:'NAME2','');
-            v_srid text := NULLIF(:'SRID2','');
-          BEGIN
-            IF v_srid IS NULL THEN
-              RAISE EXCEPTION 'Falta SRID para Player 2.';
-            END IF;
-
-            IF v_uuid IS NULL THEN
-              IF v_name IS NOT NULL THEN
-                SELECT player_id INTO v_uuid
-                FROM public.players
-                WHERE name ILIKE '%'||v_name||'%'
-                LIMIT 1;
-              END IF;
-            END IF;
-
-            IF v_uuid IS NULL THEN
-              RAISE EXCEPTION 'No se encontró Player 2 (uuid/name).';
-            END IF;
-
-            UPDATE public.players
-              SET ext_sportradar_id = NULL
-            WHERE ext_sportradar_id = v_srid AND player_id <> v_uuid;
-
-            UPDATE public.players
-              SET ext_sportradar_id = v_srid
-            WHERE player_id = v_uuid;
-          END
-          \$\$;"
-
-      - name: Verify mapping
-        run: |
-          echo "== Player 1 =="
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-            SELECT name, player_id, ext_sportradar_id
-            FROM public.players
-            WHERE ext_sportradar_id = '${P1_SRID}'
-            LIMIT 3;
-          "
-          if [ -n "$P2_SRID" ]; then
-            echo "== Player 2 =="
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-              SELECT name, player_id, ext_sportradar_id
-              FROM public.players
-              WHERE ext_sportradar_id = '${P2_SRID}'
-              LIMIT 3;
-            "
+          . ./helpers.sh
+          if [ -z "$P2_SRID" ]; then
+            echo "::error::p2_srid requerido para Player 2"; exit 1; fi
+          UUID="$P2_UUID"
+          if [ -z "$UUID" ] && [ -n "$P2_NAME" ]; then
+            UUID=$(find_uuid_by_name "$P2_NAME")
           fi
+          if [ -z "$UUID" ]; then
+            echo "::error::No se encontró Player 2 (uuid o name)"; exit 1; fi
+
+          echo "Limpiando SRID en otros jugadores si existe..."
+          clear_srid "$P2_SRID"
+
+          echo "Asignando SRID ${P2_SRID} a ${UUID}..."
+          set_player_srid "$UUID" "$P2_SRID"
+
+          echo "Verificación Player 2:"
+          . ./helpers.sh; verify_srid "$P2_SRID"
 
       - name: (Opcional) Smoke /matchup con SR IDs
         if: ${{ env.RUN_SMOKE == 'true' }}
         run: |
-          # Arranca tu app Flask
+          # Arranca la app Flask en background
           nohup python -c "from main import app; app.run(host='127.0.0.1', port=8080)" >/dev/null 2>&1 &
-          # Espera hasta 30s probando el POST
+          # Espera a que arranque
           for i in $(seq 1 30); do
             curl -fsS -X POST http://127.0.0.1:8080/matchup \
               -H "Content-Type: application/json" \
@@ -164,20 +153,24 @@ jobs:
             sleep 1
           done || { echo 'App did not start in time'; exit 1; }
 
-          # Construye payload con sr:competitor:* usando los SRIDs dados
           P1_SR_FULL="sr:competitor:${P1_SRID}"
-          P2_SR_FULL=""
-          if [ -n "$P2_SRID" ]; then P2_SR_FULL="sr:competitor:${P2_SRID}"; fi
-
-          # Si no hay segundo SRID, repite el primero solo para probar camino
-          if [ -z "$P2_SR_FULL" ]; then P2_SR_FULL="$P1_SR_FULL"; fi
+          if [ -n "$P2_SRID" ]; then
+            P2_SR_FULL="sr:competitor:${P2_SRID}"
+          else
+            P2_SR_FULL="$P1_SR_FULL"
+          fi
 
           PAYLOAD=$(jq -n --arg p "$P1_SR_FULL" --arg o "$P2_SR_FULL" \
                     '{player_id:$p, opponent_id:$o, tournament:{name:"Cincinnati",month:8}, years_back:4}')
-
           echo "== Payload /matchup ==" && echo "$PAYLOAD" | jq .
+
           RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
           echo "== Respuesta /matchup ==" && echo "$RESP" | jq .
+
+          # Comprobar que el handler ya devuelve UUIDs (se mapeó SR->UUID)
+          echo "$RESP" | jq -e '.inputs.player_id|type=="string" and (.inputs.player_id|startswith("sr:")|not)' >/dev/null || \
+            echo "::warning::inputs.player_id sigue siendo SR; revisa que el SRID esté asignado en players.ext_sportradar_id."
+
 
           # Comprobar que el handler ya devuelve UUIDs (quiere decir que mapeó SR->UUID)
           echo "$RESP" | jq -e '.inputs.player_id|type=="string" and (.inputs.player_id|startswith("sr:")|not)' >/dev/null || \
