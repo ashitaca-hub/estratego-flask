@@ -7,7 +7,7 @@ on:
         description: "SR competitor number del Player 1 (ej. 225050)"
         required: true
       p1_uuid:
-        description: "UUID del Player 1 (si lo sabes). Si no, usa p1_name o deja que lo deduzca con SR_API_KEY"
+        description: "UUID del Player 1 (si lo sabes). Si no, usa p1_name o autodetección con SR_API_KEY"
         required: false
       p1_name:
         description: "Nombre del Player 1 en tu DB (ILIKE '%nombre%')"
@@ -16,7 +16,7 @@ on:
         description: "SR competitor number del Player 2 (ej. 407573)"
         required: false
       p2_uuid:
-        description: "UUID del Player 2 (si lo sabes). Si no, usa p2_name o deja que lo deduzca con SR_API_KEY"
+        description: "UUID del Player 2 (si lo sabes). Si no, usa p2_name o autodetección con SR_API_KEY"
         required: false
       p2_name:
         description: "Nombre del Player 2 en tu DB (ILIKE '%nombre%')"
@@ -57,21 +57,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Funciones auxiliares
+      - name: Funciones auxiliares (URLs seguras con --data-urlencode)
         shell: bash
         run: |
           set -euo pipefail
           cat > utils.sh <<'SH'
           set -euo pipefail
-          enc() { printf '%s' "$1" | jq -sRr @uri; }
+          BASE="${SUPABASE_URL%/}"
 
-          # Busca hasta 5 candidatos por nombre
+          # Busca hasta 5 candidatos por nombre (usa encoding robusto)
           find_candidates() {
-            local NAME="$1"; local NAME_Q; NAME_Q=$(enc "$NAME")
-            curl -sS "${SUPABASE_URL}/rest/v1/players?name=ilike.*${NAME_Q}*&select=player_id,name&limit=5" \
+            local NAME="$1"
+            curl -sS -G "${BASE}/rest/v1/players" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
-              -H "Content-Type: application/json"
+              -H "Content-Type: application/json" \
+              --data-urlencode "name=ilike.*${NAME}*" \
+              --data-urlencode "select=player_id,name" \
+              --data-urlencode "limit=5"
           }
 
           # Intenta deducir nombre desde Sportradar (si hay API key)
@@ -82,18 +85,21 @@ jobs:
             curl -sS "$URL" | jq -r '.competitor.name // empty'
           }
 
-          # Asigna SRID a UUID (y limpia colisiones)
-          map_srid_to_uuid() {
-            local SRID="$1"; local UUID="$2"
-            # limpiar usos previos
-            curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${SRID}" \
+          # Limpia colisiones de un SRID dado
+          clear_srid() {
+            local SRID="$1"
+            curl -sS -X PATCH "${BASE}/rest/v1/players?ext_sportradar_id=eq.${SRID}" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: application/json" \
               -H "Prefer: return=representation" \
               -d '{"ext_sportradar_id": null}' > /dev/null
-            # asignar
-            curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?player_id=eq.${UUID}" \
+          }
+
+          # Asigna SRID a un UUID
+          set_player_srid() {
+            local UUID="$1"; local SRID="$2"
+            curl -sS -X PATCH "${BASE}/rest/v1/players?player_id=eq.${UUID}" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: application/json" \
@@ -101,12 +107,16 @@ jobs:
               -d "{\"ext_sportradar_id\": \"${SRID}\"}" > /dev/null
           }
 
+          # Verifica asignación por SRID (usa --data-urlencode)
           verify_srid() {
             local SRID="$1"
-            curl -sS "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${SRID}&select=name,player_id,ext_sportradar_id&limit=3" \
+            curl -sS -G "${BASE}/rest/v1/players" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
-              -H "Content-Type: application/json" | jq .
+              -H "Content-Type: application/json" \
+              --data-urlencode "ext_sportradar_id=eq.${SRID}" \
+              --data-urlencode "select=name,player_id,ext_sportradar_id" \
+              --data-urlencode "limit=3" | jq .
           }
           SH
           chmod +x utils.sh
@@ -119,13 +129,15 @@ jobs:
           UUID="${P1_UUID:-}"
           NAME_IN="${P1_NAME:-}"
 
+          # 1) Si no hay UUID, intenta deducir el nombre
           if [ -z "$UUID" ]; then
             if [ -z "$NAME_IN" ]; then
               NAME_IN="$(name_from_sr "$P1_SRID" || true)"
               if [ -n "$NAME_IN" ]; then
-                echo "::notice::Nombre Player 1 desde Sportradar: $NAME_IN"
+                echo "::notice::Nombre Player 1 según Sportradar: $NAME_IN"
               fi
             fi
+            # 2) Buscar candidatos en tu DB por nombre (ILIKE)
             if [ -n "$NAME_IN" ]; then
               CANDS="$(find_candidates "$NAME_IN")"
               echo "== Candidatos Player 1 en DB =="; echo "$CANDS" | jq .
@@ -136,7 +148,8 @@ jobs:
           if [ -z "$UUID" ]; then
             echo "::error::No se encontró Player 1 (ni uuid ni name coincidente). Pasa p1_name tal como está en tu DB o p1_uuid."; exit 1; fi
 
-          map_srid_to_uuid "$P1_SRID" "$UUID"
+          clear_srid "$P1_SRID"
+          set_player_srid "$UUID" "$P1_SRID"
           echo "== Verificación Player 1 =="; verify_srid "$P1_SRID"
 
       - name: Map Player 2 (opcional, con autodetección)
@@ -155,7 +168,7 @@ jobs:
             if [ -z "$NAME_IN" ]; then
               NAME_IN="$(name_from_sr "$P2_SRID" || true)"
               if [ -n "$NAME_IN" ]; then
-                echo "::notice::Nombre Player 2 desde Sportradar: $NAME_IN"
+                echo "::notice::Nombre Player 2 según Sportradar: $NAME_IN"
               fi
             fi
             if [ -n "$NAME_IN" ]; then
@@ -168,7 +181,8 @@ jobs:
           if [ -z "$UUID" ]; then
             echo "::error::No se encontró Player 2 (ni uuid ni name coincidente). Pasa p2_name tal como está en tu DB o p2_uuid."; exit 1; fi
 
-          map_srid_to_uuid "$P2_SRID" "$UUID"
+          clear_srid "$P2_SRID"
+          set_player_srid "$UUID" "$P2_SRID"
           echo "== Verificación Player 2 =="; verify_srid "$P2_SRID"
 
       - name: (Opcional) Smoke /matchup con SR IDs
