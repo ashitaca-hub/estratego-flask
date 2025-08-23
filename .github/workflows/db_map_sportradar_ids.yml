@@ -10,9 +10,8 @@ on:
         description: "UUID del Player 1 (si lo sabes). Si no, usa p1_name"
         required: false
       p1_name:
-        description: "Nombre del Player 1 (si no pasas UUID). Se usa ILIKE '%nombre%'"
+        description: "Nombre del Player 1 (si no pasas UUID). ILIKE '%nombre%'"
         required: false
-        default: "Carlos Alcaraz"
       p2_srid:
         description: "SR competitor number del Player 2 (ej. 407573)"
         required: false
@@ -22,7 +21,6 @@ on:
       p2_name:
         description: "Nombre del Player 2 (si no pasas UUID). ILIKE '%nombre%'"
         required: false
-        default: "Alexander Zverev"
       run_smoke:
         description: "Probar /matchup tras mapear (true/false)"
         required: false
@@ -34,8 +32,6 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}   # https://<ref>.supabase.co
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}   # service_role (secreta)
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}   # opcional (solo para smoke, no necesario aquí)
-      SR_API_KEY: ${{ secrets.SR_API_KEY }}       # opcional
       P1_SRID: ${{ github.event.inputs.p1_srid }}
       P1_UUID: ${{ github.event.inputs.p1_uuid }}
       P1_NAME: ${{ github.event.inputs.p1_name }}
@@ -47,105 +43,110 @@ jobs:
     steps:
       - name: Prechecks
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
-            echo "::error::Faltan secrets SUPABASE_URL/SUPABASE_KEY"; exit 1; fi
-          if [ -z "$P1_SRID" ]; then
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_KEY:-}" ]; then
+            echo "::error::Faltan secrets SUPABASE_URL y/o SUPABASE_KEY (service_role)"; exit 1; fi
+          if [ -z "${P1_SRID:-}" ]; then
             echo "::error::p1_srid es obligatorio"; exit 1; fi
 
-      - name: Install jq + curl
+      - name: Install jq + psql (psql solo por si lo necesitas luego)
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq postgresql-client
 
-      - name: Helpers (functions)
-        id: helpers
+      - name: Resolver UUID por nombre (función bash)
+        shell: bash
         run: |
-          cat > helpers.sh <<'SH'
-          set -e
-
-          auth_headers() {
-            echo "-H" "apikey: ${SUPABASE_KEY}" "-H" "Authorization: Bearer ${SUPABASE_KEY}" "-H" "Content-Type: application/json"
-          }
-
-          encode_uri() { printf '%s' "$1" | jq -sRr @uri; }
-
-          find_uuid_by_name() {
-            local NAME="$1"
-            local NAME_Q; NAME_Q=$(encode_uri "$NAME")
-            curl -sS "${SUPABASE_URL}/rest/v1/players?name=ilike.*${NAME_Q}*&select=player_id,name&limit=1" \
-              $(auth_headers) | jq -r '.[0].player_id // empty'
-          }
-
-          clear_srid() {
-            local SRID="$1"
-            curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${SRID}" \
-              $(auth_headers) -H "Prefer: return=representation" \
-              -d '{"ext_sportradar_id": null}' >/dev/null
-          }
-
-          set_player_srid() {
-            local UUID="$1"
-            local SRID="$2"
-            curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?player_id=eq.${UUID}" \
-              $(auth_headers) -H "Prefer: return=representation" \
-              -d "{\"ext_sportradar_id\": \"${SRID}\"}" >/dev/null
-          }
-
-          verify_srid() {
-            local SRID="$1"
-            curl -sS "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${SRID}&select=name,player_id,ext_sportradar_id&limit=3" \
-              $(auth_headers) | jq .
-          }
+          set -euo pipefail
+          cat > find_uuid.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          NAME="$1"
+          NAME_Q=$(printf '%s' "$NAME" | jq -sRr @uri)
+          curl -sS "${SUPABASE_URL}/rest/v1/players?name=ilike.*${NAME_Q}*&select=player_id,name&limit=1" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+          | jq -r '.[0].player_id // empty'
           SH
-          chmod +x helpers.sh
+          chmod +x find_uuid.sh
 
       - name: Map Player 1 (SRID → UUID)
+        shell: bash
         run: |
-          . ./helpers.sh
-          UUID="$P1_UUID"
-          if [ -z "$UUID" ] && [ -n "$P1_NAME" ]; then
-            UUID=$(find_uuid_by_name "$P1_NAME")
+          set -euo pipefail
+          UUID="${P1_UUID:-}"
+          if [ -z "$UUID" ] && [ -n "${P1_NAME:-}" ]; then
+            UUID=$(./find_uuid.sh "$P1_NAME" || true)
           fi
           if [ -z "$UUID" ]; then
             echo "::error::No se encontró Player 1 (uuid o name)"; exit 1; fi
 
-          echo "Limpiando SRID en otros jugadores si existe..."
-          clear_srid "$P1_SRID"
+          # Limpiar usos previos del mismo SRID
+          curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${P1_SRID}" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=representation" \
+            -d '{"ext_sportradar_id": null}' > /dev/null
 
-          echo "Asignando SRID ${P1_SRID} a ${UUID}..."
-          set_player_srid "$UUID" "$P1_SRID"
+          # Asignar SRID al jugador destino
+          curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?player_id=eq.${UUID}" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=representation" \
+            -d "{\"ext_sportradar_id\": \"${P1_SRID}\"}" > /dev/null
 
-          echo "Verificación Player 1:"
-          . ./helpers.sh; verify_srid "$P1_SRID"
+          # Verificación
+          echo "== Verificación Player 1 =="
+          curl -sS "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${P1_SRID}&select=name,player_id,ext_sportradar_id&limit=3" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" | jq .
 
       - name: Map Player 2 (opcional)
         if: ${{ env.P2_SRID != '' || env.P2_UUID != '' || env.P2_NAME != '' }}
+        shell: bash
         run: |
-          . ./helpers.sh
-          if [ -z "$P2_SRID" ]; then
+          set -euo pipefail
+          if [ -z "${P2_SRID:-}" ]; then
             echo "::error::p2_srid requerido para Player 2"; exit 1; fi
-          UUID="$P2_UUID"
-          if [ -z "$UUID" ] && [ -n "$P2_NAME" ]; then
-            UUID=$(find_uuid_by_name "$P2_NAME")
+          UUID="${P2_UUID:-}"
+          if [ -z "$UUID" ] && [ -n "${P2_NAME:-}" ]; then
+            UUID=$(./find_uuid.sh "$P2_NAME" || true)
           fi
           if [ -z "$UUID" ]; then
             echo "::error::No se encontró Player 2 (uuid o name)"; exit 1; fi
 
-          echo "Limpiando SRID en otros jugadores si existe..."
-          clear_srid "$P2_SRID"
+          curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${P2_SRID}" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=representation" \
+            -d '{"ext_sportradar_id": null}' > /dev/null
 
-          echo "Asignando SRID ${P2_SRID} a ${UUID}..."
-          set_player_srid "$UUID" "$P2_SRID"
+          curl -sS -X PATCH "${SUPABASE_URL}/rest/v1/players?player_id=eq.${UUID}" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=representation" \
+            -d "{\"ext_sportradar_id\": \"${P2_SRID}\"}" > /dev/null
 
-          echo "Verificación Player 2:"
-          . ./helpers.sh; verify_srid "$P2_SRID"
+          echo "== Verificación Player 2 =="
+          curl -sS "${SUPABASE_URL}/rest/v1/players?ext_sportradar_id=eq.${P2_SRID}&select=name,player_id,ext_sportradar_id&limit=3" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" | jq .
 
       - name: (Opcional) Smoke /matchup con SR IDs
         if: ${{ env.RUN_SMOKE == 'true' }}
+        shell: bash
         run: |
+          set -euo pipefail
           # Arranca la app Flask en background
           nohup python -c "from main import app; app.run(host='127.0.0.1', port=8080)" >/dev/null 2>&1 &
-          # Espera a que arranque
+          # Espera hasta que responda a /matchup
           for i in $(seq 1 30); do
             curl -fsS -X POST http://127.0.0.1:8080/matchup \
               -H "Content-Type: application/json" \
@@ -153,12 +154,10 @@ jobs:
             sleep 1
           done || { echo 'App did not start in time'; exit 1; }
 
+          # Construye payload con sr:competitor:* usando los SRIDs dados
           P1_SR_FULL="sr:competitor:${P1_SRID}"
-          if [ -n "$P2_SRID" ]; then
-            P2_SR_FULL="sr:competitor:${P2_SRID}"
-          else
-            P2_SR_FULL="$P1_SR_FULL"
-          fi
+          P2_SR_FULL="$P1_SR_FULL"
+          if [ -n "${P2_SRID:-}" ]; then P2_SR_FULL="sr:competitor:${P2_SRID}"; fi
 
           PAYLOAD=$(jq -n --arg p "$P1_SR_FULL" --arg o "$P2_SR_FULL" \
                     '{player_id:$p, opponent_id:$o, tournament:{name:"Cincinnati",month:8}, years_back:4}')
@@ -170,8 +169,3 @@ jobs:
           # Comprobar que el handler ya devuelve UUIDs (se mapeó SR->UUID)
           echo "$RESP" | jq -e '.inputs.player_id|type=="string" and (.inputs.player_id|startswith("sr:")|not)' >/dev/null || \
             echo "::warning::inputs.player_id sigue siendo SR; revisa que el SRID esté asignado en players.ext_sportradar_id."
-
-
-          # Comprobar que el handler ya devuelve UUIDs (quiere decir que mapeó SR->UUID)
-          echo "$RESP" | jq -e '.inputs.player_id|type=="string" and (.inputs.player_id|startswith("sr:")|not)' >/dev/null || \
-            echo "::warning::inputs.player_id sigue siendo SR; revisa que el SRID esté asignado a un jugador en la tabla players."
