@@ -605,7 +605,11 @@ except NameError:
 from flask import request, jsonify
 import re, requests, urllib.parse
 
-UUID_RE = re.compile(r"^[0-9a-fA-F-]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+# Tablas/vistas canónicas (IMPORTANTE)
+PLAYER_TABLE_SRID = "players_lookup"  # (public) -> player_id (int), name, ext_sportradar_id (apunta a estratego_v1.players)
+PLAYER_TABLE_NAME = "players_min"     # (public) -> player_id (UUID), name
+
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
 
 def _rest_get(table: str, params: dict, select: str = "*"):
     """GET sencillo contra PostgREST usando las credenciales de FS (Service Role recomendado)."""
@@ -625,32 +629,41 @@ def _normalize_sr_id(val: str | None) -> str | None:
     s = str(val)
     if s.startswith("sr:"):
         return s
-    # si viene '12345'
     return f"sr:competitor:{s}"
 
+def _resolve_player_uuid_by_name(name: str | None) -> str | None:
+    """Busca primero en public.players_min (UUID canónico por nombre)."""
+    if not name:
+        return None
+    try:
+        rows = _rest_get(PLAYER_TABLE_NAME, {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
+        if rows:
+            return rows[0]["player_id"]
+    except Exception:
+        pass
+    return None
+
 def _resolve_player_uuid_by_sr(sr_id: str | None) -> str | None:
-    """Mapea Sportradar ID -> UUID de tu tabla players (usa ext_sportradar_id)."""
+    """
+    Mapea Sportradar ID -> UUID canónico:
+      - 1º: public.players_lookup por ext_sportradar_id (SRID -> name)
+      - 2º: public.players_min por name (-> UUID)
+      - 3º: fallback al player_id entero de players_lookup (último recurso)
+    """
     if not sr_id:
         return None
     short = sr_id.split(":")[-1]  # 'sr:competitor:1234' -> '1234'
-    rows = _rest_get("players", {"ext_sportradar_id": f"eq.{short}", "limit": 1}, select="player_id,name,ext_sportradar_id")
-    return rows[0]["player_id"] if rows else None
-
-def _resolve_player_uuid_by_name(name: str | None) -> str | None:
-    """Búsqueda laxa por nombre. Si tienes view 'players_min', prueba primero ahí."""
-    if not name:
+    rows = _rest_get(PLAYER_TABLE_SRID,
+                     {"ext_sportradar_id": f"eq.{short}", "limit": 1},
+                     select="player_id,name,ext_sportradar_id")
+    if not rows:
         return None
-    for table in ("players_min", "players"):
-        try:
-            rows = _rest_get(table, {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
-            if rows:
-                return rows[0]["player_id"]
-        except Exception:
-            continue
-    return None
+    nm = rows[0]["name"]
+    u = _resolve_player_uuid_by_name(nm)
+    return u or rows[0]["player_id"]  # si no hay UUID en players_min, devolvemos el int (no ideal, pero no rompe)
 
 def _resolve_uuid(pid, pname, psrid) -> str | None:
-    """Devuelve player_uuid con prioridad: uuid explícito > sr_id > nombre."""
+    """Devuelve el ID canónico con prioridad: UUID explícito > SRID > nombre."""
     if pid and UUID_RE.match(str(pid)):
         return pid
     sr = psrid or (pid if (pid and str(pid).startswith("sr:")) else None)
@@ -692,7 +705,7 @@ def matchup():
     player = body.get("player")
     opponent = body.get("opponent")
 
-    # 0) Resolver UUIDs contra tu DB (para el FS)
+    # 0) Resolver IDs canónicos contra tu DB (para el FS)
     p_uuid = _resolve_uuid(p_id_in, player, p_sr_id)
     o_uuid = _resolve_uuid(o_id_in, opponent, o_sr_id)
 
@@ -708,7 +721,7 @@ def matchup():
     surface_default = (meta.get("surface") or "hard").lower()
     speed_bucket_meta = meta.get("speed_bucket")  # puede venir de la RPC (si usas la vista _fs)
 
-    # 2) ΔHist desde FS si tenemos ambos UUIDs
+    # 2) ΔHist desde FS si tenemos ambos IDs (UUID ideal; si fuera int, puedes adaptar FS para soportarlo)
     hist = {}
     if p_uuid and o_uuid:
         try:
@@ -792,7 +805,7 @@ def matchup():
         "speed_bucket": hist.get("speed_bucket", speed_bucket_meta or "Medium"),
         "inputs": {
             "player": player, "opponent": opponent,
-            # devolvemos ambos: el uuid (para FS) y el id SR original si vino
+            # devolvemos ambos: el id canónico (UUID ideal) y el id SR original si vino
             "player_id": p_uuid or p_id_in, "opponent_id": o_uuid or o_id_in,
             "player_sr_id": p_sr_norm, "opponent_sr_id": o_sr_norm,
             "tournament": {"name": tname, "month": month},
@@ -814,10 +827,12 @@ def matchup():
 
 
 
+
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
 
   
+
 
 
 
