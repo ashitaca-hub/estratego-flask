@@ -6,8 +6,8 @@ on:
       p1_srid:
         description: "SR competitor number del Player 1 (ej. 225050)"
         required: true
-      p1_uuid:
-        description: "UUID del Player 1 (si lo sabes). Si no, usa p1_name o autodetección con SR_API_KEY"
+      p1_id:
+        description: "player_id INTEGER del Player 1 (si lo sabes). Si no, usa p1_name"
         required: false
       p1_name:
         description: "Nombre del Player 1 en tu DB (ILIKE '%nombre%')"
@@ -15,8 +15,8 @@ on:
       p2_srid:
         description: "SR competitor number del Player 2 (ej. 407573)"
         required: false
-      p2_uuid:
-        description: "UUID del Player 2 (si lo sabes). Si no, usa p2_name o autodetección con SR_API_KEY"
+      p2_id:
+        description: "player_id INTEGER del Player 2 (si lo sabes). Si no, usa p2_name"
         required: false
       p2_name:
         description: "Nombre del Player 2 en tu DB (ILIKE '%nombre%')"
@@ -30,37 +30,34 @@ jobs:
   map-and-verify:
     runs-on: ubuntu-latest
     env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}   # https://<ref>.supabase.co
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}   # service_role (secreta)
-      SR_API_KEY: ${{ secrets.SR_API_KEY }}       # opcional (para deducir nombre desde Sportradar)
-      SR_BASE: https://api.sportradar.com/tennis/trial/v3/en
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       P1_SRID: ${{ github.event.inputs.p1_srid }}
-      P1_UUID: ${{ github.event.inputs.p1_uuid }}
+      P1_ID:   ${{ github.event.inputs.p1_id }}
       P1_NAME: ${{ github.event.inputs.p1_name }}
       P2_SRID: ${{ github.event.inputs.p2_srid }}
-      P2_UUID: ${{ github.event.inputs.p2_uuid }}
+      P2_ID:   ${{ github.event.inputs.p2_id }}
       P2_NAME: ${{ github.event.inputs.p2_name }}
       RUN_SMOKE: ${{ github.event.inputs.run_smoke }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Prechecks
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_KEY:-}" ]; then
-            echo "::error::Faltan secrets SUPABASE_URL y/o SUPABASE_KEY (service_role)"; exit 1; fi
-          if [ -z "${P1_SRID:-}" ]; then
-            echo "::error::p1_srid es obligatorio"; exit 1; fi
+          [ -n "${SUPABASE_URL:-}" ] || { echo "::error::SUPABASE_URL missing"; exit 1; }
+          [ -n "${SUPABASE_KEY:-}" ] || { echo "::error::SUPABASE_KEY missing"; exit 1; }
+          [ -n "${P1_SRID:-}" ] || { echo "::error::p1_srid missing"; exit 1; }
 
-      - name: Install jq
+      - name: Install jq + python (para smoke)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get update && sudo apt-get install -y jq
+          sudo apt-get install -y python3-pip || true
+          python3 -m pip install --upgrade pip || true
 
-      - name: Funciones auxiliares (URLs seguras con --data-urlencode)
+      - name: Helpers (RPC + vista public.players_lookup)
         shell: bash
         run: |
           set -euo pipefail
@@ -68,160 +65,100 @@ jobs:
           set -euo pipefail
           BASE="${SUPABASE_URL%/}"
 
+          # RPC: búsqueda por nombre (estratego_v1.players)
           find_candidates() {
             local NAME="$1"
-            curl -sS -G "${BASE}/rest/v1/players" \
+            curl -sS -X POST "${BASE}/rest/v1/rpc/find_players_by_name" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: application/json" \
-              --data-urlencode "name=ilike.*${NAME}*" \
-              --data-urlencode "select=player_id,name" \
-              --data-urlencode "limit=5"
+              -d "{\"p_name\": \"${NAME}\"}"
           }
 
-          name_from_sr() {
-            local SRID="$1"
-            if [ -z "${SR_API_KEY:-}" ]; then echo ""; return 0; fi
-            local URL="${SR_BASE}/competitors/sr:competitor:${SRID}/profile.json?api_key=${SR_API_KEY}"
-            curl -sS "$URL" | jq -r '.competitor.name // empty'
-          }
-
-          clear_srid() {
-            local SRID="$1"
-            curl -sS -X PATCH "${BASE}/rest/v1/players?ext_sportradar_id=eq.${SRID}" \
+          # RPC: mapear SRID -> player_id (INTEGER)
+          map_srid_to_id() {
+            local ID="$1"; local SRID="$2"
+            # Enviar ID como número, no como string
+            curl -sS -X POST "${BASE}/rest/v1/rpc/map_sportradar_id" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: application/json" \
-              -H "Prefer: return=representation" \
-              -d '{"ext_sportradar_id": null}' > /dev/null
+              -d "{\"p_id\": ${ID}, \"p_srid\": \"${SRID}\"}" >/dev/null
           }
 
-          set_player_srid() {
-            local UUID="$1"; local SRID="$2"
-            curl -sS -X PATCH "${BASE}/rest/v1/players?player_id=eq.${UUID}" \
-              -H "apikey: ${SUPABASE_KEY}" \
-              -H "Authorization: Bearer ${SUPABASE_KEY}" \
-              -H "Content-Type: application/json" \
-              -H "Prefer: return=representation" \
-              -d "{\"ext_sportradar_id\": \"${SRID}\"}" > /dev/null
-          }
-
+          # Verificación en vista pública
           verify_srid() {
             local SRID="$1"
-            curl -sS -G "${BASE}/rest/v1/players" \
+            curl -sS -G "${BASE}/rest/v1/players_lookup" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: application/json" \
               --data-urlencode "ext_sportradar_id=eq.${SRID}" \
-              --data-urlencode "select=name,player_id,ext_sportradar_id" \
+              --data-urlencode "select=player_id,name,ext_sportradar_id" \
               --data-urlencode "limit=3" | jq .
           }
           SH
           chmod +x utils.sh
 
-      - name: Map Player 1 (SRID → UUID con autodetección)
+      - name: Map Player 1 (SRID → player_id INTEGER)
         shell: bash
         run: |
           set -euo pipefail
           . ./utils.sh
-          UUID="${P1_UUID:-}"
+          ID="${P1_ID:-}"
           NAME_IN="${P1_NAME:-}"
-
-          if [ -z "$UUID" ]; then
-            if [ -z "$NAME_IN" ]; then
-              NAME_IN="$(name_from_sr "$P1_SRID" || true)"
-              if [ -n "$NAME_IN" ]; then
-                echo "::notice::Nombre Player 1 según Sportradar: $NAME_IN"
-              fi
-            fi
-            if [ -n "$NAME_IN" ]; then
-              CANDS="$(find_candidates "$NAME_IN")"
-              echo "== Candidatos Player 1 en DB =="; echo "$CANDS" | jq .
-              UUID="$(echo "$CANDS" | jq -r '.[0].player_id // empty')"
-            fi
+          if [ -z "$ID" ]; then
+            [ -n "$NAME_IN" ] || { echo "::error::p1_name requerido si no pasas p1_id"; exit 1; }
+            CANDS="$(find_candidates "$NAME_IN")"
+            echo "== Candidatos P1 =="; echo "$CANDS" | jq .
+            ID="$(echo "$CANDS" | jq -r '.[0].player_id // empty')"
           fi
+          [[ "$ID" =~ ^[0-9]+$ ]] || { echo "::error::player_id de P1 debe ser INTEGER"; exit 1; }
 
-          if [ -z "$UUID" ]; then
-            echo "::error::No se encontró Player 1 (ni uuid ni name coincidente). Pasa p1_name tal como está en tu DB o p1_uuid."; exit 1; fi
+          map_srid_to_id "$ID" "$P1_SRID"
+          echo "== Verificación P1 =="; verify_srid "$P1_SRID"
 
-          clear_srid "$P1_SRID"
-          set_player_srid "$UUID" "$P1_SRID"
-          echo "== Verificación Player 1 =="; verify_srid "$P1_SRID"
-
-      - name: Map Player 2 (opcional, con autodetección)
-        if: ${{ env.P2_SRID != '' || env.P2_UUID != '' || env.P2_NAME != '' }}
+      - name: Map Player 2 (opcional)
+        if: ${{ env.P2_SRID != '' || env.P2_ID != '' || env.P2_NAME != '' }}
         shell: bash
         run: |
           set -euo pipefail
           . ./utils.sh
-          if [ -z "${P2_SRID:-}" ]; then
-            echo "::error::p2_srid requerido para Player 2"; exit 1; fi
-
-          UUID="${P2_UUID:-}"
+          [ -n "${P2_SRID:-}" ] || { echo "::error::p2_srid requerido"; exit 1; }
+          ID="${P2_ID:-}"
           NAME_IN="${P2_NAME:-}"
-
-          if [ -z "$UUID" ]; then
-            if [ -z "$NAME_IN" ]; then
-              NAME_IN="$(name_from_sr "$P2_SRID" || true)"
-              if [ -n "$NAME_IN" ]; then
-                echo "::notice::Nombre Player 2 según Sportradar: $NAME_IN"
-              fi
-            fi
-            if [ -n "$NAME_IN" ]; then
-              CANDS="$(find_candidates "$NAME_IN")"
-              echo "== Candidatos Player 2 en DB =="; echo "$CANDS" | jq .
-              UUID="$(echo "$CANDS" | jq -r '.[0].player_id // empty')"
-            fi
+          if [ -z "$ID" ]; then
+            [ -n "$NAME_IN" ] || { echo "::error::p2_name requerido si no pasas p2_id"; exit 1; }
+            CANDS="$(find_candidates "$NAME_IN")"
+            echo "== Candidatos P2 =="; echo "$CANDS" | jq .
+            ID="$(echo "$CANDS" | jq -r '.[0].player_id // empty')"
           fi
+          [[ "$ID" =~ ^[0-9]+$ ]] || { echo "::error::player_id de P2 debe ser INTEGER"; exit 1; }
 
-          if [ -z "$UUID" ]; then
-            echo "::error::No se encontró Player 2 (ni uuid ni name coincidente). Pasa p2_name tal como está en tu DB o p2_uuid."; exit 1; fi
+          map_srid_to_id "$ID" "$P2_SRID"
+          echo "== Verificación P2 =="; verify_srid "$P2_SRID"
 
-          clear_srid "$P2_SRID"
-          set_player_srid "$UUID" "$P2_SRID"
-          echo "== Verificación Player 2 =="; verify_srid "$P2_SRID"
-
-      # ======= SMOKE /matchup (instala Python + deps y arranca app) =======
-      - name: Setup Python (para smoke)
-        if: ${{ env.RUN_SMOKE == 'true' }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Instalar dependencias de la API (para smoke)
+      # (Opcional) Smoke /matchup si quieres validar fin-a-fin
+      - name: Setup & start API (smoke)
         if: ${{ env.RUN_SMOKE == 'true' }}
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install flask requests; fi
-          sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Arrancar app y esperar a que responda
-        if: ${{ env.RUN_SMOKE == 'true' }}
-        run: |
-          set -euo pipefail
-          nohup python -c "from main import app; app.run(host='127.0.0.1', port=8080)" >/dev/null 2>&1 &
-          # espera hasta 60s probando POST /matchup mínimo
+          python3 -m pip install -r requirements.txt || python3 -m pip install flask requests
+          nohup python3 -c "from main import app; app.run(host='127.0.0.1', port=8080)" >/dev/null 2>&1 &
           for i in $(seq 1 60); do
             curl -fsS -X POST http://127.0.0.1:8080/matchup \
               -H "Content-Type: application/json" \
               -d '{"tournament":{"name":"Cincinnati","month":8},"years_back":4}' >/dev/null 2>&1 && break || true
             sleep 1
           done
-          # si no arrancó, mostrar logs y fallar
-          if ! curl -fsS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d '{"tournament":{"name":"Cincinnati","month":8},"years_back":4}' >/dev/null 2>&1; then
-            echo "::error::La app no respondió en 60s. ¿exportas 'app' en main.py y tienes Flask instalado?"; exit 1
-          fi
 
       - name: (Smoke) POST /matchup con SR IDs
         if: ${{ env.RUN_SMOKE == 'true' }}
+        shell: bash
         run: |
           set -euo pipefail
           P1_SR_FULL="sr:competitor:${P1_SRID}"
-          if [ -n "${P2_SRID:-}" ]; then
-            P2_SR_FULL="sr:competitor:${P2_SRID}"
-          else
-            P2_SR_FULL="$P1_SR_FULL"
-          fi
+          P2_SR_FULL="$P1_SR_FULL"
+          if [ -n "${P2_SRID:-}" ]; then P2_SR_FULL="sr:competitor:${P2_SRID}"; fi
 
           PAYLOAD=$(jq -n --arg p "$P1_SR_FULL" --arg o "$P2_SR_FULL" \
                     '{player_id:$p, opponent_id:$o, tournament:{name:"Cincinnati",month:8}, years_back:4}')
@@ -230,6 +167,6 @@ jobs:
           RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
           echo "== Respuesta /matchup ==" && echo "$RESP" | jq .
 
-          # Comprobar mapeo SR->UUID (idealmente ya no devuelve 'sr:' en inputs.player_id)
-          echo "$RESP" | jq -e '.inputs.player_id|type=="string" and (.inputs.player_id|startswith("sr:")|not)' >/dev/null || \
-            echo "::warning::inputs.player_id sigue siendo SR; revisa que ext_sportradar_id esté asignado en players."
+          # Si tu backend ya resuelve SR -> player_id INTEGER, aquí no habrá 'sr:' (opcional)
+          # echo "$RESP" | jq -e '.inputs.player_id|type=="number"' >/dev/null || \
+          #   echo "::warning::inputs.player_id sigue siendo SR; revisa el handler /map."
