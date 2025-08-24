@@ -1,0 +1,39 @@
+name: db-fix-players-lookup
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "sql/migrations/2025_08_24_players_lookup_and_map_rpc_fix.sql"
+      - ".github/workflows/ci_db_fix_players_lookup.yml"
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}  # service_role
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check patch SQL exists
+        run: |
+          test -f sql/migrations/2025_08_24_players_lookup_and_map_rpc_fix.sql || \
+            (echo "Patch SQL missing" && exit 1)
+
+      - name: Install psql
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Apply patch
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -f sql/migrations/2025_08_24_players_lookup_and_map_rpc_fix.sql
+
+      - name: Verify RPCs & view
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select proname, proargtypes from pg_proc where proname in ('find_players_by_name','map_sportradar_id');"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select * from public.players_lookup limit 1;"
