@@ -43,6 +43,9 @@ jobs:
       RUN_SMOKE: ${{ github.event.inputs.run_smoke }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Prechecks
         shell: bash
         run: |
@@ -65,7 +68,6 @@ jobs:
           set -euo pipefail
           BASE="${SUPABASE_URL%/}"
 
-          # Busca hasta 5 candidatos por nombre (usa encoding robusto)
           find_candidates() {
             local NAME="$1"
             curl -sS -G "${BASE}/rest/v1/players" \
@@ -77,7 +79,6 @@ jobs:
               --data-urlencode "limit=5"
           }
 
-          # Intenta deducir nombre desde Sportradar (si hay API key)
           name_from_sr() {
             local SRID="$1"
             if [ -z "${SR_API_KEY:-}" ]; then echo ""; return 0; fi
@@ -85,7 +86,6 @@ jobs:
             curl -sS "$URL" | jq -r '.competitor.name // empty'
           }
 
-          # Limpia colisiones de un SRID dado
           clear_srid() {
             local SRID="$1"
             curl -sS -X PATCH "${BASE}/rest/v1/players?ext_sportradar_id=eq.${SRID}" \
@@ -96,7 +96,6 @@ jobs:
               -d '{"ext_sportradar_id": null}' > /dev/null
           }
 
-          # Asigna SRID a un UUID
           set_player_srid() {
             local UUID="$1"; local SRID="$2"
             curl -sS -X PATCH "${BASE}/rest/v1/players?player_id=eq.${UUID}" \
@@ -107,7 +106,6 @@ jobs:
               -d "{\"ext_sportradar_id\": \"${SRID}\"}" > /dev/null
           }
 
-          # Verifica asignación por SRID (usa --data-urlencode)
           verify_srid() {
             local SRID="$1"
             curl -sS -G "${BASE}/rest/v1/players" \
@@ -129,7 +127,6 @@ jobs:
           UUID="${P1_UUID:-}"
           NAME_IN="${P1_NAME:-}"
 
-          # 1) Si no hay UUID, intenta deducir el nombre
           if [ -z "$UUID" ]; then
             if [ -z "$NAME_IN" ]; then
               NAME_IN="$(name_from_sr "$P1_SRID" || true)"
@@ -137,7 +134,6 @@ jobs:
                 echo "::notice::Nombre Player 1 según Sportradar: $NAME_IN"
               fi
             fi
-            # 2) Buscar candidatos en tu DB por nombre (ILIKE)
             if [ -n "$NAME_IN" ]; then
               CANDS="$(find_candidates "$NAME_IN")"
               echo "== Candidatos Player 1 en DB =="; echo "$CANDS" | jq .
@@ -185,22 +181,47 @@ jobs:
           set_player_srid "$UUID" "$P2_SRID"
           echo "== Verificación Player 2 =="; verify_srid "$P2_SRID"
 
-      - name: (Opcional) Smoke /matchup con SR IDs
+      # ======= SMOKE /matchup (instala Python + deps y arranca app) =======
+      - name: Setup Python (para smoke)
         if: ${{ env.RUN_SMOKE == 'true' }}
-        shell: bash
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias de la API (para smoke)
+        if: ${{ env.RUN_SMOKE == 'true' }}
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install flask requests; fi
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Arrancar app y esperar a que responda
+        if: ${{ env.RUN_SMOKE == 'true' }}
         run: |
           set -euo pipefail
           nohup python -c "from main import app; app.run(host='127.0.0.1', port=8080)" >/dev/null 2>&1 &
-          for i in $(seq 1 30); do
+          # espera hasta 60s probando POST /matchup mínimo
+          for i in $(seq 1 60); do
             curl -fsS -X POST http://127.0.0.1:8080/matchup \
               -H "Content-Type: application/json" \
               -d '{"tournament":{"name":"Cincinnati","month":8},"years_back":4}' >/dev/null 2>&1 && break || true
             sleep 1
-          done || { echo 'App did not start in time'; exit 1; }
+          done
+          # si no arrancó, mostrar logs y fallar
+          if ! curl -fsS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d '{"tournament":{"name":"Cincinnati","month":8},"years_back":4}' >/dev/null 2>&1; then
+            echo "::error::La app no respondió en 60s. ¿exportas 'app' en main.py y tienes Flask instalado?"; exit 1
+          fi
 
+      - name: (Smoke) POST /matchup con SR IDs
+        if: ${{ env.RUN_SMOKE == 'true' }}
+        run: |
+          set -euo pipefail
           P1_SR_FULL="sr:competitor:${P1_SRID}"
-          P2_SR_FULL="$P1_SR_FULL"
-          if [ -n "${P2_SRID:-}" ]; then P2_SR_FULL="sr:competitor:${P2_SRID}"; fi
+          if [ -n "${P2_SRID:-}" ]; then
+            P2_SR_FULL="sr:competitor:${P2_SRID}"
+          else
+            P2_SR_FULL="$P1_SR_FULL"
+          fi
 
           PAYLOAD=$(jq -n --arg p "$P1_SR_FULL" --arg o "$P2_SR_FULL" \
                     '{player_id:$p, opponent_id:$o, tournament:{name:"Cincinnati",month:8}, years_back:4}')
@@ -209,6 +230,6 @@ jobs:
           RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
           echo "== Respuesta /matchup ==" && echo "$RESP" | jq .
 
-          # Comprueba que el handler devolvió UUIDs (se mapeó SR->UUID)
+          # Comprobar mapeo SR->UUID (idealmente ya no devuelve 'sr:' en inputs.player_id)
           echo "$RESP" | jq -e '.inputs.player_id|type=="string" and (.inputs.player_id|startswith("sr:")|not)' >/dev/null || \
-            echo "::warning::inputs.player_id sigue siendo SR; revisa que el SRID esté asignado en players.ext_sportradar_id."
+            echo "::warning::inputs.player_id sigue siendo SR; revisa que ext_sportradar_id esté asignado en players."
