@@ -1,0 +1,28 @@
+name: db-fs-longify
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - sql/migrations/2025_08_25_fs_matches_long_fix_longify.sql
+      - .github/workflows/ci_db_fs_longify.yml
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Apply longify
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_25_fs_matches_long_fix_longify.sql
+      - name: Quick check
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\d+ public.fs_matches_long"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS total, count(match_date) AS with_date, count(surface) AS with_surface FROM public.fs_matches_long;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.fs_matches_long LIMIT 5;"
