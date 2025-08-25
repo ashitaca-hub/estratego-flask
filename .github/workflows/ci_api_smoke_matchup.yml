@@ -6,7 +6,7 @@ on:
       player:
         description: "Player (sr:competitor:ID) o nombre (opcional)"
         required: false
-        default: "sr:competitor:57163"
+        default: "sr:competitor:225050"
       opponent:
         description: "Opponent (sr:competitor:ID) o nombre (opcional)"
         required: false
