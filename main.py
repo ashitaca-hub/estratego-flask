@@ -36,10 +36,16 @@ def _sr_url(path: str, params: dict[str, Any] | None = None) -> str:
     params["api_key"] = SR_API_KEY or "REPLACE_ME"
     return f"{SR_BASE}/{path}?{urllib.parse.urlencode(params)}"
 
+# arriba ya tienes: import re
 def _sr_get(path: str, params: dict[str, Any] | None = None, timeout=15) -> requests.Response:
     url = _sr_url(path, params)
+    # log redactado (oculta api_key)
+    redacted = re.sub(r'api_key=[^&]+', 'api_key=***', url)
+    app.logger.info("SR GET %s", redacted)
     r = requests.get(url, timeout=timeout, headers={"accept": "application/json"})
+    app.logger.info("SR RESP %s (ratelimit-remaining=%s)", r.status_code, r.headers.get("x-ratelimit-remaining"))
     return r
+
 
 # -----------------------------------------------------------------------------
 # ENDPOINT '/' (tu evaluador original, ajustado a ?api_key=)
@@ -609,3 +615,4 @@ def matchup():
 if __name__ == '__main__':
     # Puerto 10000 para local; en CI arrancáis con app.run(port=8080) desde el workflow
     app.run(host="0.0.0.0", port=10000)
+
