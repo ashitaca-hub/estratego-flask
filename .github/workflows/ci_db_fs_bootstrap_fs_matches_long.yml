@@ -1,0 +1,36 @@
+name: db-fs-bootstrap-fs-matches-long
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - sql/migrations/2025_08_25_bootstrap_fs_matches_long.sql
+      - .github/workflows/ci_db_fs_bootstrap_fs_matches_long.yml
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check SQL exists
+        run: test -f sql/migrations/2025_08_25_bootstrap_fs_matches_long.sql
+
+      - name: Install psql
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Apply bootstrap
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_25_bootstrap_fs_matches_long.sql
+
+      - name: Verify view exists
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\d+ public.fs_matches_long"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS rows FROM public.fs_matches_long;"
