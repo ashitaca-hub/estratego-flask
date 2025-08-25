@@ -1,16 +1,14 @@
--- --------------------------------------------------------------------
--- Requisitos:
---   - Vista pública canónica: public.fs_matches_long con columnas:
---       match_date::date
---       player_id::int
---       opponent_id::int
---       winner_id::int
---       tournament_name::text
---       surface::text   -- valores tipo 'hard'/'clay'/'grass' (insensible a mayús)
---   - Vista de velocidades: public.court_speed_rankig_norm
---       tournament_name, surface, speed_rank (num opc), speed_bucket (opc)
--- --------------------------------------------------------------------
+-- FS histórico: winrates por mes/superficie/velocidad (IDs internos INT)
+-- Usa la vista de compatibilidad: court_speed_rankig_norm_compat (si no hay speed_bucket, la vista lo pone a NULL y se deriva por speed_rank)
 
+-- Limpieza opcional para redeploy seguro
+DROP FUNCTION IF EXISTS public.fs_month_winrate(int,int,int);
+DROP FUNCTION IF EXISTS public.fs_surface_winrate(int,text,int);
+DROP FUNCTION IF EXISTS public.fs_speed_winrate(int,text,int);
+
+-- --------------------------------------------------------------------
+-- fs_month_winrate
+-- --------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.fs_month_winrate(p_id int, p_month int, p_years int)
 RETURNS double precision
 LANGUAGE sql
@@ -40,7 +38,8 @@ $$;
 GRANT EXECUTE ON FUNCTION public.fs_month_winrate(int,int,int) TO anon, authenticated, service_role;
 
 -- --------------------------------------------------------------------
-
+-- fs_surface_winrate
+-- --------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.fs_surface_winrate(p_id int, p_surface text, p_years int)
 RETURNS double precision
 LANGUAGE sql
@@ -70,7 +69,8 @@ $$;
 GRANT EXECUTE ON FUNCTION public.fs_surface_winrate(int,text,int) TO anon, authenticated, service_role;
 
 -- --------------------------------------------------------------------
-
+-- fs_speed_winrate  (ahora usa court_speed_rankig_norm_compat)
+-- --------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.fs_speed_winrate(p_id int, p_speed text, p_years int)
 RETURNS double precision
 LANGUAGE sql
@@ -83,11 +83,10 @@ WITH span AS (
 mx AS (
   SELECT
     f.*,
-    -- emparejar torneo con tabla de velocidades (igualdad case-insensitive; ajusta si necesitas ILIKE flexible)
     c.speed_bucket,
     c.speed_rank
   FROM public.fs_matches_long f
-  LEFT JOIN public.court_speed_rankig_norm c
+  LEFT JOIN public.court_speed_rankig_norm_compat c
     ON lower(f.tournament_name) = lower(c.tournament_name)
   JOIN span s ON f.match_date >= s.dt_from
   WHERE f.player_id = p_id
