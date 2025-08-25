@@ -1,30 +1,26 @@
-import os, time, requests
-from typing import List, Dict, Any, Tuple
-
-SR_BASE = os.getenv("SR_BASE", "https://api.sportradar.com/tennis/trial/v3/en")
+import os, re, urllib.parse, requests, logging
+log = logging.getLogger("sportradar_now")
 SR_API_KEY = os.getenv("SR_API_KEY", "")
-HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "12"))
+SR_BASE = "https://api.sportradar.com/tennis/trial/v3/en"
 
-# Si ya tienes wrappers propios para Sportradar, cámbialo a True e impórtalos abajo.
-HAVE_CUSTOM = False
+def _sr_url(path, params=None):
+    params = dict(params or {})
+    params["api_key"] = SR_API_KEY or "REPLACE_ME"
+    return f"{SR_BASE}/{path}?{urllib.parse.urlencode(params)}"
 
-def _sr_get(path: str, params: dict = None):
-    params = params or {}
-    if "api_key" not in params:
-        params["api_key"] = SR_API_KEY
-    headers = {"Accept": "application/json"}
-    r = requests.get(f"{SR_BASE}{path}", headers=headers, params=params, timeout=HTTP_TIMEOUT)
-    if r.status_code >= 300:
-        raise RuntimeError(f"Sportradar GET {path}: {r.status_code} {r.text}")
-    return r.json()
+def _get(path, params=None, timeout=15):
+    url = _sr_url(path, params)
+    red = re.sub(r"api_key=[^&]+", "api_key=***", url)
+    log.info("SR GET %s", red)
+    r = requests.get(url, timeout=timeout, headers={"accept":"application/json"})
+    log.info("SR RESP %s (ratelimit-remaining=%s)", r.status_code, r.headers.get("x-ratelimit-remaining"))
+    return r
 
-def get_profile(competitor_id: str) -> Dict[str, Any]:
-    if HAVE_CUSTOM:
-        raise NotImplementedError("Enchufa tu wrapper real aquí")
-    try:
-        return _sr_get(f"/competitors/{competitor_id}/profile.json")
-    except Exception:
-        return {}
+def get_profile(sr_id):
+    if not sr_id: return {}
+    sid = sr_id if str(sr_id).startswith("sr:") else f"sr:competitor:{sr_id}"
+    r = _get(f"competitors/{sid}/profile.json")
+    return r.json() if r.ok else {}
 
 def get_last10(competitor_id: str) -> List[Dict[str, Any]]:
     if HAVE_CUSTOM:
