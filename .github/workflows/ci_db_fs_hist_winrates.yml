@@ -5,6 +5,7 @@ on:
   push:
     branches: [ main ]
     paths:
+      - sql/migrations/2025_08_25_speed_compat_view.sql
       - sql/migrations/2025_08_25_fs_hist_winrates.sql
       - .github/workflows/ci_db_fs_hist_winrates.yml
 
@@ -17,38 +18,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check SQL exists
-        run: |
-          test -f sql/migrations/2025_08_25_fs_hist_winrates.sql || \
-            (echo "SQL missing" && exit 1)
-
       - name: Install psql
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Apply migration
+      - name: Apply compat patch (speed_bucket)
         run: |
           [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-            -f sql/migrations/2025_08_25_fs_hist_winrates.sql
+          test -f sql/migrations/2025_08_25_speed_compat_view.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_25_speed_compat_view.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\d+ public.court_speed_rankig_norm_compat"
+
+      - name: Apply FS historic RPCs
+        run: |
+          test -f sql/migrations/2025_08_25_fs_hist_winrates.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_25_fs_hist_winrates.sql
 
       - name: Verify RPCs exist
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
             "select proname, proargtypes from pg_proc where proname in ('fs_month_winrate','fs_surface_winrate','fs_speed_winrate');"
 
-      - name: Check fs_matches_long presence
+      - name: Quick check compat view
         run: |
-          psql "$DATABASE_URL" -tAc "select to_regclass('public.fs_matches_long') is not null" | grep -q t || \
-          (echo "::error::Falta la vista public.fs_matches_long. Crea la vista canónica con la plantilla (ver README o sql/examples)." && exit 1)
-
-      - name: (Opcional) Smoke RPCs con IDs internos
-        run: |
-          # Ajusta IDs y parámetros si quieres un mini smoke server-side
-          P=206173  # Sinner (ejemplo)
-          O=207989  # Alcaraz (ejemplo)
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select public.fs_month_winrate($P, 8, 4) as wr_month_p;"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select public.fs_month_winrate($O, 8, 4) as wr_month_o;"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select public.fs_surface_winrate($P, 'hard', 4) as wr_surf_p;"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select public.fs_speed_winrate($P, 'Medium', 4) as wr_speed_p;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "select tournament_name, surface, speed_rank, speed_bucket from public.court_speed_rankig_norm_compat limit 3;"
