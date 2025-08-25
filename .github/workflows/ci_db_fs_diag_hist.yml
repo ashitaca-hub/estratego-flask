@@ -1,0 +1,39 @@
+name: db-fs-diag-hist
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - .github/workflows/ci_db_fs_diag_hist.yml
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: FS diagnostics
+        run: |
+          set -e
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          echo "== fs_matches_long: schema =="
+          psql "$DATABASE_URL" -c "\d+ public.fs_matches_long" || true
+          echo "== counts =="
+          psql "$DATABASE_URL" -c "select count(*) total, count(match_date) with_date, count(surface) with_surface from public.fs_matches_long;"
+          echo "== last 4y counts =="
+          psql "$DATABASE_URL" -c "select count(*) last4y from public.fs_matches_long where match_date >= (current_date - interval '4 years');"
+          echo "== month=8 last4y =="
+          psql "$DATABASE_URL" -c "select count(*) m8_last4y from public.fs_matches_long where match_date >= (current_date - interval '4 years') and extract(month from match_date)=8;"
+          echo "== Cincinnati-like tournaments in fs_matches_long =="
+          psql "$DATABASE_URL" -c "select distinct tournament_name from public.fs_matches_long where lower(tournament_name) like '%cincin%' limit 20;"
+          echo '== Speed table sample (compat) =='
+          psql "$DATABASE_URL" -c "select tournament_name, surface, speed_rank, speed_bucket from public.court_speed_rankig_norm_compat limit 20;"
+          echo '== Cincinnati-like in speed table (compat) =='
+          psql "$DATABASE_URL" -c "select tournament_name, surface, speed_rank, speed_bucket from public.court_speed_rankig_norm_compat where lower(tournament_name) like '%cincin%' limit 20;"
+          echo "== Sinner/Alcaraz rows last4y (por player_id interno) =="
+          psql "$DATABASE_URL" -c "select count(*) filtro from public.fs_matches_long where match_date >= (current_date - interval '4 years') and player_id in (206173,207989);"
