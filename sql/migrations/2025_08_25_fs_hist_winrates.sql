@@ -1,14 +1,10 @@
--- FS histórico: winrates por mes/superficie/velocidad (IDs internos INT)
--- Usa la vista de compatibilidad: court_speed_rankig_norm_compat (si no hay speed_bucket, la vista lo pone a NULL y se deriva por speed_rank)
+-- FS histórico v2: usa compat view y fuzzy join por torneo; deriva surface si falta
 
--- Limpieza opcional para redeploy seguro
 DROP FUNCTION IF EXISTS public.fs_month_winrate(int,int,int);
 DROP FUNCTION IF EXISTS public.fs_surface_winrate(int,text,int);
 DROP FUNCTION IF EXISTS public.fs_speed_winrate(int,text,int);
 
--- --------------------------------------------------------------------
--- fs_month_winrate
--- --------------------------------------------------------------------
+-- 1) Winrate por mes
 CREATE OR REPLACE FUNCTION public.fs_month_winrate(p_id int, p_month int, p_years int)
 RETURNS double precision
 LANGUAGE sql
@@ -37,9 +33,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.fs_month_winrate(int,int,int) TO anon, authenticated, service_role;
 
--- --------------------------------------------------------------------
--- fs_surface_winrate
--- --------------------------------------------------------------------
+-- 2) Winrate por superficie (deriva surface desde speed table si falta)
 CREATE OR REPLACE FUNCTION public.fs_surface_winrate(p_id int, p_surface text, p_years int)
 RETURNS double precision
 LANGUAGE sql
@@ -49,12 +43,34 @@ AS $$
 WITH span AS (
   SELECT (current_date - make_interval(years => p_years))::date AS dt_from
 ),
-m AS (
-  SELECT *
+mx AS (
+  SELECT
+    f.*,
+    -- LATERAL fuzzy match a la tabla de velocidades
+    c.surface AS c_surface
   FROM public.fs_matches_long f
+  LEFT JOIN LATERAL (
+    SELECT c.*
+    FROM public.court_speed_rankig_norm_compat c
+    WHERE lower(c.tournament_name) = lower(f.tournament_name)
+       OR lower(f.tournament_name) LIKE '%'||lower(c.tournament_name)||'%'
+       OR lower(c.tournament_name) LIKE '%'||lower(f.tournament_name)||'%'
+    ORDER BY (lower(c.tournament_name) = lower(f.tournament_name)) DESC, char_length(c.tournament_name) DESC
+    LIMIT 1
+  ) c ON true
   JOIN span s ON f.match_date >= s.dt_from
   WHERE f.player_id = p_id
-    AND lower(coalesce(f.surface,'')) = lower(coalesce(p_surface,''))
+),
+mx2 AS (
+  SELECT
+    *,
+    COALESCE(lower(f.surface), lower(c_surface)) AS surf_eff
+  FROM mx f
+),
+m AS (
+  SELECT *
+  FROM mx2
+  WHERE lower(coalesce(surf_eff,'')) = lower(coalesce(p_surface,''))
 ),
 agg AS (
   SELECT
@@ -68,9 +84,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.fs_surface_winrate(int,text,int) TO anon, authenticated, service_role;
 
--- --------------------------------------------------------------------
--- fs_speed_winrate  (ahora usa court_speed_rankig_norm_compat)
--- --------------------------------------------------------------------
+-- 3) Winrate por velocidad (usa compat + fuzzy join, bucket derivado si falta)
 CREATE OR REPLACE FUNCTION public.fs_speed_winrate(p_id int, p_speed text, p_years int)
 RETURNS double precision
 LANGUAGE sql
@@ -86,8 +100,15 @@ mx AS (
     c.speed_bucket,
     c.speed_rank
   FROM public.fs_matches_long f
-  LEFT JOIN public.court_speed_rankig_norm_compat c
-    ON lower(f.tournament_name) = lower(c.tournament_name)
+  LEFT JOIN LATERAL (
+    SELECT c.*
+    FROM public.court_speed_rankig_norm_compat c
+    WHERE lower(c.tournament_name) = lower(f.tournament_name)
+       OR lower(f.tournament_name) LIKE '%'||lower(c.tournament_name)||'%'
+       OR lower(c.tournament_name) LIKE '%'||lower(f.tournament_name)||'%'
+    ORDER BY (lower(c.tournament_name) = lower(f.tournament_name)) DESC, char_length(c.tournament_name) DESC
+    LIMIT 1
+  ) c ON true
   JOIN span s ON f.match_date >= s.dt_from
   WHERE f.player_id = p_id
 ),
