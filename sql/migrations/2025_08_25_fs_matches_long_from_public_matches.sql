@@ -3,7 +3,6 @@ CREATE EXTENSION IF NOT EXISTS unaccent;
 
 DO $pl$
 DECLARE
-  -- Buscar en public una tabla con (uuid + name)
   rec record;
   cols text[];
   candidate_tab text := NULL;
@@ -37,7 +36,6 @@ BEGIN
   END LOOP;
 
   IF candidate_tab IS NULL THEN
-    -- Puente vacío si no hay tabla adecuada
     EXECUTE '
       CREATE OR REPLACE VIEW public.players_bridge_uuid_to_int AS
       SELECT NULL::uuid AS player_uuid, NULL::text AS name_uuid, NULL::int AS player_int, NULL::text AS name_int
@@ -46,7 +44,6 @@ BEGIN
     EXECUTE 'COMMENT ON VIEW public.players_bridge_uuid_to_int IS '
             || quote_literal('Puente vacío: no se detectó tabla con (uuid+name) en public.');
   ELSE
-    -- Puente UUID -> INT por nombre normalizado
     EXECUTE format(
       'CREATE OR REPLACE VIEW public.players_bridge_uuid_to_int AS
        SELECT
@@ -66,21 +63,19 @@ BEGIN
     EXECUTE format('COMMENT ON VIEW public.players_bridge_uuid_to_int IS %L;', cmt);
   END IF;
 
-  -- Permisos del puente
   EXECUTE 'GRANT SELECT ON public.players_bridge_uuid_to_int TO anon, authenticated, service_role;';
 END $pl$;
 
--- Vista canónica larga desde public.matches (usa el puente; no castea UUID->INT)
--- Si tienes una columna de torneo en public.matches (p.ej. tournament_name/competition_name/event_name),
--- cambia NULL::text AS tournament_name por m.<columna>::text para activar hist_speed por fuzzy join.
+-- IMPORTANTÍSIMO: mantener el ORDEN/NOMBRE de columnas ya existente:
+-- (match_date, player_id, opponent_id, winner_id, tournament_name, surface)
 CREATE OR REPLACE VIEW public.fs_matches_long AS
 SELECT
   m.date::date                   AS match_date,
-  NULL::text                     AS tournament_name,      -- <-- CAMBIA AQUÍ si tienes nombre de torneo en public.matches
-  lower(m.surface::text)         AS surface,
   b1.player_int                  AS player_id,
   b2.player_int                  AS opponent_id,
-  bw.player_int                  AS winner_id
+  bw.player_int                  AS winner_id,
+  NULL::text                     AS tournament_name,      -- si tienes columna en matches, cámbiala aquí por m.tournament_name::text
+  lower(m.surface::text)         AS surface
 FROM public.matches m
 JOIN public.players_bridge_uuid_to_int b1 ON b1.player_uuid = m.player_id
 JOIN public.players_bridge_uuid_to_int b2 ON b2.player_uuid = m.opponent_id
