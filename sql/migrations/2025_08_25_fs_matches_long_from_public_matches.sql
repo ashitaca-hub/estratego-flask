@@ -1,7 +1,7 @@
 -- Construye fs_matches_long desde public.matches (UUID) mapeando a INT por nombre
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
-DO $$
+DO $pl$
 DECLARE
   -- Buscar en public una tabla con (uuid + name)
   rec record;
@@ -38,12 +38,13 @@ BEGIN
 
   IF candidate_tab IS NULL THEN
     -- Puente vacío si no hay tabla adecuada
-    EXECUTE $q$
+    EXECUTE '
       CREATE OR REPLACE VIEW public.players_bridge_uuid_to_int AS
       SELECT NULL::uuid AS player_uuid, NULL::text AS name_uuid, NULL::int AS player_int, NULL::text AS name_int
       WHERE false
-    $q$;
-    EXECUTE $$COMMENT ON VIEW public.players_bridge_uuid_to_int IS 'Puente vacío: no se detectó tabla con (uuid+name) en public.'$$;
+    ';
+    EXECUTE 'COMMENT ON VIEW public.players_bridge_uuid_to_int IS '
+            || quote_literal('Puente vacío: no se detectó tabla con (uuid+name) en public.');
   ELSE
     -- Puente UUID -> INT por nombre normalizado
     EXECUTE format(
@@ -67,11 +68,11 @@ BEGIN
 
   -- Permisos del puente
   EXECUTE 'GRANT SELECT ON public.players_bridge_uuid_to_int TO anon, authenticated, service_role;';
-END$$;
+END $pl$;
 
 -- Vista canónica larga desde public.matches (usa el puente; no castea UUID->INT)
 -- Si tienes una columna de torneo en public.matches (p.ej. tournament_name/competition_name/event_name),
--- reemplaza NULL::text AS tournament_name por m.<columna>::text para activar hist_speed vía fuzzy join.
+-- cambia NULL::text AS tournament_name por m.<columna>::text para activar hist_speed por fuzzy join.
 CREATE OR REPLACE VIEW public.fs_matches_long AS
 SELECT
   m.date::date                   AS match_date,
