@@ -1,36 +1,51 @@
+from __future__ import annotations
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone
 import requests
 import logging
 import os
 import re
+import urllib.parse
+from typing import Any
 
+# -----------------------------------------------------------------------------
+# App / Logging
+# -----------------------------------------------------------------------------
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    """Captura excepciones no controladas y devuelve un JSON."""
     return jsonify({"error": str(e)}), 500
 
-API_KEY = "e4ufC11rvWZ7OXEKFhI1yKAiSsfH3Rv65viqBmJv"  # Reemplaza esto con tu API Key real de Sportradar
+@app.get("/health")
+def health():
+    return jsonify({"ok": True}), 200
 
+# -----------------------------------------------------------------------------
+# Sportradar config (ahora via entorno)
+# -----------------------------------------------------------------------------
+SR_API_KEY = os.environ.get("SR_API_KEY", "").strip()
+SR_BASE = "https://api.sportradar.com/tennis/trial/v3/en"
+
+def _sr_url(path: str, params: dict[str, Any] | None = None) -> str:
+    if not SR_API_KEY:
+        # No frenamos aquí; tu CI puede llamar /matchup sin SR
+        app.logger.warning("SR_API_KEY no configurada (modo NOW desactivado).")
+    params = params.copy() if params else {}
+    params["api_key"] = SR_API_KEY or "REPLACE_ME"
+    return f"{SR_BASE}/{path}?{urllib.parse.urlencode(params)}"
+
+def _sr_get(path: str, params: dict[str, Any] | None = None, timeout=15) -> requests.Response:
+    url = _sr_url(path, params)
+    r = requests.get(url, timeout=timeout, headers={"accept": "application/json"})
+    return r
+
+# -----------------------------------------------------------------------------
+# ENDPOINT '/' (tu evaluador original, ajustado a ?api_key=)
+# -----------------------------------------------------------------------------
 @app.route('/', methods=['POST'])
 def evaluar():
-    """Endpoint principal para evaluar enfrentamientos.
-
-    Obtiene los identificadores de jugador y rival desde la solicitud
-    POST y recopila diferentes métricas desde la API de Sportradar para
-    devolver un resumen del duelo.
-
-    Args:
-        None: Los datos se obtienen directamente de ``request``.
-
-    Returns:
-        flask.Response: Respuesta JSON con las estadísticas calculadas
-        o un mensaje de error.
-    """
-
     data = request.get_json()
     if data is None:
         return jsonify({"error": "No se proporcionaron datos JSON en la solicitud"}), 400
@@ -43,17 +58,13 @@ def evaluar():
         return jsonify({"error": "Faltan IDs de jugador o rival"}), 400
 
     try:
-        resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/summaries.json"
-        headers = {"accept": "application/json", "x-api-key": API_KEY}
-        r_resumen = requests.get(resumen_url, headers=headers)
+        r_resumen = _sr_get(f"competitors/{jugador_id}/summaries.json")
         if r_resumen.status_code != 200:
             return jsonify({"error": "❌ Error al obtener summaries.json"}), 500
         resumen_data = r_resumen.json()
 
         jugador_stats = obtener_estadisticas_jugador(jugador_id)
-        superficie_favorita, porcentaje_superficie_favorita = calcular_superficie_favorita(
-            jugador_id
-        )
+        superficie_favorita, porcentaje_superficie_favorita = calcular_superficie_favorita(jugador_id)
         ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id, resumen_data)
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id, resumen_data)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
@@ -61,10 +72,7 @@ def evaluar():
         puntos_defendidos, torneo_actual, motivacion_por_puntos, ronda_maxima, log_debug, _ = obtener_puntos_defendidos(jugador_id)
         cambio_superficie_bool = False
         if superficie_objetivo:
-            cambio_superficie_bool = viene_de_cambio_de_superficie(
-                jugador_id, superficie_objetivo
-            )
-
+            cambio_superficie_bool = viene_de_cambio_de_superficie(jugador_id, superficie_objetivo)
 
         return jsonify({
             "jugador_id": jugador_id,
@@ -92,83 +100,33 @@ def evaluar():
             "h2h": h2h,
             "cambio_superficie": "✔" if cambio_superficie_bool else "✘"
         })
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-@app.route('/proximos_partidos', methods=['POST'])
-def proximos_partidos():
-    data = request.get_json()
-    jugador_id = data.get("jugador")
-
-    if not jugador_id:
-        return jsonify({"error": "Falta ID de jugador"}), 400
-
-    try:
-        _, _, _, _, _, season_id = obtener_puntos_defendidos(jugador_id)
-        if not season_id:
-            return jsonify({"error": "No se encontró season_id"}), 500
-        partidos = obtener_proximos_partidos(season_id)
-        return jsonify({"season_id": season_id, "partidos": partidos})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/proximos_partidos_por_torneo', methods=['POST'])
-def proximos_partidos_por_torneo():
-    """Obtiene los próximos partidos a partir del nombre completo de un torneo."""
-
-    data = request.get_json()
-    if not data or "torneo" not in data:
-        return jsonify({"error": "Falta 'torneo' en la solicitud"}), 400
-
-    torneo_full = data["torneo"]
-    try:
-        season_id = buscar_season_id_por_nombre(torneo_full)
-        if not season_id:
-            return jsonify({"error": "Torneo no encontrado"}), 404
-        partidos = obtener_proximos_partidos(season_id)
-        return jsonify({"season_id": season_id, "partidos": partidos})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# -----------------------------------------------------------------------------
+# Tus helpers que usan Sportradar (ajustados a _sr_get/?api_key=)
+# -----------------------------------------------------------------------------
 def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
-    """Obtiene estadísticas recientes del jugador.
-
-    Args:
-        player_id (str): Identificador del jugador en Sportradar.
-        year (int, optional): Año del que se tomarán las estadísticas.
-            Por defecto se utiliza el año actual.
-
-    Returns:
-        dict: Información de ranking, victorias totales y rendimiento en
-        superficie de arcilla.
-    """
-
-    url = (
-        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json?api_key={API_KEY}"
-    )
-    r = requests.get(url)
+    r = _sr_get(f"competitors/{player_id}/profile.json")
     if r.status_code != 200:
         raise Exception("No se pudo obtener el perfil del jugador")
 
     data = r.json()
-    ranking = data["competitor_rankings"][0]["rank"]
+    ranking = data.get("competitor_rankings", [{}])[0].get("rank", None)
     total_wins = 0
     total_matches = 0
     clay_wins = 0
     clay_matches = 0
 
     for periodo in data.get("periods", []):
-        if periodo["year"] == year:
-            for surface in periodo["surfaces"]:
-                stats = surface["statistics"]
+        if periodo.get("year") == year:
+            for surface in periodo.get("surfaces", []):
+                stats = surface.get("statistics", {})
                 wins = stats.get("matches_won", 0)
                 played = stats.get("matches_played", 0)
                 total_wins += wins
                 total_matches += played
-                if "clay" in surface["type"]:
+                if "clay" in surface.get("type", ""):
                     clay_wins += wins
                     clay_matches += played
 
@@ -182,20 +140,13 @@ def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
         "porcentaje_victorias": round(porcentaje_total, 1),
         "victorias_en_superficie": clay_wins,
         "partidos_en_superficie": clay_matches,
-        "porcentaje_superficie": round(porcentaje_clay, 1)
+        "porcentaje_superficie": round(porcentaje_clay, 1),
     }
 
-
 def calcular_superficie_favorita(player_id):
-    """Calcula la superficie donde el jugador tiene mejor porcentaje de victorias."""
-
-    url = (
-        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json?api_key={API_KEY}"
-    )
-    r = requests.get(url)
+    r = _sr_get(f"competitors/{player_id}/profile.json")
     if r.status_code != 200:
         raise Exception("No se pudo obtener el perfil del jugador")
-
     data = r.json()
 
     superficie_stats = {}
@@ -210,169 +161,75 @@ def calcular_superficie_favorita(player_id):
             superficie_stats[nombre]["won"] += wins
             superficie_stats[nombre]["played"] += played
 
-    mejor_superficie = None
-    mejor_porcentaje = -1
+    mejor_superficie, mejor_porcentaje = None, -1
     for nombre, stats in superficie_stats.items():
         played = stats["played"]
         porcentaje = (stats["won"] / played * 100) if played else 0
         if porcentaje > mejor_porcentaje:
-            mejor_porcentaje = porcentaje
-            mejor_superficie = nombre
+            mejor_superficie, mejor_porcentaje = nombre, porcentaje
 
     return mejor_superficie, round(mejor_porcentaje, 1)
 
 def obtener_ultimos5_winnerid(player_id, resumen_data):
-    """Resume los resultados de los últimos cinco partidos.
-
-    Args:
-        player_id (str): Identificador del jugador.
-        resumen_data (dict): Datos de los resúmenes recientes del jugador.
-
-    Returns:
-        tuple: Cantidad de encuentros ganados y lista descriptiva de cada
-        partido.
-    """
-
     summaries = resumen_data.get("summaries", [])[:5]
-    ganados = 0
-    detalle = []
-
+    ganados, detalle = 0, []
     for s in summaries:
         winner_id = s.get("sport_event_status", {}).get("winner_id")
         if not winner_id:
             resultado = "—"
         elif winner_id == player_id:
-            resultado = "✔ Ganado"
-            ganados += 1
+            resultado = "✔ Ganado"; ganados += 1
         else:
             resultado = "✘ Perdido"
-
-        rival = next((c for c in s["sport_event"]["competitors"] if c["id"] != player_id), {}).get("name", "¿?")
+        rival = next((c for c in s.get("sport_event", {}).get("competitors", []) if c.get("id") != player_id), {}).get("name", "¿?")
         detalle.append(f"{resultado} vs {rival}")
-
     return ganados, detalle
 
-
-
 def obtener_h2h_extend(jugador_id, rival_id):
-    """Obtiene el historial directo entre dos jugadores.
-
-    Args:
-        jugador_id (str): Identificador del jugador principal.
-        rival_id (str): Identificador del rival.
-
-    Returns:
-        str: Registro de victorias y derrotas en formato ``"X - Y"`` o
-        ``"Sin datos"`` si la consulta falla.
-    """
-
-    url = (
-        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/versus/{rival_id}/summaries.json"
-    )
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
-    r = requests.get(url, headers=headers)
+    r = _sr_get(f"competitors/{jugador_id}/versus/{rival_id}/summaries.json")
     if r.status_code != 200:
         return "Sin datos"
-
     data = r.json()
-    partidos = data.get("last_meetings", [])  # ✅ CORREGIDO
-
-    ganados = 0
-    perdidos = 0
-
-    for p in partidos:
-        winner_id = p.get("sport_event_status", {}).get("winner_id")  # ✅ ACCESO CORRECTO
-        if winner_id == jugador_id:
-            ganados += 1
-        elif winner_id == rival_id:
-            perdidos += 1
-
+    partidos = data.get("last_meetings", [])
+    ganados = sum(1 for p in partidos if p.get("sport_event_status", {}).get("winner_id") == jugador_id)
+    perdidos = sum(1 for p in partidos if p.get("sport_event_status", {}).get("winner_id") == rival_id)
     return f"{ganados} - {perdidos}"
 
-
 def viene_de_cambio_de_superficie(jugador_id, superficie_objetivo):
-    """Determina si el jugador cambia de superficie respecto a su último partido.
-
-    Args:
-        jugador_id (str): Identificador del jugador en Sportradar.
-        superficie_objetivo (str): Superficie del próximo partido.
-
-    Returns:
-        bool: ``True`` si la superficie del último partido difiere de la
-        ``superficie_objetivo``; ``False`` en caso contrario o si la consulta
-        falla.
-    """
-
-    resumen_url = (
-        f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{jugador_id}/summaries.json"
-    )
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
-    resp = requests.get(resumen_url, headers=headers)
-    if resp.status_code != 200:
+    r = _sr_get(f"competitors/{jugador_id}/summaries.json")
+    if r.status_code != 200:
         return False
-    data = resp.json()
+    data = r.json()
     summaries = data.get("summaries", [])
     if not summaries:
         return False
     surface_actual = (
-        summaries[0]
-        .get("sport_event", {})
-        .get("sport_event_context", {})
-        .get("surface", {})
-        .get("name")
+        summaries[0].get("sport_event", {}).get("sport_event_context", {}).get("surface", {}).get("name")
     )
     if not surface_actual or not superficie_objetivo:
         return False
-    return surface_actual.lower() != superficie_objetivo.lower()
-
+    return (surface_actual or "").lower() != (superficie_objetivo or "").lower()
 
 def evaluar_torneo_favorito(player_id, resumen_data):
-    """Indica si el último torneo jugado es en el país del jugador.
-
-    Args:
-        player_id (str): Identificador del jugador.
-        resumen_data (dict): Resúmenes recientes para obtener el torneo actual.
-
-    Returns:
-        tuple: Marca ``"✔"`` o ``"✘"`` y nombre del torneo evaluado.
-    """
-
-    # Obtener país del jugador
-    perfil_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/profile.json"
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
-    perfil = requests.get(perfil_url, headers=headers)
+    perfil = _sr_get(f"competitors/{player_id}/profile.json")
     if perfil.status_code != 200:
         return "❌", "Error perfil"
-
     jugador = perfil.json().get("competitor", {})
-    jugador_pais = jugador.get("country", "").lower()
+    jugador_pais = (jugador.get("country") or "").lower()
 
-    # Obtener torneo del último partido
     summaries = resumen_data.get("summaries", [])
     if not summaries:
         return "❌", "Sin partidos"
 
     grupo = summaries[0].get("sport_event", {}).get("sport_event_context", {}).get("groups", [{}])[0]
-    torneo = grupo.get("name", "").lower()
-
+    torneo = (grupo.get("name") or "").lower()
     resultado = "✔" if jugador_pais and jugador_pais in torneo else "✘"
     return resultado, torneo
 
 def evaluar_actividad_reciente(player_id, resumen_data):
-    """Evalúa la actividad competitiva más reciente del jugador.
-
-    Args:
-        player_id (str): Identificador del jugador.
-        resumen_data (dict): Datos de resumen con los últimos partidos.
-
-    Returns:
-        tuple: Indicador ``"✔"`` o ``"✘"`` y mensaje con días sin competir.
-    """
-
     summaries = resumen_data.get("summaries", [])
     if not summaries:
         return "❌", "Sin partidos"
-
     for e in summaries:
         fecha_str = e.get("sport_event", {}).get("start_time")
         if fecha_str:
@@ -380,38 +237,21 @@ def evaluar_actividad_reciente(player_id, resumen_data):
                 fecha = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
                 ahora = datetime.now(timezone.utc)
                 dias = (ahora - fecha).days
-                return "✔" if dias <= 30 else "✘", f"{dias} días sin competir"
+                return ("✔" if dias <= 30 else "✘"), f"{dias} días sin competir"
             except Exception:
                 continue
-
     return "❌", "Fecha inválida"
 
-
 def obtener_puntos_defendidos(player_id):
-    """Calcula los puntos que el jugador debe defender en el torneo actual.
-
-    Args:
-        player_id (str): Identificador del jugador.
-
-    Returns:
-        tuple: Puntos a defender, nombre del torneo, indicador de
-        motivación ("✔" o "✘"), ronda alcanzada, mensaje de depuración y
-        el ``season_id`` asociado.
-    """
-
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
     season_id = None
 
-    # 1. Obtener seasons
-    r_seasons = requests.get("https://api.sportradar.com/tennis/trial/v3/en/seasons.json", headers=headers)
+    r_seasons = _sr_get("seasons.json")
     if r_seasons.status_code != 200:
         logging.error("❌ Error al obtener seasons")
         return 0, "Error temporadas", "✘", "—", "❌ Error al obtener seasons", season_id
     seasons = r_seasons.json().get("seasons", [])
 
-    # 2. Obtener torneo actual desde últimos partidos
-    resumen_url = f"https://api.sportradar.com/tennis/trial/v3/en/competitors/{player_id}/summaries.json"
-    r_resumen = requests.get(resumen_url, headers=headers)
+    r_resumen = _sr_get(f"competitors/{player_id}/summaries.json")
     if r_resumen.status_code != 200:
         logging.error("❌ Error al obtener summaries del jugador")
         return 0, "Error resumen", "✘", "—", "❌ Error al obtener summaries del jugador", season_id
@@ -427,11 +267,9 @@ def obtener_puntos_defendidos(player_id):
     competition_id = competition.get("id", "")
     logging.info("🎾 Torneo actual detectado: %s", torneo_nombre)
 
-     # 3. Buscar edición anterior del torneo
     hoy = datetime.now(timezone.utc)
     año_pasado = str(hoy.year - 1)
-    
-    # 🧩 Equivalencia directa entre seasons para torneos con sede rotativa
+
     season_equivalencias = {
         "sr:season:124689": "sr:season:111494"
     }
@@ -445,7 +283,7 @@ def obtener_puntos_defendidos(player_id):
         season_anterior = next((s for s in seasons if s["id"] == season_id), None)
     else:
         season_anterior = next(
-            (s for s in seasons if s["year"] == año_pasado and s["competition_id"] == competition_id),
+            (s for s in seasons if str(s.get("year")) == año_pasado and s.get("competition_id") == competition_id),
             None
         )
         if not season_anterior:
@@ -457,11 +295,7 @@ def obtener_puntos_defendidos(player_id):
         logging.error("❌ No se encontró torneo del año pasado para este competition_id")
         return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id", season_id
 
-    season_id = season_anterior["id"]
-
-    # 4. Obtener partidos del torneo anterior
-    url_torneo = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
-    r_torneo = requests.get(url_torneo, headers=headers)
+    r_torneo = _sr_get(f"seasons/{season_id}/summaries.json")
     if r_torneo.status_code != 200:
         logging.error("❌ Error al obtener partidos del torneo anterior")
         return 0, torneo_nombre, "✘", "—", "❌ No se encontró torneo del año pasado para este competition_id", season_id
@@ -480,44 +314,60 @@ def obtener_puntos_defendidos(player_id):
         "final": 720,
         "champion": 1000
     }
-
     orden_rondas = list(puntos_por_ronda.keys())
 
     for match in data:
-        winner = match.get("sport_event_status", {}).get("winner_id", "").lower()
-        ronda = match.get("sport_event", {}).get("sport_event_context", {}).get("round", {}).get("name", "").lower()
+        winner = (match.get("sport_event_status", {}) or {}).get("winner_id", "").lower()
+        ronda = (match.get("sport_event", {}) or {}).get("sport_event_context", {}).get("round", {}).get("name", "").lower()
         if not winner or not ronda:
             continue
-
-        logging.debug("🔍 Ronda: %s, Winner: %s vs %s", ronda, winner, player_id.lower())
-        if winner == player_id.lower() and ronda in orden_rondas:
+        if winner == str(player_id).lower() and ronda in orden_rondas:
             if not ronda_maxima or orden_rondas.index(ronda) > orden_rondas.index(ronda_maxima):
                 ronda_maxima = ronda
 
     puntos = puntos_por_ronda.get(ronda_maxima, 0)
     motivacion = "✔" if puntos >= 45 else "✘"
     ronda_str = ronda_maxima if ronda_maxima else "—"
-
     log_debug = f"📣 Jugador {player_id} jugando en {torneo_nombre} llegó a la ronda {ronda_str}"
     return puntos, torneo_nombre, motivacion, ronda_str, log_debug, season_id
 
-def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
-    """Busca el identificador de temporada a partir del nombre completo.
+@app.route('/proximos_partidos', methods=['POST'])
+def proximos_partidos():
+    data = request.get_json()
+    jugador_id = data.get("jugador")
+    if not jugador_id:
+        return jsonify({"error": "Falta ID de jugador"}), 400
 
-    La búsqueda es flexible: se ignoran mayúsculas, espacios y signos de
-    puntuación, y se permite proporcionar solo una parte del nombre del
-    torneo. Si se incluye un año en ``torneo_full`` se intenta filtrar por
-    dicho año.
-    """
-
-    url = "https://api.sportradar.com/tennis/trial/v3/en/seasons.json"
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
     try:
-        r = requests.get(url, headers=headers, timeout=10)
-        r.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise Exception("Error al obtener temporadas") from e
+        _, _, _, _, _, season_id = obtener_puntos_defendidos(jugador_id)
+        if not season_id:
+            return jsonify({"error": "No se encontró season_id"}), 500
+        partidos = obtener_proximos_partidos(season_id)
+        return jsonify({"season_id": season_id, "partidos": partidos})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+@app.route('/proximos_partidos_por_torneo', methods=['POST'])
+def proximos_partidos_por_torneo():
+    data = request.get_json()
+    if not data or "torneo" not in data:
+        return jsonify({"error": "Falta 'torneo' en la solicitud"}), 400
+    torneo_full = data["torneo"]
+    try:
+        season_id = buscar_season_id_por_nombre(torneo_full)
+        if not season_id:
+            return jsonify({"error": "Torneo no encontrado"}), 404
+        partidos = obtener_proximos_partidos(season_id)
+        return jsonify({"season_id": season_id, "partidos": partidos})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
+    r = _sr_get("seasons.json")
+    try:
+        r.raise_for_status()
+    except requests.exceptions.RequestException:
+        raise Exception("Error al obtener temporadas")
     tokens = re.findall(r"[a-z0-9]+", torneo_full.casefold())
     year = None
     tokens_without_year = []
@@ -526,158 +376,97 @@ def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
             year = tok
         else:
             tokens_without_year.append(tok)
-
     matches = []
-
     for season in r.json().get("seasons", []):
         season_name = season.get("name", "")
         season_cf = season_name.casefold()
         season_year = str(season.get("year"))
-
         if year and season_year != year:
             continue
-
         if all(tok in season_cf for tok in tokens_without_year):
             matches.append(season)
-
     if not matches:
         return None
-
     if year:
         return matches[0].get("id")
-
     latest = max(matches, key=lambda s: s.get("year", 0))
     return latest.get("id")
 
-
 def obtener_proximos_partidos(season_id: str) -> list[dict]:
-    """Obtiene los próximos partidos para una temporada concreta.
-
-    Args:
-        season_id (str): Identificador de la temporada según Sportradar.
-
-    Returns:
-        list[dict]: Lista con la información de cada partido pendiente,
-        incluyendo ``start_time``, los ``competitors`` y la ``round``.
-    """
-
-    url = f"https://api.sportradar.com/tennis/trial/v3/en/seasons/{season_id}/summaries.json"
-    headers = {"accept": "application/json", "x-api-key": API_KEY}
+    r = _sr_get(f"seasons/{season_id}/summaries.json")
     try:
-        r = requests.get(url, headers=headers, timeout=10)
         r.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise Exception("Error al obtener próximos partidos") from e
-
+    except requests.exceptions.RequestException:
+        raise Exception("Error al obtener próximos partidos")
     proximos = []
     for evento in r.json().get("summaries", []):
         status = evento.get("sport_event_status", {}).get("status")
         if status != "not_started":
             continue
-
         sport_event = evento.get("sport_event", {})
         start_time = sport_event.get("start_time")
         competitors = [c.get("name") for c in sport_event.get("competitors", [])]
         round_name = sport_event.get("sport_event_context", {}).get("round", {}).get("name")
-        proximos.append({
-            "start_time": start_time,
-            "competitors": competitors,
-            "round": round_name
-        })
-
+        proximos.append({"start_time": start_time, "competitors": competitors, "round": round_name})
     proximos.sort(key=lambda p: (p["start_time"] is None, p["start_time"] or ""))
-
     return proximos
 
-
-
-# ======== Estratego: endpoint /matchup (REEMPLAZO) ========
+# -----------------------------------------------------------------------------
+# ======== Estratego: endpoint /matchup (usar IDs INT canónicos) ========
+# -----------------------------------------------------------------------------
 from services import supabase_fs as FS
 from services import sportradar_now as SR
 from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
 
-try:
-    app  # si tu archivo ya define app = Flask(...)
-except NameError:
-    from flask import Flask
-    app = Flask(__name__)
-
-from flask import request, jsonify
-import re, requests, urllib.parse
-
-# Tablas/vistas canónicas (IMPORTANTE)
-PLAYER_TABLE_SRID = "players_lookup"  # (public) -> player_id (int), name, ext_sportradar_id (apunta a estratego_v1.players)
-PLAYER_TABLE_NAME = "players_min"     # (public) -> player_id (UUID), name
-
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+# Tablas/vistas canónicas
+PLAYER_TABLE_SRID = "players_lookup"  # public -> (player_id INT, name, ext_sportradar_id)
+PLAYER_TABLE_NAME = "players_min"     # public -> (player_id INT, name)
 
 def _rest_get(table: str, params: dict, select: str = "*"):
-    """GET sencillo contra PostgREST usando las credenciales de FS (Service Role recomendado)."""
     base = FS.SUPABASE_URL.rstrip("/") + "/rest/v1/" + table
-    q = {"select": select}
-    q.update(params or {})
+    q = {"select": select}; q.update(params or {})
     url = base + "?" + urllib.parse.urlencode(q, doseq=True)
     r = requests.get(url, headers=FS.HEADERS_SB, timeout=FS.HTTP_TIMEOUT)
-    if r.status_code >= 300:
-        raise RuntimeError(f"GET {table} failed: {r.status_code} {r.text}")
+    r.raise_for_status()
     return r.json()
 
 def _normalize_sr_id(val: str | None) -> str | None:
-    """Asegura formato 'sr:competitor:ID' si nos pasan solo el número."""
     if not val:
         return None
     s = str(val)
-    if s.startswith("sr:"):
-        return s
-    return f"sr:competitor:{s}"
+    return s if s.startswith("sr:") else f"sr:competitor:{s}"
 
-def _resolve_player_uuid_by_name(name: str | None) -> str | None:
-    """Busca primero en public.players_min (UUID canónico por nombre)."""
+def _resolve_player_int_by_name(name: str | None) -> int | None:
     if not name:
         return None
-    try:
-        rows = _rest_get(PLAYER_TABLE_NAME, {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
-        if rows:
-            return rows[0]["player_id"]
-    except Exception:
-        pass
-    return None
+    rows = _rest_get(PLAYER_TABLE_NAME, {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
+    return int(rows[0]["player_id"]) if rows else None
 
-def _resolve_player_uuid_by_sr(sr_id: str | None) -> str | None:
-    """
-    Mapea Sportradar ID -> UUID canónico:
-      - 1º: public.players_lookup por ext_sportradar_id (SRID -> name)
-      - 2º: public.players_min por name (-> UUID)
-      - 3º: fallback al player_id entero de players_lookup (último recurso)
-    """
+def _resolve_player_int_by_sr(sr_id: str | None) -> int | None:
     if not sr_id:
         return None
-    short = sr_id.split(":")[-1]  # 'sr:competitor:1234' -> '1234'
-    rows = _rest_get(PLAYER_TABLE_SRID,
-                     {"ext_sportradar_id": f"eq.{short}", "limit": 1},
-                     select="player_id,name,ext_sportradar_id")
-    if not rows:
-        return None
-    nm = rows[0]["name"]
-    u = _resolve_player_uuid_by_name(nm)
-    return u or rows[0]["player_id"]  # si no hay UUID en players_min, devolvemos el int (no ideal, pero no rompe)
+    short = sr_id.split(":")[-1]
+    rows = _rest_get(PLAYER_TABLE_SRID, {"ext_sportradar_id": f"eq.{short}", "limit": 1}, select="player_id,name,ext_sportradar_id")
+    return int(rows[0]["player_id"]) if rows else None
 
-def _resolve_uuid(pid, pname, psrid) -> str | None:
-    """Devuelve el ID canónico con prioridad: UUID explícito > SRID > nombre."""
-    if pid and UUID_RE.match(str(pid)):
-        return pid
-    sr = psrid or (pid if (pid and str(pid).startswith("sr:")) else None)
-    u = _resolve_player_uuid_by_sr(sr) if sr else None
-    if u:
-        return u
+def _resolve_id(pid, pname, psrid) -> int | None:
+    # INT directo o string de dígitos
+    if isinstance(pid, int) or (isinstance(pid, str) and pid.isdigit()):
+        return int(pid)
+    # SR:...
+    sr = psrid or (pid if (isinstance(pid, str) and pid.startswith("sr:")) else None)
+    if sr:
+        rid = _resolve_player_int_by_sr(sr)
+        if rid is not None:
+            return rid
+    # Nombre
     if pname:
-        u = _resolve_player_uuid_by_name(pname)
-        if u:
-            return u
+        rid = _resolve_player_int_by_name(pname)
+        if rid is not None:
+            return rid
     return None
 
 def _tourney_meta_fallback(tname: str) -> dict:
-    """Fallback REST si la RPC get_tourney_meta no devuelve nada."""
     if not tname:
         return {}
     try:
@@ -696,51 +485,42 @@ def matchup():
     tname = tourney.get("name") or tourney.get("tourney_name") or ""
     month = int(tourney.get("month") or 1)
 
-    # Acepta también player_sr_id/opponent_sr_id
+    # entrada flexible
     p_id_in = body.get("player_id")
     o_id_in = body.get("opponent_id")
     p_sr_id = body.get("player_sr_id")
     o_sr_id = body.get("opponent_sr_id")
+    player  = body.get("player")
+    opponent= body.get("opponent")
 
-    player = body.get("player")
-    opponent = body.get("opponent")
+    # resolver IDs INT canónicos
+    p_int = _resolve_id(p_id_in, player, p_sr_id)
+    o_int = _resolve_id(o_id_in, opponent, o_sr_id)
 
-    # 0) Resolver IDs canónicos contra tu DB (para el FS)
-    p_uuid = _resolve_uuid(p_id_in, player, p_sr_id)
-    o_uuid = _resolve_uuid(o_id_in, opponent, o_sr_id)
-
-    # 1) Meta de torneo (RPC -> fallback REST)
-    meta = {}
+    # meta torneo
     try:
         meta = FS.get_tourney_meta(tname) or {}
     except Exception:
         meta = {}
     if not meta:
         meta = _tourney_meta_fallback(tname) or {}
-
     surface_default = (meta.get("surface") or "hard").lower()
-    speed_bucket_meta = meta.get("speed_bucket")  # puede venir de la RPC (si usas la vista _fs)
+    speed_bucket_meta = meta.get("speed_bucket")
 
-    # 2) ΔHist desde FS si tenemos ambos IDs (UUID ideal; si fuera int, puedes adaptar FS para soportarlo)
+    # histórico FS (usa INT si tu FS lo espera así)
     hist = {}
-    if p_uuid and o_uuid:
+    if p_int is not None and o_int is not None:
         try:
-            hist = FS.get_matchup_hist_vector(p_id=p_uuid, o_id=o_uuid, yrs=years_back, tname=tname, month=month) or {}
+            hist = FS.get_matchup_hist_vector(p_id=p_int, o_id=o_int, yrs=years_back, tname=tname, month=month) or {}
         except Exception:
             hist = {}
-
-    # fallback: al menos meta de torneo y bucket neutro
     if not hist:
-        hist = {
-            "surface": surface_default,
-            "speed_bucket": speed_bucket_meta or "Medium",
-            "d_hist_surface": 0.0, "d_hist_speed": 0.0, "d_hist_month": 0.0,
-        }
+        hist = {"surface": surface_default, "speed_bucket": speed_bucket_meta or "Medium",
+                "d_hist_surface": 0.0, "d_hist_speed": 0.0, "d_hist_month": 0.0}
 
-    # 3) Señales "Now" (Sportradar) usando IDs SR originales si los hay
-    p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (p_id_in and str(p_id_in).startswith("sr:")) else None))
-    o_sr_norm = _normalize_sr_id(o_sr_id or (o_id_in if (o_id_in and str(o_id_in).startswith("sr:")) else None))
-
+    # Señales NOW (Sportradar) con SRIDs normalizados
+    p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (isinstance(p_id_in, str) and p_id_in.startswith("sr:")) else None))
+    o_sr_norm = _normalize_sr_id(o_sr_id or (o_id_in if (isinstance(o_id_in, str) and o_id_in.startswith("sr:")) else None))
     try:
         profile_p = SR.get_profile(p_sr_norm) if p_sr_norm else {}
         profile_o = SR.get_profile(o_sr_norm) if o_sr_norm else {}
@@ -757,17 +537,15 @@ def matchup():
     now_p = SR.compute_now_features(profile_p, last10_p, ytd_p)
     now_o = SR.compute_now_features(profile_o, last10_o, ytd_o)
 
-    # 4) Flags
+    # Flags
     surf_change_p = 1 if (now_p.get("last_surface") and now_p["last_surface"] != str(hist.get("surface","")).lower()) else 0
     surf_change_o = 1 if (now_o.get("last_surface") and now_o["last_surface"] != str(hist.get("surface","")).lower()) else 0
-
     is_local_p = 1 if body.get("country") and body.get("player_country") and body["country"] == body["player_country"] else 0
     is_local_o = 1 if body.get("country") and body.get("opponent_country") and body["country"] == body["opponent_country"] else 0
-
     mot_p = int(body.get("mot_points_p") or 0)
     mot_o = int(body.get("mot_points_o") or 0)
 
-    # 5) Deltas Now
+    # Deltas NOW
     rank_p = now_p.get("ranking_now") or 999
     rank_o = now_o.get("ranking_now") or 999
     d_rank_norm   = clamp((rank_o - rank_p) / 100.0, -1, 1)
@@ -776,12 +554,12 @@ def matchup():
     d_h2h         = clamp(((h2h_w + 5) / max(1, (h2h_w + h2h_l + 10))) - ((h2h_l + 5) / max(1, (h2h_w + h2h_l + 10))), -0.25, 0.25)
     d_inactive    = clamp(-(now_p["days_inactive"] - now_o["days_inactive"]) / 30.0, -0.25, 0.25)
 
-    # 6) Deltas Hist (FS o fallback)
+    # Deltas Hist
     d_hist_surface = clamp(hist.get("d_hist_surface", 0.0), -0.25, 0.25)
     d_hist_speed   = clamp(hist.get("d_hist_speed",   0.0), -0.25, 0.25)
     d_hist_month   = clamp(hist.get("d_hist_month",   0.0), -0.25, 0.25)
 
-    # 7) Score lineal + ajustes
+    # Score + ajustes
     sum_linear = (
         WEIGHTS["rank_norm"]   * d_rank_norm   +
         WEIGHTS["ytd"]         * d_ytd         +
@@ -805,9 +583,10 @@ def matchup():
         "speed_bucket": hist.get("speed_bucket", speed_bucket_meta or "Medium"),
         "inputs": {
             "player": player, "opponent": opponent,
-            # devolvemos ambos: el id canónico (UUID ideal) y el id SR original si vino
-            "player_id": p_uuid or p_id_in, "opponent_id": o_uuid or o_id_in,
-            "player_sr_id": p_sr_norm, "opponent_sr_id": o_sr_norm,
+            "player_id": p_int if p_int is not None else p_id_in,
+            "opponent_id": o_int if o_int is not None else o_id_in,
+            "player_sr_id": _normalize_sr_id(p_sr_id or (p_id_in if isinstance(p_id_in, str) and p_id_in.startswith("sr:") else None)),
+            "opponent_sr_id": _normalize_sr_id(o_sr_id or (o_id_in if isinstance(o_id_in, str) and o_id_in.startswith("sr:") else None)),
             "tournament": {"name": tname, "month": month},
             "years_back": years_back
         },
@@ -823,34 +602,10 @@ def matchup():
             }
         }
     })
-# ======== fin /matchup (REEMPLAZO) ========
 
-
-
-
+# -----------------------------------------------------------------------------
+# Entrypoint local
+# -----------------------------------------------------------------------------
 if __name__ == '__main__':
+    # Puerto 10000 para local; en CI arrancáis con app.run(port=8080) desde el workflow
     app.run(host="0.0.0.0", port=10000)
-
-  
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
