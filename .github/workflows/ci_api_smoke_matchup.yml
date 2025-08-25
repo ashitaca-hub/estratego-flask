@@ -24,8 +24,7 @@ on:
         required: false
         default: "4"
   push:
-    branches:
-      - main
+    branches: [ main ]
     paths:
       - "main.py"
       - "services/**"
@@ -36,11 +35,11 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     env:
-      # Secrets (recomendado usar service_role para backend)
+      # Secrets (usa service_role para backend)
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY: ${{ secrets.SR_API_KEY }}
-      # Inputs del dispatch (pueden venir vacíos en push)
+      # Inputs del dispatch (en push pueden venir vacíos)
       IN_PLAYER: ${{ github.event.inputs.player }}
       IN_OPPONENT: ${{ github.event.inputs.opponent }}
       IN_TOURN: ${{ github.event.inputs.tournament }}
@@ -50,6 +49,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Paso 1: verificar que el secret SR_API_KEY llega al runner (sin exponerlo)
+      - name: Check SR_API_KEY is wired (sanitized)
+        run: |
+          python - <<'PY'
+          import os, hashlib
+          k = os.getenv('SR_API_KEY', '')
+          print("SR_API_KEY_present=", bool(k))
+          print("SR_API_KEY_len=", len(k))
+          print("SR_API_KEY_sha6=", hashlib.sha256(k.encode()).hexdigest()[:6] if k else "NA")
+          PY
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -62,19 +72,20 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install flask requests; fi
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Start app on 127.0.0.1:8080
+      - name: Start app on 127.0.0.1:8080 (logging to app.log)
         run: |
-          nohup python -c "from main import app; app.run(host='127.0.0.1', port=8080)" >/dev/null 2>&1 &
+          nohup python -c "from main import app; app.run(host='127.0.0.1', port=8080)" > app.log 2>&1 &
           # Espera activa hasta 30s intentando el POST
           for i in $(seq 1 30); do
             curl -fsS -X POST http://127.0.0.1:8080/matchup \
               -H "Content-Type: application/json" \
               -d '{"tournament":{"name":"Cincinnati","month":8},"years_back":4}' >/dev/null 2>&1 && break || true
             sleep 1
-          done || { echo 'App did not start in time'; exit 1; }
+          done || { echo 'App did not start in time'; echo "--- app.log (tail) ---"; tail -n 200 app.log || true; exit 1; }
 
       - name: Smoke básico (/matchup sin IDs)
         run: |
+          set -e
           PAYLOAD=$(jq -n --arg tn "${IN_TOURN:-Cincinnati}" --argjson mo ${IN_MONTH:-8} --argjson yr ${IN_YEARS:-4} \
                      '{tournament:{name:$tn,month:$mo}, years_back:$yr}')
           echo "== Payload básico ==" && echo "$PAYLOAD" | jq .
@@ -83,7 +94,7 @@ jobs:
           echo "$RESP" | jq -e '.ok == true' >/dev/null
           echo "$RESP" | jq -e 'has("prob_player")' >/dev/null
 
-      - name: Smoke avanzado (IDs SR o nombres → UUID por Supabase)
+      - name: Smoke avanzado (IDs SR o nombres → IDs internos)
         env:
           PLAYER_IN: ${{ env.IN_PLAYER }}
           OPPONENT_IN: ${{ env.IN_OPPONENT }}
@@ -104,35 +115,58 @@ jobs:
           }
 
           if [[ "$PLAYER" == sr:competitor:* && "$OPPONENT" == sr:competitor:* ]]; then
-            # Usa directamente SR IDs (tu handler mapeará SR->UUID con players.ext_sportradar_id)
+            # Usa directamente SR IDs (el handler mapeará SR -> ID interno con players_lookup)
             PAYLOAD=$(mk_payload "$PLAYER" "$OPPONENT")
           else
-            # Resolver por nombre -> UUID (requiere SUPABASE_URL/KEY)
+            # Resolver por nombre -> ID interno (requiere SUPABASE_URL/KEY)
             if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
               echo "::warning::Sin SUPABASE_URL/KEY; no se puede resolver por nombre. Saltando."
               exit 0
             fi
 
             encode_uri () { printf '%s' "$1" | jq -sRr @uri; }
-            find_uuid () {
+            find_id () {
               local NAME="$1"
               local NAME_Q; NAME_Q=$(encode_uri "$NAME")
-              curl -sS "${SUPABASE_URL}/rest/v1/players?name=ilike.*${NAME_Q}*&select=player_id,name&limit=1" \
+              curl -sS "${SUPABASE_URL}/rest/v1/players_min?name=ilike.*${NAME_Q}*&select=player_id,name&limit=1" \
                 -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
                 | jq -r '.[0].player_id // empty'
             }
 
-            P_UUID=$(find_uuid "$PLAYER")
-            O_UUID=$(find_uuid "$OPPONENT")
-            if [ -z "$P_UUID" ] || [ -z "$O_UUID" ]; then
-              echo "::warning::No se pudieron resolver UUIDs por nombre. Saltando."
+            P_ID=$(find_id "$PLAYER")
+            O_ID=$(find_id "$OPPONENT")
+            if [ -z "$P_ID" ] || [ -z "$O_ID" ]; then
+              echo "::warning::No se pudieron resolver IDs por nombre. Saltando."
               exit 0
             fi
-            PAYLOAD=$(mk_payload "$P_UUID" "$O_UUID")
+            PAYLOAD=$(mk_payload "$P_ID" "$O_ID")
           fi
 
           echo "== Payload avanzado ==" && echo "$PAYLOAD" | jq .
           RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
           echo "== Respuesta avanzada ==" && echo "$RESP" | jq .
+
+          # Asserts: ok + prob
           echo "$RESP" | jq -e '.ok == true' >/dev/null
           echo "$RESP" | jq -e 'has("prob_player")' >/dev/null
+
+          # Assert: IDs NO deben ser 'sr:*'
+          echo "$RESP" | jq -e '(.inputs.player_id|tostring|startswith("sr:")|not) and (.inputs.opponent_id|tostring|startswith("sr:")|not)' >/dev/null
+
+          # Assert: IDs internos deben ser numéricos (enteros)
+          echo "$RESP" | jq -e '(.inputs.player_id|type=="number") and (.inputs.opponent_id|type=="number")' >/dev/null
+
+      - name: Mostrar últimas líneas de app.log (SR traces)
+        if: always()
+        run: |
+          echo "--- app.log (tail) ---"
+          tail -n 200 app.log || true
+          echo "--- SR traces ---"
+          grep -E "SR GET|SR RESP" app.log || true
+
+      - name: Subir app.log como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-log
+          path: app.log
