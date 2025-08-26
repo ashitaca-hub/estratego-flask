@@ -179,7 +179,7 @@ def main():
     z = (W_MONTH*df["d_month"] + W_SURF*df["d_surface"] + W_SPEED*df["d_speed"]) / denom
     df["p_hat"] = z.apply(sigmoid)
 
-    # métricas
+        # métricas
     try:
         ll = log_loss(df["y"], df["p_hat"], labels=[0,1])
     except ValueError:
@@ -190,19 +190,30 @@ def main():
         auc = float('nan')
     acc = (df["p_hat"]>=0.5).astype(int).mean()
 
+    # Coberturas por dimensión (ambos lados con valor)
+    cov_month   = float(df[["wr_month_p","wr_month_o"]].notna().all(axis=1).mean())
+    cov_surface = float(df[["wr_surf_p","wr_surf_o"]].notna().all(axis=1).mean())
+    cov_speed   = float(df[["wr_speed_p","wr_speed_o"]].notna().all(axis=1).mean())
+
     print("== SUMMARY ==")
     print(f"rows: {len(df)}")
     print(f"log_loss: {ll}")
     print(f"auc: {auc}")
     print(f"accuracy@0.5: {acc}")
     print(f"avg_p: {float(df['p_hat'].mean())}")
-    # % filas con alguna winrate nula antes del fillna
-    null_rate = 1.0 - df[["wr_month_p","wr_month_o","wr_surf_p","wr_surf_o","wr_speed_p","wr_speed_o"]].notna().all(axis=1).mean()
-    print(f"null_rate: {float(null_rate)}")
+    # % filas donde las 6 winrates están presentes
+    full_rows = df[["wr_month_p","wr_month_o","wr_surf_p","wr_surf_o","wr_speed_p","wr_speed_o"]].notna().all(axis=1).mean()
+    null_rate = 1.0 - float(full_rows)
+    print(f"null_rate: {null_rate}")
+    print(f"coverage_month: {cov_month}")
+    print(f"coverage_surface: {cov_surface}")
+    print(f"coverage_speed: {cov_speed}")
 
-    out_csv = "/mnt/data/backtest_hist_asof.csv"
+    # Guardar en el workspace del repo (no /mnt/data)
+    out_csv = "backtest_hist_asof.csv"
     df.to_csv(out_csv, index=False)
     print(f"Saved: {out_csv}")
+
 
 if __name__ == "__main__":
     main()
