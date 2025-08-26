@@ -1,134 +1,178 @@
 DO $$
 DECLARE
-  cols text[];
-  has_table boolean;
+  has_matches boolean;
+  has_tourn   boolean;
 
-  -- detectores
-  col_date text;
-  col_tdate text;
-  col_p1 text; col_p2 text;
-  col_win text; col_lose text;
-  col_surface text;
-  col_tname text;
-  has_long boolean;  -- player1/player2
-  has_wl   boolean;  -- winner/loser
-  has_tourn_table boolean;
+  -- columnas en matches
+  m_cols text[];
+  m_col_date text;
+  m_col_p1   text; m_col_p2 text;
+  m_has_p1p2 boolean;
+  m_has_wl   boolean;
+  m_col_surface text;
+  m_col_tname  text;
 
-  date_expr text;
-  tname_expr text;
+  -- columnas en tournaments
+  t_cols text[];
+  t_col_date  text;
+  t_col_tname text;
+  t_col_surface text;
+  t_has_tourney_id boolean;
+
+  -- expresiones dinámicas
+  date_expr   text;
+  tname_expr  text;
+  surf_expr   text;
   from_clause text;
 BEGIN
-  -- 0) ¿Existe la tabla?
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.tables
-    WHERE table_schema='estratego_v1' AND table_name='matches'
-  ) INTO has_table;
+  -- ¿Existen las tablas?
+  SELECT EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema='estratego_v1' AND table_name='matches')
+    INTO has_matches;
+  SELECT EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema='estratego_v1' AND table_name='tournaments')
+    INTO has_tourn;
 
-  IF NOT has_table THEN
+  IF NOT has_matches THEN
     EXECUTE $q$
       CREATE OR REPLACE VIEW public.fs_matches_long AS
       SELECT NULL::date AS match_date, NULL::int AS player_id, NULL::int AS opponent_id,
              NULL::int AS winner_id, NULL::text AS tournament_name, NULL::text AS surface
       WHERE false
     $q$;
-    COMMENT ON VIEW public.fs_matches_long IS 'FS: fuente estratego_v1.matches NO encontrada (placeholder vacío).';
+    COMMENT ON VIEW public.fs_matches_long IS 'FS: estratego_v1.matches no existe (placeholder vacío).';
     GRANT SELECT ON public.fs_matches_long TO anon, authenticated, service_role;
     RETURN;
   END IF;
 
-  -- 1) columnas presentes
+  -- Columnas de matches
   SELECT array_agg(lower(column_name)::text)
-  INTO cols
+  INTO m_cols
   FROM information_schema.columns
   WHERE table_schema='estratego_v1' AND table_name='matches';
 
-  -- 2) fecha
-  -- preferimos match_date/date/start_time/event_date/start_at/started_at; si no, 'tourney_date' (YYYYMMDD)
+  -- Jugadores: p1/p2 o winner/loser
+  m_has_p1p2 := ( 'player1_id' = ANY(m_cols) OR 'player_1_id' = ANY(m_cols) OR 'p1_id' = ANY(m_cols) )
+             AND ( 'player2_id' = ANY(m_cols) OR 'player_2_id' = ANY(m_cols) OR 'p2_id' = ANY(m_cols) );
+  IF m_has_p1p2 THEN
+    SELECT x FROM unnest(ARRAY['player1_id','player_1_id','p1_id']) x WHERE x = ANY(m_cols) LIMIT 1 INTO m_col_p1;
+    SELECT x FROM unnest(ARRAY['player2_id','player_2_id','p2_id']) x WHERE x = ANY(m_cols) LIMIT 1 INTO m_col_p2;
+  END IF;
+  m_has_wl := ('winner_id' = ANY(m_cols)) AND ('loser_id' = ANY(m_cols));
+
+  -- Fecha en matches
   SELECT x FROM unnest(ARRAY['match_date','date','start_time','event_date','start_at','started_at']) x
-   WHERE x = ANY(cols) LIMIT 1 INTO col_date;
-  IF col_date IS NOT NULL THEN
-    date_expr := format('m.%I::date', col_date);
-  ELSIF 'tourney_date' = ANY(cols) THEN
-    -- si viene numérico YYYYMMDD
-    date_expr := 'CASE WHEN m.tourney_date IS NULL THEN NULL::date
-                       WHEN pg_typeof(m.tourney_date)::text IN (''integer'',''bigint'',''numeric'')
-                         THEN to_date(m.tourney_date::text, ''YYYYMMDD'')
-                       ELSE to_date(m.tourney_date::text, ''YYYYMMDD'') END';
+   WHERE x = ANY(m_cols) LIMIT 1 INTO m_col_date;
+
+  -- Surface
+  IF 'surface' = ANY(m_cols) THEN
+    m_col_surface := 'surface';
+  END IF;
+
+  -- Nombre de torneo directo en matches
+  SELECT x FROM unnest(ARRAY['tournament_name','tourney_name','event_name','competition_name']) x
+   WHERE x = ANY(m_cols) LIMIT 1 INTO m_col_tname;
+
+  -- Columnas de tournaments (si existe)
+  IF has_tourn THEN
+    SELECT array_agg(lower(column_name)::text)
+    INTO t_cols
+    FROM information_schema.columns
+    WHERE table_schema='estratego_v1' AND table_name='tournaments';
+
+    t_has_tourney_id := ('tourney_id' = ANY(t_cols));
+
+    -- nombre de torneo en tournaments
+    SELECT x FROM unnest(ARRAY['tourney_name','tournament_name','name','event_name','competition_name']) x
+     WHERE x = ANY(t_cols) LIMIT 1 INTO t_col_tname;
+
+    -- fecha en tournaments
+    SELECT x FROM unnest(ARRAY['tourney_date','tournament_date','date','start_date']) x
+     WHERE x = ANY(t_cols) LIMIT 1 INTO t_col_date;
+
+    -- surface en tournaments (si existiera)
+    IF 'surface' = ANY(t_cols) THEN
+      t_col_surface := 'surface';
+    END IF;
+  END IF;
+
+  -- FROM / JOIN
+  IF has_tourn AND t_has_tourney_id AND 'tourney_id' = ANY(m_cols) THEN
+    from_clause := ' FROM estratego_v1.matches m LEFT JOIN estratego_v1.tournaments t ON t.tourney_id = m.tourney_id ';
+  ELSE
+    from_clause := ' FROM estratego_v1.matches m ';
+    t_col_tname := NULL;
+    t_col_date  := NULL;
+    t_col_surface := NULL;
+  END IF;
+
+  -- match_date: preferir matches; si no, tournaments; si tampoco, NULL
+  IF m_col_date IS NOT NULL THEN
+    date_expr := format('m.%I::date', m_col_date);
+  ELSIF t_col_date IS NOT NULL THEN
+    -- acepta entero/texto YYYYMMDD
+    date_expr := format(
+      'CASE WHEN t.%1$I IS NULL THEN NULL::date ELSE to_date(t.%1$I::text, ''YYYYMMDD'') END',
+      t_col_date
+    );
   ELSE
     date_expr := 'NULL::date';
   END IF;
 
-  -- 3) jugadores
-  has_long := ( 'player1_id' = ANY(cols) OR 'player_1_id' = ANY(cols) OR 'p1_id' = ANY(cols) )
-              AND ( 'player2_id' = ANY(cols) OR 'player_2_id' = ANY(cols) OR 'p2_id' = ANY(cols) );
-
-  IF has_long THEN
-    SELECT x FROM unnest(ARRAY['player1_id','player_1_id','p1_id']) x WHERE x = ANY(cols) LIMIT 1 INTO col_p1;
-    SELECT x FROM unnest(ARRAY['player2_id','player_2_id','p2_id']) x WHERE x = ANY(cols) LIMIT 1 INTO col_p2;
+  -- tournament_name: preferir matches; si no, tournaments; si tampoco, NULL
+  IF m_col_tname IS NOT NULL THEN
+    tname_expr := format('lower(m.%I::text)', m_col_tname);
+  ELSIF t_col_tname IS NOT NULL THEN
+    tname_expr := format('lower(t.%I::text)', t_col_tname);
+  ELSE
+    tname_expr := 'NULL::text';
   END IF;
 
-  has_wl := ( 'winner_id' = ANY(cols) ) AND ( 'loser_id' = ANY(cols) );
-  IF has_wl THEN
-    col_win := 'winner_id';
-    col_lose := 'loser_id';
+  -- surface: preferir matches; si no, tournaments; si tampoco, NULL
+  IF m_col_surface IS NOT NULL THEN
+    surf_expr := format('lower(m.%I::text)', m_col_surface);
+  ELSIF t_col_surface IS NOT NULL THEN
+    surf_expr := format('lower(t.%I::text)', t_col_surface);
+  ELSE
+    surf_expr := 'NULL::text';
   END IF;
 
-  IF NOT has_long AND NOT has_wl THEN
-    RAISE NOTICE 'estratego_v1.matches no tiene ni (p1/p2) ni (winner/loser) → placeholder vacío';
+  -- Comprobaciones mínimas para poder construir filas
+  IF NOT m_has_p1p2 AND NOT m_has_wl THEN
     EXECUTE $q$
       CREATE OR REPLACE VIEW public.fs_matches_long AS
       SELECT NULL::date AS match_date, NULL::int AS player_id, NULL::int AS opponent_id,
              NULL::int AS winner_id, NULL::text AS tournament_name, NULL::text AS surface
       WHERE false
     $q$;
+    COMMENT ON VIEW public.fs_matches_long IS 'FS: matches sin (p1/p2) ni (winner/loser) — vista vacía.';
+    GRANT SELECT ON public.fs_matches_long TO anon, authenticated, service_role;
     RETURN;
   END IF;
 
-  -- 4) surface
-  IF 'surface' = ANY(cols) THEN
-    col_surface := 'surface';
-  ELSE
-    col_surface := NULL;
-  END IF;
-
-  -- 5) tournament name directo (si existe)
-  SELECT x FROM unnest(ARRAY['tournament_name','tourney_name','event_name','competition_name']) x
-   WHERE x = ANY(cols) LIMIT 1 INTO col_tname;
-
-  -- 6) ¿existe tabla de torneos para mapear tourney_id -> nombre?
-  SELECT to_regclass('estratego_v1.tournaments') IS NOT NULL INTO has_tourn_table;
-
-  -- 7) construir FROM / expresión de torneo
-  IF col_tname IS NOT NULL THEN
-    tname_expr := format('lower(m.%I::text)', col_tname);
-    from_clause := ' FROM estratego_v1.matches m ';
-  ELSIF has_tourn_table AND 'tourney_id' = ANY(cols) THEN
-    -- buscar columnas candidatas en estratego_v1.tournaments
-    PERFORM 1;
-    tname_expr := 'lower(t.tourney_name::text)';
-    from_clause := ' FROM estratego_v1.matches m LEFT JOIN estratego_v1.tournaments t ON t.tourney_id = m.tourney_id ';
-  ELSE
-    tname_expr := 'NULL::text';
-    from_clause := ' FROM estratego_v1.matches m ';
-  END IF;
-
-  -- 8) crear vista en formato LARGO (2 filas por partido)
+  -- Crear vista larga (2 filas por partido), conservando el ORDEN de columnas esperado
   EXECUTE '
     CREATE OR REPLACE VIEW public.fs_matches_long AS
     WITH base AS (
       SELECT
-        '|| date_expr ||'                                             AS match_date,
-        '|| tname_expr ||'                                            AS tournament_name,
-        '|| CASE WHEN col_surface IS NOT NULL THEN format('lower(m.%I::text)', col_surface) ELSE 'NULL::text' END ||' AS surface,
-        '|| CASE
-              WHEN has_long THEN format('m.%I::int', col_p1)
-              ELSE format('m.%I::int', col_win)
-            END ||'                                                   AS p_a,
-        '|| CASE
-              WHEN has_long THEN format('m.%I::int', col_p2)
-              ELSE format('m.%I::int', col_lose)
-            END ||'                                                   AS p_b,
-        '|| CASE WHEN has_wl THEN format('m.%I::int', col_win) ELSE 'NULL::int' END ||'  AS winner
+        '|| date_expr ||' AS match_date,
+        '|| tname_expr ||' AS tournament_name,
+        '|| surf_expr  ||' AS surface,
+        '||
+        CASE
+          WHEN m_has_p1p2 THEN format('m.%I::int', m_col_p1)
+          ELSE 'm.winner_id::int'
+        END ||' AS p_a,
+        '||
+        CASE
+          WHEN m_has_p1p2 THEN format('m.%I::int', m_col_p2)
+          ELSE 'm.loser_id::int'
+        END ||' AS p_b,
+        '||
+        CASE
+          WHEN m_has_wl THEN 'm.winner_id::int'
+          ELSE 'NULL::int'
+        END ||' AS winner
       '|| from_clause ||'
     )
     SELECT match_date, p_a AS player_id, p_b AS opponent_id, winner AS winner_id, tournament_name, surface FROM base
@@ -136,6 +180,6 @@ BEGIN
     SELECT match_date, p_b AS player_id, p_a AS opponent_id, winner AS winner_id, tournament_name, surface FROM base
   ';
 
-  COMMENT ON VIEW public.fs_matches_long IS 'FS: derivada de estratego_v1.matches (2 filas/partido). Usa torneo directo si existe; si no, intenta join a estratego_v1.tournaments por tourney_id; si no, queda NULL.';
+  COMMENT ON VIEW public.fs_matches_long IS 'FS: derivada de estratego_v1.matches (2 filas/partido). Usa nombre/fecha/surface del propio matches o, si faltan, de estratego_v1.tournaments.';
   GRANT SELECT ON public.fs_matches_long TO anon, authenticated, service_role;
 END$$;
