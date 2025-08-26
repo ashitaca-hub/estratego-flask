@@ -2,9 +2,6 @@ name: api-hist-regression
 
 on:
   workflow_dispatch:
-  # (Opcional) pásalo a comentario si no quieres ejecución diaria
-  schedule:
-    - cron: "0 5 * * *"
 
 jobs:
   hist:
@@ -14,13 +11,9 @@ jobs:
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY: ${{ secrets.SR_API_KEY }}
       SR_BASE: https://api.sportradar.com/tennis/trial/v3/en
+      PORT: 8080
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Install deps (python + jq + gunicorn)
         run: |
@@ -28,9 +21,7 @@ jobs:
           pip show gunicorn >/dev/null 2>&1 || pip install gunicorn
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Run API with Gunicorn (background)
-        env:
-          PORT: 8080
+      - name: Run API with gunicorn (background)
         run: |
           set -euo pipefail
           echo "Has SUPABASE_URL? $([ -n "${SUPABASE_URL:-}" ] && echo yes || echo no)"
@@ -41,10 +32,10 @@ jobs:
           gunicorn main:app --workers 1 --bind 127.0.0.1:${PORT} --timeout 120 --log-level info > app.log 2>&1 &
           echo $! > api_pid.txt
 
-          # Espera hasta 30s a que /healthz responda 200
+          # Espera hasta 30s a que /health responda 200
           ok=0
           for i in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+            if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
               echo "API UP via gunicorn"; ok=1; break
             fi
             if ! kill -0 "$(cat api_pid.txt 2>/dev/null)" 2>/dev/null; then break; fi
@@ -52,36 +43,20 @@ jobs:
           done
 
           if [ "$ok" -eq 0 ]; then
-            echo "::group::app.log (últimas 200 líneas)"
-            tail -n 200 app.log || true
-            echo "::endgroup::"
-            echo "::error::API no responde en http://127.0.0.1:${PORT}/healthz"
+            echo "::group::app.log (últimas 200 líneas)"; tail -n 200 app.log || true; echo "::endgroup::"
+            echo "::error::API no responde en http://127.0.0.1:${PORT}/health"
             exit 1
           fi
-
-      - name: Healthcheck
-        env:
-          PORT: 8080
-        run: curl -fsS "http://127.0.0.1:${PORT}/healthz"
-
-      - name: Stop API
-        if: always()
-        run: |
-          if [ -f api_pid.txt ]; then
-            kill "$(cat api_pid.txt)" || true
-          fi
-
-
 
       - name: Smoke Cincinnati (Sinner vs Alcaraz)
         run: |
           set -euo pipefail
           PAYLOAD='{"player_id":"sr:competitor:225050","opponent_id":"sr:competitor:407573","tournament":{"name":"Cincinnati","month":8},"years_back":4}'
           echo "== Payload ==" && echo "$PAYLOAD" | jq .
-          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+          RESP=$(curl -sS -X POST "http://127.0.0.1:${PORT}/matchup" -H "Content-Type: application/json" -d "$PAYLOAD")
           echo "== Respuesta ==" && echo "$RESP" | jq .
 
-          # Extraer hist_* y fallar solo si las tres son exactamente 0
+          # Falla sólo si las 3 hist_* son exactamente 0
           ALL_ZERO=$(echo "$RESP" | jq -e '
             [
               .features.deltas.hist_month,
@@ -91,7 +66,6 @@ jobs:
             | map((. // 0) == 0)
             | all
           ' >/dev/null && echo "yes" || echo "no")
-
           echo "ALL_ZERO=${ALL_ZERO}"
           if [ "$ALL_ZERO" = "yes" ]; then
             echo "::error::Todas las hist_* = 0 → posible regresión del Feature Store"
