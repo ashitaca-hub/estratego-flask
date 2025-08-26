@@ -1,0 +1,38 @@
+name: db-tourney-alias
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - sql/migrations/2025_08_26_tourney_alias.sql
+      - .github/workflows/ci_db_tourney_alias.yml
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply migration (tourney alias + resolver)
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          test -f sql/migrations/2025_08_26_tourney_alias.sql || { echo "::error::SQL file not found"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_26_tourney_alias.sql
+
+      - name: Sanity checks
+        run: |
+          psql "$DATABASE_URL" -c "\df+ public.norm_tourney"
+          psql "$DATABASE_URL" -c "\d+ public.court_speed_rankig_norm_compat_keyed"
+          psql "$DATABASE_URL" -c "\d+ public.fs_matches_long_keyed"
+          psql "$DATABASE_URL" -c "\d+ public.tourney_speed_resolved"
+          psql "$DATABASE_URL" -c "SELECT public.norm_tourney('Western & Southern Open (Cincinnati)') AS key;"
+
+      - name: Top 30 sugerencias de alias
+        run: |
+          psql "$DATABASE_URL" -F $'\t' -A -c "SELECT * FROM public.tourney_key_suggestions LIMIT 30;"
