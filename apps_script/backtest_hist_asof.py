@@ -4,8 +4,8 @@ import pandas as pd
 from sklearn.metrics import log_loss, roc_auc_score, accuracy_score
 
 DATABASE_URL = os.environ["DATABASE_URL"]
-YEARS_BACK = int(os.environ.get("BT_YEARS", "4"))
-MAX_ROWS   = int(os.environ.get("BT_MAX", "1200"))  # baja si tu DB es lenta (ej. 800)
+YEARS_BACK = int(os.environ.get("BT_YEARS", "3"))
+MAX_ROWS   = int(os.environ.get("BT_MAX", "800"))  # baja si tu DB es lenta (ej. 800)
 
 SQL = f"""
 WITH uniq AS (
