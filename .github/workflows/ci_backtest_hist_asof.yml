@@ -41,7 +41,7 @@ jobs:
 
       - name: Run backtest (HIST only)
         run: |
-          python scripts/backtest_hist_asof.py
+          python apps_script/backtest_hist_asof.py
 
       - name: Upload artifact (CSV)
         uses: actions/upload-artifact@v4
