@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
--- Función para normalizar nombres (minúsculas, sin acentos, solo [a-z0-9] + espacios colapsados)
+-- Normaliza nombres de torneo: minúsculas, sin acentos, solo [a-z0-9] y espacios colapsados
 CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
 RETURNS text
 LANGUAGE sql
@@ -32,7 +32,7 @@ FROM public.court_speed_rankig_norm;
 
 GRANT SELECT ON public.court_speed_rankig_norm_compat_keyed TO anon, authenticated, service_role;
 
--- Vista espejo de fs_matches_long con la misma clave normalizada
+-- Vista espejo de fs_matches_long con la misma clave
 CREATE OR REPLACE VIEW public.fs_matches_long_keyed AS
 SELECT
   f.*,
