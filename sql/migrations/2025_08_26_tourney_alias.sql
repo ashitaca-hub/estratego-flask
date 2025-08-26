@@ -1,7 +1,7 @@
 CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
--- Normalizador (ya lo tienes, pero lo dejamos idempotente)
+-- Normaliza nombres de torneo a una clave canónica
 CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
 RETURNS text
 LANGUAGE sql
@@ -13,7 +13,7 @@ AS $$
          END
 $$;
 
--- Vista keyed de velocidades (deriva bucket de rank)
+-- Velocidades con clave normalizada (deriva bucket desde speed_rank)
 CREATE OR REPLACE VIEW public.court_speed_rankig_norm_compat_keyed AS
 SELECT
   tournament_name,
@@ -30,20 +30,23 @@ FROM public.court_speed_rankig_norm;
 
 GRANT SELECT ON public.court_speed_rankig_norm_compat_keyed TO anon, authenticated, service_role;
 
--- Vista keyed de tus partidos
+-- Partidos con la misma clave
 CREATE OR REPLACE VIEW public.fs_matches_long_keyed AS
-SELECT f.*,
-       public.norm_tourney(f.tournament_name) AS tourney_key
+SELECT
+  f.*,
+  public.norm_tourney(f.tournament_name) AS tourney_key
 FROM public.fs_matches_long f;
 
 GRANT SELECT ON public.fs_matches_long_keyed TO anon, authenticated, service_role;
 
--- Mapa de alias: src_key (como viene en tus datos) -> dest_key (como está en la tabla de velocidades)
+-- Mapa de alias: src_key (como viene en tus datos) -> dest_key (clave canónica de la tabla de velocidades)
+-- Nota: SIN FOREIGN KEY (no se puede referenciar vistas). Validaremos con una consulta.
 CREATE TABLE IF NOT EXISTS public.tourney_key_map (
   src_key  text PRIMARY KEY,
-  dest_key text NOT NULL REFERENCES public.court_speed_rankig_norm_compat_keyed(tourney_key),
+  dest_key text NOT NULL,
   note     text
 );
+CREATE INDEX IF NOT EXISTS tourney_key_map_dest_idx ON public.tourney_key_map(dest_key);
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.tourney_key_map TO authenticated, service_role;
 
 -- Resolver final: combina claves nativas y alias
@@ -58,7 +61,7 @@ JOIN public.court_speed_rankig_norm_compat_keyed k
 
 GRANT SELECT ON public.tourney_speed_resolved TO anon, authenticated, service_role;
 
--- Sugerencias automáticas (para poblar alias fácilmente)
+-- Sugerencias automáticas para poblar alias
 CREATE MATERIALIZED VIEW IF NOT EXISTS public.tourney_key_suggestions AS
 WITH fs AS (
   SELECT DISTINCT tourney_key
@@ -89,3 +92,11 @@ BEGIN
     REFRESH MATERIALIZED VIEW public.tourney_key_suggestions;
   END IF;
 END$$;
+
+-- (Opcional) Vista de validación: alias cuyo dest_key no existe en el diccionario de velocidades
+CREATE OR REPLACE VIEW public.tourney_key_map_orphans AS
+SELECT m.*
+FROM public.tourney_key_map m
+LEFT JOIN public.court_speed_rankig_norm_compat_keyed k ON k.tourney_key = m.dest_key
+WHERE k.tourney_key IS NULL;
+GRANT SELECT ON public.tourney_key_map_orphans TO anon, authenticated, service_role;
