@@ -612,7 +612,10 @@ def matchup():
 # -----------------------------------------------------------------------------
 # Entrypoint local
 # -----------------------------------------------------------------------------
-if __name__ == '__main__':
-    # Puerto 10000 para local; en CI arrancáis con app.run(port=8080) desde el workflow
-    app.run(host="0.0.0.0", port=10000)
+# al final, sustituye tu bloque __main__
+if __name__ == "__main__":
+    # usa PORT de entorno (por defecto 8080) -> compatible con CI
+    port = int(os.environ.get("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
+
 
