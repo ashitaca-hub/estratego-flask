@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
--- Normaliza nombres de torneo: minúsculas, sin acentos, solo [a-z0-9] y espacios colapsados
+-- Normaliza nombres: minúsculas, sin acentos, sólo [a-z0-9] y espacios colapsados
 CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
 RETURNS text
 LANGUAGE sql
@@ -12,22 +12,19 @@ AS $$
          END
 $$;
 
--- Vista de velocidades con clave normalizada
+-- Vista de velocidades con clave normalizada (deriva bucket desde speed_rank)
 CREATE OR REPLACE VIEW public.court_speed_rankig_norm_compat_keyed AS
 SELECT
   tournament_name,
   public.norm_tourney(tournament_name) AS tourney_key,
   lower(surface) AS surface,
   speed_rank,
-  COALESCE(
-    speed_bucket,
-    CASE
-      WHEN speed_rank IS NULL THEN NULL
-      WHEN speed_rank <= 33 THEN 'Slow'
-      WHEN speed_rank <= 66 THEN 'Medium'
-      ELSE 'Fast'
-    END
-  ) AS speed_bucket
+  CASE
+    WHEN speed_rank IS NULL THEN NULL
+    WHEN speed_rank <= 33 THEN 'Slow'
+    WHEN speed_rank <= 66 THEN 'Medium'
+    ELSE 'Fast'
+  END AS speed_bucket
 FROM public.court_speed_rankig_norm;
 
 GRANT SELECT ON public.court_speed_rankig_norm_compat_keyed TO anon, authenticated, service_role;
