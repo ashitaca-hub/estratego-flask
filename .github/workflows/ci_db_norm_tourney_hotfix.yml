@@ -1,0 +1,26 @@
+name: db-norm-tourney-hotfix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - sql/migrations/2025_08_26_norm_tourney_hotfix.sql
+      - .github/workflows/ci_db_norm_tourney_hotfix.yml
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Apply hotfix
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_26_norm_tourney_hotfix.sql
+      - name: Check function and suggestions
+        run: |
+          psql "$DATABASE_URL" -c "\df+ public.norm_tourney"
+          psql "$DATABASE_URL" -c "SELECT count(*) AS suggestions FROM public.tourney_key_suggestions;"
