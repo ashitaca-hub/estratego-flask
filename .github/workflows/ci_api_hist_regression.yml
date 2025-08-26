@@ -22,55 +22,38 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps (python + jq + uvicorn fallback)
+      - name: Install deps (python + jq + gunicorn)
         run: |
           pip install -r requirements.txt || true
-          pip show uvicorn >/dev/null 2>&1 || pip install uvicorn
+          pip show gunicorn >/dev/null 2>&1 || pip install gunicorn
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Run API (background, robust)
+      - name: Run API with Gunicorn (background)
         env:
-          PORT: 8080   # cámbialo si tu main.py usa otro puerto
+          PORT: 8080
         run: |
           set -euo pipefail
           echo "Has SUPABASE_URL? $([ -n "${SUPABASE_URL:-}" ] && echo yes || echo no)"
           echo "Has SUPABASE_KEY? $([ -n "${SUPABASE_KEY:-}" ] && echo yes || echo no)"
           echo "Has SR_API_KEY?   $([ -n "${SR_API_KEY:-}" ] && echo yes || echo no)"
 
-          # Intento 1: python main.py
-          (python main.py > app.log 2>&1 & echo $! > api_pid.txt) || true
+          # Lanza Flask (WSGI) con gunicorn
+          gunicorn main:app --workers 1 --bind 127.0.0.1:${PORT} --timeout 120 --log-level info > app.log 2>&1 &
+          echo $! > api_pid.txt
 
+          # Espera hasta 30s a que /healthz responda 200
           ok=0
           for i in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
-              echo "API UP via python main.py"; ok=1; break
+              echo "API UP via gunicorn"; ok=1; break
             fi
-            # si el proceso murió, salimos del bucle
             if ! kill -0 "$(cat api_pid.txt 2>/dev/null)" 2>/dev/null; then break; fi
             sleep 1
           done
 
           if [ "$ok" -eq 0 ]; then
-            echo "Primer intento falló. Probando uvicorn main:app en ${PORT}…"
-            # matar resto si quedó vivo
-            if [ -f api_pid.txt ] && kill -0 "$(cat api_pid.txt)" 2>/dev/null; then kill "$(cat api_pid.txt)" || true; fi
-            (python -m uvicorn main:app --host 127.0.0.1 --port "${PORT}" > app.log 2>&1 & echo $! > api_pid.txt) || true
-
-            for i in $(seq 1 30); do
-              if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
-                echo "API UP via uvicorn"; ok=1; break
-              fi
-              if ! kill -0 "$(cat api_pid.txt 2>/dev/null)" 2>/dev/null; then break; fi
-              sleep 1
-            done
-          fi
-
-          if [ "$ok" -eq 0 ]; then
-            echo "::group::Últimas líneas de app.log"
+            echo "::group::app.log (últimas 200 líneas)"
             tail -n 200 app.log || true
-            echo "::endgroup::"
-            echo "::group::Puertos en escucha"
-            ss -ltnp || true
             echo "::endgroup::"
             echo "::error::API no responde en http://127.0.0.1:${PORT}/healthz"
             exit 1
@@ -80,6 +63,14 @@ jobs:
         env:
           PORT: 8080
         run: curl -fsS "http://127.0.0.1:${PORT}/healthz"
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f api_pid.txt ]; then
+            kill "$(cat api_pid.txt)" || true
+          fi
+
 
 
       - name: Smoke Cincinnati (Sinner vs Alcaraz)
