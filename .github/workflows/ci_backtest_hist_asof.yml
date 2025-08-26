@@ -1,0 +1,50 @@
+name: backtest-hist-asof
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "Ventana histórica en años"
+        required: false
+        default: "4"
+      max_rows:
+        description: "Máx. filas para el backtest (para CI)"
+        required: false
+        default: "1500"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      BT_YEARS: ${{ github.event.inputs.years }}
+      BT_MAX:   ${{ github.event.inputs.max_rows }}
+      # Pesos iniciales (puedes tunearlos desde inputs si quieres)
+      W_MONTH: "1.0"
+      W_SURF:  "1.0"
+      W_SPEED: "1.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql + Python deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          pip install psycopg2-binary pandas scikit-learn
+
+      - name: Apply AS-OF RPCs
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          test -f sql/migrations/2025_08_26_fs_hist_winrates_asof.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_26_fs_hist_winrates_asof.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT proname FROM pg_proc WHERE proname LIKE 'fs_%_winrate_asof';"
+
+      - name: Run backtest (HIST only)
+        run: |
+          python scripts/backtest_hist_asof.py
+
+      - name: Upload artifact (CSV)
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest_hist_asof_csv
+          path: /mnt/data/backtest_hist_asof.csv
