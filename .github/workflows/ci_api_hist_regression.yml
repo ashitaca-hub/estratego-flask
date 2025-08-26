@@ -1,0 +1,71 @@
+name: api-hist-regression
+
+on:
+  workflow_dispatch:
+  # (Opcional) pásalo a comentario si no quieres ejecución diaria
+  schedule:
+    - cron: "0 5 * * *"
+
+jobs:
+  hist:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SR_API_KEY: ${{ secrets.SR_API_KEY }}
+      SR_BASE: https://api.sportradar.com/tennis/trial/v3/en
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps (python + jq)
+        run: |
+          pip install -r requirements.txt
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run API (background)
+        run: |
+          python main.py & echo $! > api_pid.txt
+          # pequeña espera para que arranque
+          sleep 3
+
+      - name: Healthcheck
+        run: curl -sS http://127.0.0.1:8080/healthz || (echo "::error::API no responde" && exit 1)
+
+      - name: Smoke Cincinnati (Sinner vs Alcaraz)
+        run: |
+          set -euo pipefail
+          PAYLOAD='{"player_id":"sr:competitor:225050","opponent_id":"sr:competitor:407573","tournament":{"name":"Cincinnati","month":8},"years_back":4}'
+          echo "== Payload ==" && echo "$PAYLOAD" | jq .
+          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+          echo "== Respuesta ==" && echo "$RESP" | jq .
+
+          # Extraer hist_* y fallar solo si las tres son exactamente 0
+          ALL_ZERO=$(echo "$RESP" | jq -e '
+            [
+              .features.deltas.hist_month,
+              .features.deltas.hist_surface,
+              .features.deltas.hist_speed
+            ]
+            | map((. // 0) == 0)
+            | all
+          ' >/dev/null && echo "yes" || echo "no")
+
+          echo "ALL_ZERO=${ALL_ZERO}"
+          if [ "$ALL_ZERO" = "yes" ]; then
+            echo "::error::Todas las hist_* = 0 → posible regresión del Feature Store"
+            exit 1
+          else
+            echo "OK: hay señal histórica en al menos una dimensión."
+          fi
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f api_pid.txt ]; then
+            kill "$(cat api_pid.txt)" || true
+          fi
