@@ -11,6 +11,13 @@ on:
         description: "Máx. filas para el backtest (para CI)"
         required: false
         default: "1500"
+  # (Opcional) auto-run al cambiar el script o la SQL
+  push:
+    branches: [ main ]
+    paths:
+      - apps_script/backtest_hist_asof.py
+      - sql/migrations/2025_08_26_fs_hist_winrates_asof.sql
+      - .github/workflows/ci_backtest_hist_asof.yml
 
 jobs:
   backtest:
@@ -19,7 +26,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       BT_YEARS: ${{ github.event.inputs.years }}
       BT_MAX:   ${{ github.event.inputs.max_rows }}
-      # Pesos iniciales (puedes tunearlos desde inputs si quieres)
+      # Pesos iniciales (ajústalos si quieres)
       W_MONTH: "1.0"
       W_SURF:  "1.0"
       W_SPEED: "1.0"
