@@ -22,6 +22,10 @@ def handle_exception(e):
 def health():
     return jsonify({"ok": True}), 200
 
+@app.get("/healthz")
+def healthz():
+    return health()  # reutiliza tu /health
+
 # -----------------------------------------------------------------------------
 # Sportradar config (ahora via entorno)
 # -----------------------------------------------------------------------------
@@ -617,5 +621,6 @@ if __name__ == "__main__":
     # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
