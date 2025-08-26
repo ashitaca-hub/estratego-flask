@@ -49,8 +49,8 @@ meta AS (
     EXTRACT(MONTH FROM u.match_date)::int AS mon,
     c.speed_bucket AS sb_meta
   FROM uniq u
-  LEFT JOIN public.court_speed_rankig_norm_compat c
-    ON lower(u.tournament_name) = lower(c.tournament_name)
+  LEFT JOIN public.court_speed_rankig_norm_compat_keyed c
+    ON public.norm_tourney(u.tournament_name) = c.tourney_key
 ),
 -- “Explota” cada partido en dos participantes (player/opponent)
 part AS (
