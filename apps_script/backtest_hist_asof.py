@@ -26,13 +26,14 @@ W_MONTH = env_float("W_MONTH", 1.0)
 W_SURF  = env_float("W_SURF",  1.0)
 W_SPEED = env_float("W_SPEED", 1.0)
 
+SQL = f"""
 WITH uniq AS (
-  -- Una fila por partido (canónica) para backtest
+  -- One canonical row per match (last 3 years)
   SELECT
     f.match_date,
     f.tournament_name,
     f.surface,
-    LEAST(f.player_id, f.opponent_id)   AS p_low,
+    LEAST(f.player_id, f.opponent_id) AS p_low,
     GREATEST(f.player_id, f.opponent_id) AS p_high,
     MAX(f.winner_id) AS winner_id
   FROM public.fs_matches_long f
@@ -43,7 +44,7 @@ WITH uniq AS (
 ),
 meta AS (
   SELECT
-    row_number() over() AS rid,
+    row_number() OVER () AS rid,
     u.*,
     EXTRACT(MONTH FROM u.match_date)::int AS mon,
     c.speed_bucket AS sb_meta
@@ -51,23 +52,21 @@ meta AS (
   LEFT JOIN public.court_speed_rankig_norm_compat_keyed c
     ON public.norm_tourney(u.tournament_name) = c.tourney_key
 ),
--- “Explota” cada partido en dos participantes (player/opponent)
 part AS (
+  -- Explode each match into two participants (player/opponent)
   SELECT rid, match_date, mon, surface AS meta_surf, sb_meta, p_high AS pid, winner_id, 1 AS is_player FROM meta
   UNION ALL
   SELECT rid, match_date, mon, surface AS meta_surf, sb_meta, p_low  AS pid, winner_id, 0 AS is_player FROM meta
 ),
--- Historial “as-of” con una sola pasada: unimos a todos los partidos anteriores de ese pid
 hist AS (
+  -- As-of history for each participant in a single pass
   SELECT
     p.rid,
     p.is_player,
     COUNT(*) FILTER (WHERE EXTRACT(MONTH FROM f2.match_date) = p.mon) AS played_m,
     COUNT(*) FILTER (WHERE EXTRACT(MONTH FROM f2.match_date) = p.mon AND f2.winner_id = p.pid) AS wins_m,
-
     COUNT(*) FILTER (WHERE lower(COALESCE(f2.surface, c2.surface)) = lower(p.meta_surf)) AS played_surf,
     COUNT(*) FILTER (WHERE lower(COALESCE(f2.surface, c2.surface)) = lower(p.meta_surf) AND f2.winner_id = p.pid) AS wins_surf,
-
     COUNT(*) FILTER (
       WHERE lower(
         COALESCE(
@@ -109,10 +108,8 @@ pivot AS (
     rid,
     MAX(CASE WHEN is_player=1 THEN wins_m::float/NULLIF(played_m,0) END) AS wr_month_p,
     MAX(CASE WHEN is_player=0 THEN wins_m::float/NULLIF(played_m,0) END) AS wr_month_o,
-
     MAX(CASE WHEN is_player=1 THEN wins_surf::float/NULLIF(played_surf,0) END) AS wr_surf_p,
     MAX(CASE WHEN is_player=0 THEN wins_surf::float/NULLIF(played_surf,0) END) AS wr_surf_o,
-
     MAX(CASE WHEN is_player=1 THEN wins_spd::float/NULLIF(played_spd,0) END) AS wr_speed_p,
     MAX(CASE WHEN is_player=0 THEN wins_spd::float/NULLIF(played_spd,0) END) AS wr_speed_o
   FROM hist
@@ -128,6 +125,8 @@ SELECT
 FROM meta m
 JOIN pivot p USING (rid)
 ORDER BY m.match_date DESC;
+"""
+
 
 
 def sigmoid(x: float) -> float:
