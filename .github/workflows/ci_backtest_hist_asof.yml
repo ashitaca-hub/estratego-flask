@@ -54,4 +54,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backtest_hist_asof_csv
-          path: /mnt/data/backtest_hist_asof.csv
+          path: backtest_hist_asof.csv
+
