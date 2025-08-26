@@ -3,9 +3,28 @@ import psycopg2
 import pandas as pd
 from sklearn.metrics import log_loss, roc_auc_score, accuracy_score
 
+def env_int(name: str, default: int) -> int:
+    v = os.getenv(name, "")
+    try:
+        return int(v) if str(v).strip() != "" else default
+    except ValueError:
+        return default
+
+def env_float(name: str, default: float) -> float:
+    v = os.getenv(name, "")
+    try:
+        return float(v) if str(v).strip() != "" else default
+    except ValueError:
+        return default
+
 DATABASE_URL = os.environ["DATABASE_URL"]
-YEARS_BACK = int(os.environ.get("BT_YEARS", "3"))
-MAX_ROWS   = int(os.environ.get("BT_MAX", "800"))  # baja si tu DB es lenta (ej. 800)
+YEARS_BACK   = env_int("BT_YEARS", 3)     # antes: int(os.environ.get("BT_YEARS", "3"))
+MAX_ROWS     = env_int("BT_MAX", 1200)    # ajusta si quieres
+
+# pesos (por si los pasas vacíos)
+W_MONTH = env_float("W_MONTH", 1.0)
+W_SURF  = env_float("W_SURF",  1.0)
+W_SPEED = env_float("W_SPEED", 1.0)
 
 SQL = f"""
 WITH uniq AS (
@@ -156,8 +175,8 @@ def main():
     w_month = float(os.environ.get("W_MONTH", "1.0"))
     w_surf  = float(os.environ.get("W_SURF",  "1.0"))
     w_speed = float(os.environ.get("W_SPEED", "1.0"))
-    denom = max(1.0, (abs(w_month)+abs(w_surf)+abs(w_speed)))
-    z = (w_month*df["d_month"] + w_surf*df["d_surface"] + w_speed*df["d_speed"]) / denom
+    denom = max(1.0, (abs(W_MONTH)+abs(W_SURF)+abs(W_SPEED)))
+    z = (W_MONTH*df["d_month"] + W_SURF*df["d_surface"] + W_SPEED*df["d_speed"]) / denom
     df["p_hat"] = z.apply(sigmoid)
 
     # métricas
