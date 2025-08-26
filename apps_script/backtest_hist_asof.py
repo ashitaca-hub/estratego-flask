@@ -26,14 +26,13 @@ W_MONTH = env_float("W_MONTH", 1.0)
 W_SURF  = env_float("W_SURF",  1.0)
 W_SPEED = env_float("W_SPEED", 1.0)
 
-SQL = f"""
 WITH uniq AS (
   -- Una fila por partido (canónica) para backtest
   SELECT
     f.match_date,
     f.tournament_name,
     f.surface,
-    LEAST(f.player_id, f.opponent_id)  AS p_low,
+    LEAST(f.player_id, f.opponent_id)   AS p_low,
     GREATEST(f.player_id, f.opponent_id) AS p_high,
     MAX(f.winner_id) AS winner_id
   FROM public.fs_matches_long f
@@ -49,8 +48,8 @@ meta AS (
     EXTRACT(MONTH FROM u.match_date)::int AS mon,
     c.speed_bucket AS sb_meta
   FROM uniq u
-  LEFT JOIN public.court_speed_rankig_norm_compat_keyed c2
-  ON public.norm_tourney(f2.tournament_name) = c2.tourney_key
+  LEFT JOIN public.court_speed_rankig_norm_compat_keyed c
+    ON public.norm_tourney(u.tournament_name) = c.tourney_key
 ),
 -- “Explota” cada partido en dos participantes (player/opponent)
 part AS (
@@ -63,22 +62,11 @@ hist AS (
   SELECT
     p.rid,
     p.is_player,
-    -- Jugamos con la ventana [match_date - YEARS_BACK, match_date)
-    COUNT(*) FILTER (
-      WHERE EXTRACT(MONTH FROM f2.match_date) = p.mon
-    ) AS played_m,
-    COUNT(*) FILTER (
-      WHERE EXTRACT(MONTH FROM f2.match_date) = p.mon
-        AND f2.winner_id = p.pid
-    ) AS wins_m,
+    COUNT(*) FILTER (WHERE EXTRACT(MONTH FROM f2.match_date) = p.mon) AS played_m,
+    COUNT(*) FILTER (WHERE EXTRACT(MONTH FROM f2.match_date) = p.mon AND f2.winner_id = p.pid) AS wins_m,
 
-    COUNT(*) FILTER (
-      WHERE lower(COALESCE(f2.surface, c2.surface)) = lower(p.meta_surf)
-    ) AS played_surf,
-    COUNT(*) FILTER (
-      WHERE lower(COALESCE(f2.surface, c2.surface)) = lower(p.meta_surf)
-        AND f2.winner_id = p.pid
-    ) AS wins_surf,
+    COUNT(*) FILTER (WHERE lower(COALESCE(f2.surface, c2.surface)) = lower(p.meta_surf)) AS played_surf,
+    COUNT(*) FILTER (WHERE lower(COALESCE(f2.surface, c2.surface)) = lower(p.meta_surf) AND f2.winner_id = p.pid) AS wins_surf,
 
     COUNT(*) FILTER (
       WHERE lower(
@@ -105,18 +93,17 @@ hist AS (
           END
         )
       ) = lower(p.sb_meta)
-        AND f2.winner_id = p.pid
+      AND f2.winner_id = p.pid
     ) AS wins_spd
   FROM part p
   LEFT JOIN public.fs_matches_long f2
     ON f2.player_id = p.pid
    AND f2.match_date >= (p.match_date - make_interval(years => {YEARS_BACK}))
    AND f2.match_date <  p.match_date
-  LEFT JOIN public.court_speed_rankig_norm_compat c2
-    ON lower(f2.tournament_name) = lower(c2.tournament_name)  -- exact/normalizado (más rápido que fuzzy)
+  LEFT JOIN public.court_speed_rankig_norm_compat_keyed c2
+    ON public.norm_tourney(f2.tournament_name) = c2.tourney_key
   GROUP BY p.rid, p.is_player
 ),
--- Pivota a columnas P/O por rid
 pivot AS (
   SELECT
     rid,
@@ -141,7 +128,7 @@ SELECT
 FROM meta m
 JOIN pivot p USING (rid)
 ORDER BY m.match_date DESC;
-"""
+
 
 def sigmoid(x: float) -> float:
     try:
