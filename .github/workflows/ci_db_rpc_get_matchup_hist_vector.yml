@@ -1,0 +1,29 @@
+name: db-rpc-get-matchup-hist-vector
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - sql/migrations/2025_08_27_rpc_get_matchup_hist_vector.sql
+      - .github/workflows/ci_db_rpc_get_matchup_hist_vector.yml
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply SQL
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_27_rpc_get_matchup_hist_vector.sql
+
+      - name: Smoke RPC
+        run: |
+          # Sinner vs Alcaraz ejemplo (IDs internos – ajusta a tus IDs)
+          SQL="SELECT public.get_matchup_hist_vector(206173, 207989, 3, current_date, 'Cincinnati', 8)::jsonb->'d_hist_speed' AS d_speed;"
+          psql "$DATABASE_URL" -c "$SQL"
