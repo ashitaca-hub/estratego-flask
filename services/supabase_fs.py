@@ -66,6 +66,20 @@ def norm_tourney(txt: str | None) -> str | None:
 # -------------------------------------------------------------------
 # Torneo → surface / speed
 # -------------------------------------------------------------------
+
+
+def get_sr_id_from_player_int(player_id: int) -> str | None:
+    try:
+        rows = _get("players_lookup",
+                    {"player_id": f"eq.{int(player_id)}", "limit": 1},
+                    select="ext_sportradar_id")
+        if rows and rows[0].get("ext_sportradar_id"):
+            return f"sr:competitor:{rows[0]['ext_sportradar_id']}"
+    except Exception:
+        pass
+    return None
+
+
 def _speed_bucket_from_rank(rank):
     if rank is None:
         return None
