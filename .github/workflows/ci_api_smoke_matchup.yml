@@ -98,6 +98,9 @@ jobs:
         env:
           PLAYER_IN: ${{ env.IN_PLAYER }}
           OPPONENT_IN: ${{ env.IN_OPPONENT }}
+          HIST_W_MONTH: "0.5"
+          HIST_W_SURF:  "2.0"
+          HIST_W_SPEED: "2.0"
         run: |
           set -e
           # Defaults si no hay inputs (funciona igual en push y dispatch)
