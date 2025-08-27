@@ -559,6 +559,19 @@ def matchup():
     # Señales NOW (Sportradar) con SRIDs normalizados
     p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (isinstance(p_id_in, str) and p_id_in.startswith("sr:")) else None))
     o_sr_norm = _normalize_sr_id(o_sr_id or (o_id_in if (isinstance(o_id_in, str) and o_id_in.startswith("sr:")) else None))
+
+    # Si faltan SR pero tenemos INT, intenta resolverlos:
+if p_sr_norm is None and isinstance(p_int, int):
+    try:
+        p_sr_norm = FS.get_sr_id_from_player_int(p_int)
+    except Exception:
+        pass
+if o_sr_norm is None and isinstance(o_int, int):
+    try:
+        o_sr_norm = FS.get_sr_id_from_player_int(o_int)
+    except Exception:
+        pass
+        
     try:
         profile_p = SR.get_profile(p_sr_norm) if p_sr_norm else {}
         profile_o = SR.get_profile(o_sr_norm) if o_sr_norm else {}
@@ -661,6 +674,7 @@ if __name__ == "__main__":
     # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
