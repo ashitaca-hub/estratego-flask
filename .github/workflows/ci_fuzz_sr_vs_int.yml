@@ -32,9 +32,9 @@ jobs:
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
-      YEARS: ${{ github.event.inputs.years_back }}
-      DAYS:  ${{ github.event.inputs.sample_days }}
-      N:     ${{ github.event.inputs.sample_size }}
+      YEARS:  ${{ github.event.inputs.years_back }}
+      DAYS:   ${{ github.event.inputs.sample_days }}
+      N:      ${{ github.event.inputs.sample_size }}
       THRESH: ${{ github.event.inputs.delta_threshold }}
       MAX_MIS: ${{ github.event.inputs.max_mismatches }}
 
@@ -139,12 +139,9 @@ jobs:
             awk -v p="$prob_sr"  'BEGIN{exit !(p>=0 && p<=1)}' || { echo "::error::prob_sr fuera de rango"; exit 1; }
             awk -v p="$prob_int" 'BEGIN{exit !(p>=0 && p<=1)}' || { echo "::error::prob_int fuera de rango"; exit 1; }
 
-            # Delta
-            delta=$(python - <<PY
-p1=float("$prob_sr"); p2=float("$prob_int")
-print(abs(p1-p2))
-PY
-)
+            # Delta (sin heredoc para evitar errores YAML)
+            delta=$(python -c "print(abs(float('$prob_sr')-float('$prob_int')))")
+
             echo "$tname,$mon,$p1_int,$p2_int,$p1_sr,$p2_sr,$prob_sr,$prob_int,$delta" >> compare.csv
             compared=$((compared+1))
             awk -v d="$delta" -v th="$THRESH" 'BEGIN{exit !(d>th)}' && mismatches=$((mismatches+1)) || true
