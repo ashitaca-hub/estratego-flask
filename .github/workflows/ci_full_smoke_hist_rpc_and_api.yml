@@ -1,0 +1,149 @@
+name: full-smoke-hist-rpc-and-api
+
+on:
+  workflow_dispatch:
+    inputs:
+      tournament:
+        description: "Nombre torneo"
+        required: false
+        default: "Cincinnati"
+      month:
+        description: "Mes (1-12)"
+        required: false
+        default: "8"
+      years_back:
+        description: "Histórico años"
+        required: false
+        default: "4"
+      p1_sr:
+        description: "Player SR id"
+        required: false
+        default: "sr:competitor:225050" # Sinner
+      p2_sr:
+        description: "Opponent SR id"
+        required: false
+        default: "sr:competitor:407573" # Alcaraz
+      p1_int:
+        description: "Player INT id (DB)"
+        required: false
+        default: "206173"  # ajusta a tu DB
+      p2_int:
+        description: "Opponent INT id (DB)"
+        required: false
+        default: "207989"  # ajusta a tu DB
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SR_API_KEY:   ${{ secrets.SR_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Pesos HIST calibrados (GRID)
+      HIST_W_MONTH: "0.5"
+      HIST_W_SURF:  "2.0"
+      HIST_W_SPEED: "2.0"
+      TNAME:   ${{ github.event.inputs.tournament }}
+      MONTH:   ${{ github.event.inputs.month }}
+      YEARS:   ${{ github.event.inputs.years_back }}
+      P1_SR:   ${{ github.event.inputs.p1_sr }}
+      P2_SR:   ${{ github.event.inputs.p2_sr }}
+      P1_INT:  ${{ github.event.inputs.p1_int }}
+      P2_INT:  ${{ github.event.inputs.p2_int }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system & python deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          pip install -r requirements.txt || pip install flask requests pandas psycopg2-binary
+
+      - name: Sanity secrets present
+        run: |
+          test -n "$SUPABASE_URL" || (echo "::error::SUPABASE_URL missing" && exit 1)
+          test -n "$SUPABASE_KEY" || (echo "::error::SUPABASE_KEY missing" && exit 1)
+          test -n "$SR_API_KEY"   || (echo "::warning::SR_API_KEY missing (NOW features usarán fallback)")
+          echo "Has SUPABASE_URL? yes"
+          echo "Has SUPABASE_KEY? yes"
+
+      - name: RPC smoke get_matchup_hist_vector (direct)
+        run: |
+          python - <<'PY'
+          import os, json, requests, datetime as dt
+          base = os.environ['SUPABASE_URL'].rstrip('/') + '/rest/v1/rpc/get_matchup_hist_vector'
+          key  = os.environ['SUPABASE_KEY']
+          hdrs = {"apikey":key,"Authorization":f"Bearer {key}","Content-Type":"application/json","Accept":"application/json"}
+          payload = {
+            "p_player_id": int(os.environ["P1_INT"]),
+            "p_opponent_id": int(os.environ["P2_INT"]),
+            "p_years_back": int(os.environ["YEARS"]),
+            "p_as_of": dt.date.today().isoformat(),
+            "p_tournament_name": os.environ["TNAME"],
+            "p_month": int(os.environ["MONTH"])
+          }
+          r = requests.post(base, headers=hdrs, json=payload, timeout=15)
+          r.raise_for_status()
+          data = r.json()
+          if isinstance(data, list) and len(data)==1: data = data[0]
+          print("== RPC HIST VECTOR ==")
+          print(json.dumps(data, indent=2))
+          for k in ("d_hist_month","d_hist_surface","d_hist_speed","surface","speed_bucket"):
+              assert k in data, f"RPC: falta {k}"
+          PY
+
+      - name: Start API on 8080 if not running
+        run: |
+          set -e
+          curl -fsS http://127.0.0.1:8080/health || {
+            echo "Launching Flask app on 8080..."
+            nohup python - <<'PY' >/tmp/app.log 2>&1 &
+            import os, time
+            from main import app
+            app.run(host="0.0.0.0", port=8080)
+            PY
+            # espera a que levante
+            for i in $(seq 1 40); do
+              curl -fsS http://127.0.0.1:8080/health && break
+              sleep 0.5
+            done
+            curl -fsS http://127.0.0.1:8080/health || (echo "::error::API no responde" && tail -n 200 /tmp/app.log && exit 1)
+          }
+          echo "API OK"
+
+      - name: /matchup with SR IDs
+        run: |
+          set -e
+          PAYLOAD=$(jq -n --arg p "$P1_SR" --arg o "$P2_SR" --arg t "$TNAME" --argjson m "$MONTH" --argjson y "$YEARS" \
+            '{player_id:$p, opponent_id:$o, tournament:{name:$t, month:$m}, years_back:$y}')
+          echo "== Payload (SR) =="; echo "$PAYLOAD" | jq .
+          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+          echo "== Response (SR) =="; echo "$RESP" | jq .
+          # checks
+          jq -e '.features.deltas.hist_surface, .features.deltas.hist_speed, .features.deltas.hist_month' >/dev/null <<<"$RESP"
+          P=$(jq -r '.prob_player' <<<"$RESP")
+          python - "$P" <<'PY'
+          import sys
+          p=float(sys.argv[1]); assert 0.0<=p<=1.0, "prob fuera de rango"
+          print(f"OK prob={p:.4f}")
+          PY
+
+      - name: /matchup with INT IDs
+        run: |
+          set -e
+          PAYLOAD=$(jq -n --argjson p $P1_INT --argjson o $P2_INT --arg t "$TNAME" --argjson m "$MONTH" --argjson y "$YEARS" \
+            '{player_id:$p, opponent_id:$o, tournament:{name:$t, month:$m}, years_back:$y}')
+          echo "== Payload (INT) =="; echo "$PAYLOAD" | jq .
+          RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+          echo "== Response (INT) =="; echo "$RESP" | jq .
+          # checks
+          jq -e '.features.deltas.hist_surface, .features.deltas.hist_speed, .features.deltas.hist_month' >/dev/null <<<"$RESP"
+          jq -e '(.inputs.player_id|type=="number") and (.inputs.opponent_id|type=="number")' >/dev/null <<<"$RESP" || \
+            echo "::warning::IDs no resueltos a INT; revisa players_lookup / players_min"
+          P=$(jq -r '.prob_player' <<<"$RESP")
+          python - "$P" <<'PY'
+          import sys
+          p=float(sys.argv[1]); assert 0.0<=p<=1.0, "prob fuera de rango"
+          print(f"OK prob={p:.4f}")
+          PY
