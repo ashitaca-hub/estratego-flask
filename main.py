@@ -40,7 +40,6 @@ def _sr_url(path: str, params: dict[str, Any] | None = None) -> str:
     params["api_key"] = SR_API_KEY or "REPLACE_ME"
     return f"{SR_BASE}/{path}?{urllib.parse.urlencode(params)}"
 
-# arriba ya tienes: import re
 def _sr_get(path: str, params: dict[str, Any] | None = None, timeout=15) -> requests.Response:
     url = _sr_url(path, params)
     # log redactado (oculta api_key)
@@ -424,11 +423,8 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
 # -----------------------------------------------------------------------------
 # ======== Estratego: endpoint /matchup (usar IDs INT canónicos) ========
 # -----------------------------------------------------------------------------
-import os
+# (estos imports ya estaban arriba, los dejamos por compat)
 import urllib.parse
-import requests
-from flask import request, jsonify
-
 from services import supabase_fs as FS
 from services import sportradar_now as SR
 from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
@@ -508,10 +504,12 @@ def _tourney_meta_fallback(tname: str) -> dict:
     except Exception:
         return {}
 
-
-@app.post("/matchup")
-def matchup():
-    body = request.get_json(force=True, silent=True) or {}
+# ====================== NUEVO: helper común para matchup ======================
+def _compute_matchup_payload(body: dict) -> dict:
+    """
+    Calcula el matchup y devuelve TODO (prob, deltas NOW/HIST, pesos, componentes).
+    Lo usan /matchup y /matchup/features.
+    """
     years_back = int(body.get("years_back", 4))
     tourney = body.get("tournament", {}) or {}
     tname = tourney.get("name") or tourney.get("tourney_name") or ""
@@ -539,7 +537,7 @@ def matchup():
     surface_default = (meta.get("surface") or "hard").lower()
     speed_bucket_meta = meta.get("speed_bucket")
 
-    # histórico FS (usa INT si tu FS lo espera así)
+    # histórico FS (usa INT si el FS lo espera así)
     hist = {}
     if p_int is not None and o_int is not None:
         try:
@@ -561,7 +559,7 @@ def matchup():
     p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (isinstance(p_id_in, str) and p_id_in.startswith("sr:")) else None))
     o_sr_norm = _normalize_sr_id(o_sr_id or (o_id_in if (isinstance(o_id_in, str) and o_id_in.startswith("sr:")) else None))
 
-    # Si faltan SR pero tenemos INT, resuélvelos desde la DB (players_lookup)
+    # Si faltan SR pero tenemos INT, resuélvelos desde la DB
     if p_sr_norm is None and isinstance(p_int, int):
         try:
             p_sr_norm = FS.get_sr_id_from_player_int(p_int)
@@ -573,7 +571,7 @@ def matchup():
         except Exception:
             pass
 
-    # NOW features (con tolerancia a que falte alguno)
+    # NOW features
     try:
         profile_p = SR.get_profile(p_sr_norm) if p_sr_norm else {}
         profile_o = SR.get_profile(o_sr_norm) if o_sr_norm else {}
@@ -612,7 +610,7 @@ def matchup():
     d_hist_speed   = clamp(hist.get("d_hist_speed",   0.0), -0.25, 0.25)
     d_hist_month   = clamp(hist.get("d_hist_month",   0.0), -0.25, 0.25)
 
-    # Lineal NOW e HIST (HIST normalizado por suma de pesos calibrados)
+    # Lineales
     now_linear = (
         WEIGHTS["rank_norm"]   * d_rank_norm   +
         WEIGHTS["ytd"]         * d_ytd         +
@@ -635,7 +633,7 @@ def matchup():
     z = now_linear + hist_linear + adj
     prob_player = logistic(z)
 
-    return jsonify({
+    return {
         "ok": True,
         "prob_player": prob_player,
         "surface": hist.get("surface", surface_default),
@@ -660,26 +658,37 @@ def matchup():
                 "is_local_p": is_local_p, "is_local_o": is_local_o, "mot_p": mot_p, "mot_o": mot_o
             }
         },
-        "weights_hist": {
-            "month": HIST_W_MONTH, "surface": HIST_W_SURF, "speed": HIST_W_SPEED, "denom": _HIST_DENOM
-        }
-    })
+        "weights_hist": { "month": HIST_W_MONTH, "surface": HIST_W_SURF, "speed": HIST_W_SPEED, "denom": _HIST_DENOM },
+        "components": { "now_linear": now_linear, "hist_linear": hist_linear, "adj": adj, "z": z }
+    }
+
+# ------------------------- ENDPOINTS que usan el helper -----------------------
+@app.post("/matchup")
+def matchup():
+    body = request.get_json(force=True, silent=True) or {}
+    out = _compute_matchup_payload(body)
+    # respuesta “ligera” tradicional
+    resp = {
+        "ok": out["ok"],
+        "prob_player": out["prob_player"],
+        "surface": out["surface"],
+        "speed_bucket": out["speed_bucket"],
+        "inputs": out["inputs"],
+        "features": out["features"],
+        "weights_hist": out.get("weights_hist")
+    }
+    return jsonify(resp)
+
+@app.post("/matchup/features")
+def matchup_features():
+    body = request.get_json(force=True, silent=True) or {}
+    out = _compute_matchup_payload(body)
+    return jsonify(out)
 
 # -----------------------------------------------------------------------------
 # Entrypoint local
 # -----------------------------------------------------------------------------
-
-
-
-
-# al final, sustituye tu bloque __main__
 if __name__ == "__main__":
     # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
