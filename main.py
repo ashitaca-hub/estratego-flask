@@ -424,6 +424,11 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
 # -----------------------------------------------------------------------------
 # ======== Estratego: endpoint /matchup (usar IDs INT canónicos) ========
 # -----------------------------------------------------------------------------
+import os
+import urllib.parse
+import requests
+from flask import request, jsonify
+
 from services import supabase_fs as FS
 from services import sportradar_now as SR
 from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
@@ -431,6 +436,12 @@ from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
 # Tablas/vistas canónicas
 PLAYER_TABLE_SRID = "players_lookup"  # public -> (player_id INT, name, ext_sportradar_id)
 PLAYER_TABLE_NAME = "players_min"     # public -> (player_id INT, name)
+
+# Pesos HIST calibrados (se pueden sobreescribir por ENV)
+HIST_W_MONTH = float(os.getenv("HIST_W_MONTH", "0.5"))
+HIST_W_SURF  = float(os.getenv("HIST_W_SURF",  "2.0"))
+HIST_W_SPEED = float(os.getenv("HIST_W_SPEED", "2.0"))
+_HIST_DENOM  = max(1.0, abs(HIST_W_MONTH) + abs(HIST_W_SURF) + abs(HIST_W_SPEED))
 
 def _rest_get(table: str, params: dict, select: str = "*"):
     base = FS.SUPABASE_URL.rstrip("/") + "/rest/v1/" + table
@@ -477,13 +488,23 @@ def _resolve_id(pid, pname, psrid) -> int | None:
     return None
 
 def _tourney_meta_fallback(tname: str) -> dict:
+    """Busca superficie y velocidad en la tabla de compat. Deriva speed_bucket si sólo hay speed_rank."""
     if not tname:
         return {}
     try:
-        rows = _rest_get("court_speed_rankig_norm",
-                         {"tournament_name": f"ilike.*{tname}*", "limit": 1},
-                         select="tournament_name,surface,speed_rank,category")
-        return rows[0] if rows else {}
+        rows = _rest_get(
+            "court_speed_rankig_norm",
+            {"tournament_name": f"ilike.*{tname}*", "limit": 1},
+            select="tournament_name,surface,speed_rank,speed_bucket,category"
+        )
+        if not rows:
+            return {}
+        row = rows[0]
+        # Derivar bucket si falta
+        if not row.get("speed_bucket") and row.get("speed_rank") is not None:
+            r = int(row["speed_rank"])
+            row["speed_bucket"] = "Slow" if r <= 33 else ("Medium" if r <= 66 else "Fast")
+        return row
     except Exception:
         return {}
 
@@ -521,12 +542,19 @@ def matchup():
     hist = {}
     if p_int is not None and o_int is not None:
         try:
-            hist = FS.get_matchup_hist_vector(p_id=p_int, o_id=o_int, yrs=years_back, tname=tname, month=month) or {}
+            hist = FS.get_matchup_hist_vector(
+                p_id=p_int, o_id=o_int, yrs=years_back, tname=tname, month=month
+            ) or {}
         except Exception:
             hist = {}
     if not hist:
-        hist = {"surface": surface_default, "speed_bucket": speed_bucket_meta or "Medium",
-                "d_hist_surface": 0.0, "d_hist_speed": 0.0, "d_hist_month": 0.0}
+        hist = {
+            "surface": surface_default,
+            "speed_bucket": speed_bucket_meta or "Medium",
+            "d_hist_surface": 0.0,
+            "d_hist_speed":   0.0,
+            "d_hist_month":   0.0
+        }
 
     # Señales NOW (Sportradar) con SRIDs normalizados
     p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (isinstance(p_id_in, str) and p_id_in.startswith("sr:")) else None))
@@ -569,22 +597,28 @@ def matchup():
     d_hist_speed   = clamp(hist.get("d_hist_speed",   0.0), -0.25, 0.25)
     d_hist_month   = clamp(hist.get("d_hist_month",   0.0), -0.25, 0.25)
 
-    # Score + ajustes
-    sum_linear = (
+    # Lineal NOW e HIST (HIST normalizado por suma de pesos calibrados)
+    now_linear = (
         WEIGHTS["rank_norm"]   * d_rank_norm   +
         WEIGHTS["ytd"]         * d_ytd         +
         WEIGHTS["last10"]      * d_last10      +
         WEIGHTS["h2h"]         * d_h2h         +
-        WEIGHTS["inactive"]    * d_inactive    +
-        WEIGHTS["hist_surface"]* d_hist_surface+
-        WEIGHTS["hist_speed"]  * d_hist_speed  +
-        WEIGHTS["hist_month"]  * d_hist_month
+        WEIGHTS["inactive"]    * d_inactive
     )
-    sum_linear += ADJUSTS["surf_change"] * (surf_change_p - surf_change_o)
-    sum_linear += ADJUSTS["local"]       * (is_local_p - is_local_o)
-    sum_linear += ADJUSTS["mot_points"]  * (mot_p - mot_o)
+    hist_linear = (
+        HIST_W_MONTH * d_hist_month +
+        HIST_W_SURF  * d_hist_surface +
+        HIST_W_SPEED * d_hist_speed
+    ) / _HIST_DENOM
 
-    prob_player = logistic(sum_linear)
+    # Ajustes
+    adj = 0.0
+    adj += ADJUSTS["surf_change"] * (surf_change_p - surf_change_o)
+    adj += ADJUSTS["local"]       * (is_local_p - is_local_o)
+    adj += ADJUSTS["mot_points"]  * (mot_p - mot_o)
+
+    z = now_linear + hist_linear + adj
+    prob_player = logistic(z)
 
     return jsonify({
         "ok": True,
@@ -610,17 +644,24 @@ def matchup():
                 "surf_change_p": surf_change_p, "surf_change_o": surf_change_o,
                 "is_local_p": is_local_p, "is_local_o": is_local_o, "mot_p": mot_p, "mot_o": mot_o
             }
+        },
+        "weights_hist": {
+            "month": HIST_W_MONTH, "surface": HIST_W_SURF, "speed": HIST_W_SPEED, "denom": _HIST_DENOM
         }
     })
-
 # -----------------------------------------------------------------------------
 # Entrypoint local
 # -----------------------------------------------------------------------------
+
+
+
+
 # al final, sustituye tu bloque __main__
 if __name__ == "__main__":
     # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
