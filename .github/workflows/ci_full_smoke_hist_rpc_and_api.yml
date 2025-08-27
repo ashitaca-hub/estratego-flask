@@ -119,9 +119,9 @@ jobs:
           # checks
           jq -e '.features.deltas.hist_surface, .features.deltas.hist_speed, .features.deltas.hist_month' >/dev/null <<<"$RESP"
           P=$(jq -r '.prob_player' <<<"$RESP")
-          python - "$P" <<'PY'
-          import sys
-          p=float(sys.argv[1]); assert 0.0<=p<=1.0, "prob fuera de rango"
+          python -c  
+          import sys 
+          p=float(sys.argv[1]); assert 0.0<=p<=1.0, "prob fuera de rango"; print(f"OK prob={p:.4f}")' "$P"
           print(f"OK prob={p:.4f}")
           PY
 
@@ -138,8 +138,8 @@ jobs:
           jq -e '(.inputs.player_id|type=="number") and (.inputs.opponent_id|type=="number")' >/dev/null <<<"$RESP" || \
             echo "::warning::IDs no resueltos a INT; revisa players_lookup / players_min"
           P=$(jq -r '.prob_player' <<<"$RESP")
-          python - "$P" <<'PY'
-          import sys
-          p=float(sys.argv[1]); assert 0.0<=p<=1.0, "prob fuera de rango"
+          python -c 
+          import sys 
+          p=float(sys.argv[1]); assert 0.0<=p<=1.0, "prob fuera de rango"; print(f"OK prob={p:.4f}")' "$P"
           print(f"OK prob={p:.4f}")
           PY
