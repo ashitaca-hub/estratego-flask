@@ -1,0 +1,55 @@
+name: backtest-hist-grid
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "Ventana histórica en años"
+        required: false
+        default: "3"
+      max_rows:
+        description: "Máx. filas (CI)"
+        required: false
+        default: "1200"
+      k_month:
+        description: "Suavizado k para mes"
+        required: false
+        default: "8"
+      k_surf:
+        description: "Suavizado k para superficie"
+        required: false
+        default: "8"
+      k_speed:
+        description: "Suavizado k para velocidad"
+        required: false
+        default: "8"
+
+jobs:
+  grid:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      BT_YEARS:  ${{ github.event.inputs.years != '' && github.event.inputs.years || '3' }}
+      BT_MAX:    ${{ github.event.inputs.max_rows != '' && github.event.inputs.max_rows || '1200' }}
+      K_MONTH:   ${{ github.event.inputs.k_month != '' && github.event.inputs.k_month || '8' }}
+      K_SURF:    ${{ github.event.inputs.k_surf  != '' && github.event.inputs.k_surf  || '8' }}
+      K_SPEED:   ${{ github.event.inputs.k_speed != '' && github.event.inputs.k_speed || '8' }}
+      GRID: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql + Python deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          pip install psycopg2-binary pandas scikit-learn
+
+      - name: Run grid search (weights)
+        run: |
+          python apps_script/backtest_hist_asof.py
+
+      - name: Upload artifact (grid CSV)
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest_hist_grid
+          path: backtest_hist_grid.csv
