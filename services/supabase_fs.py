@@ -68,15 +68,25 @@ def norm_tourney(txt: str | None) -> str | None:
 # -------------------------------------------------------------------
 
 
+log = logging.getLogger("estratego")
+if not log.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
 def get_sr_id_from_player_int(player_id: int) -> str | None:
+    """
+    Devuelve 'sr:competitor:<id>' a partir del player_id interno (INT).
+    Lee de public.players_lookup (ext_sportradar_id).
+    """
     try:
-        rows = _get("players_lookup",
-                    {"player_id": f"eq.{int(player_id)}", "limit": 1},
-                    select="ext_sportradar_id")
+        rows = _get(  # <-- si tu helper es _rest_get, cámbialo aquí
+            "players_lookup",
+            {"player_id": f"eq.{int(player_id)}", "limit": 1},
+            select="ext_sportradar_id"
+        )
         if rows and rows[0].get("ext_sportradar_id"):
             return f"sr:competitor:{rows[0]['ext_sportradar_id']}"
-    except Exception:
-        pass
+    except Exception as e:
+        log.info("get_sr_id_from_player_int(%s) fallo: %s", player_id, e)
     return None
 
 
