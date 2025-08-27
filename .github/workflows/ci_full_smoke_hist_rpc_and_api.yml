@@ -67,6 +67,9 @@ jobs:
           echo "Has SUPABASE_URL? yes"
           echo "Has SUPABASE_KEY? yes"
 
+      - name: Python syntax check
+        run: python -c "import compileall,sys; sys.exit(0 if compileall.compile_file('main.py', force=True, quiet=1) else 1)"
+
       - name: RPC smoke get_matchup_hist_vector (direct)
         run: |
           python - <<'PY'
