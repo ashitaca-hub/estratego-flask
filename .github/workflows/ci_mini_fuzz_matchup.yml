@@ -1,0 +1,118 @@
+name: mini-fuzz-matchup
+
+on:
+  workflow_dispatch:
+    inputs:
+      years_back:
+        description: "Histórico años"
+        required: false
+        default: "4"
+      sample_days:
+        description: "Ventana días hacia atrás para samplear"
+        required: false
+        default: "365"
+      sample_size:
+        description: "Tamaño de la muestra"
+        required: false
+        default: "10"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      YEARS: ${{ github.event.inputs.years_back }}
+      DAYS:  ${{ github.event.inputs.sample_days }}
+      N:     ${{ github.event.inputs.sample_size }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client jq
+          pip install -r requirements.txt || pip install flask requests
+
+      - name: Syntax check
+        run: python -c "import compileall,sys; sys.exit(0 if compileall.compile_file('main.py', force=True, quiet=1) else 1)"
+
+      - name: Start API
+        run: |
+          set -e
+          nohup python -c 'from main import app; app.run(host="0.0.0.0", port=8080)' >/tmp/app.log 2>&1 &
+          for i in {1..40}; do
+            curl -fsS http://127.0.0.1:8080/health && break
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:8080/health || (echo "::error::API no responde" && tail -n 200 /tmp/app.log && exit 1)
+
+      - name: Build random pairs from DB (fs_matches_long)
+        id: sample
+        run: |
+          set -e
+          test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL missing"; exit 1; }
+          SQL="
+          WITH uniq AS (
+            SELECT
+              match_date,
+              tournament_name,
+              EXTRACT(MONTH FROM match_date)::int AS mon,
+              LEAST(player_id, opponent_id)  AS p_low,
+              GREATEST(player_id, opponent_id) AS p_high
+            FROM public.fs_matches_long
+            WHERE match_date >= (current_date - ($DAYS||' days')::interval)
+            GROUP BY 1,2,3,4,5
+          )
+          SELECT row_to_json(x) FROM (
+            SELECT p_high AS p1, p_low AS p2, tournament_name AS tname, mon
+            FROM uniq
+            ORDER BY random()
+            LIMIT $N
+          ) x;"
+          psql "$DATABASE_URL" -At -c "$SQL" > pairs.jsonl
+          LINES=$(wc -l < pairs.jsonl || echo 0)
+          echo "pairs=$LINES" >> $GITHUB_OUTPUT
+          cat pairs.jsonl
+
+      - name: Fuzz 10 calls (/matchup y /matchup/features)
+        run: |
+          set -e
+          : > results.jsonl
+          : > results_features.jsonl
+          null_hist=0
+          total=0
+          while IFS= read -r line; do
+            p1=$(jq -r '.p1' <<<"$line"); p2=$(jq -r '.p2' <<<"$line")
+            tn=$(jq -r '.tname' <<<"$line"); mn=$(jq -r '.mon' <<<"$line")
+            PAYLOAD=$(jq -n --argjson p "$p1" --argjson o "$p2" --arg t "$tn" --argjson m "$mn" --argjson y "$YEARS" \
+              '{player_id:$p, opponent_id:$o, tournament:{name:$t, month:$m}, years_back:$y}')
+            RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
+            echo "$RESP" | jq . >> results.jsonl
+            # assert prob in [0,1]
+            P=$(jq -r '.prob_player' <<<"$RESP")
+            awk -v p="$P" 'BEGIN{ if (p>=0 && p<=1){ exit 0 } else { exit 1 } }' || { echo "::error::prob fuera de rango"; exit 1; }
+            # hist all-zero?
+            h1=$(jq -r '.features.deltas.hist_surface' <<<"$RESP"); h2=$(jq -r '.features.deltas.hist_speed' <<<"$RESP"); h3=$(jq -r '.features.deltas.hist_month' <<<"$RESP")
+            allz=$(awk -v a="$h1" -v b="$h2" -v c="$h3" 'BEGIN{print (a==0 && b==0 && c==0)?"1":"0"}')
+            [ "$allz" = "1" ] && null_hist=$((null_hist+1))
+            # features endpoint (explicación)
+            RESP2=$(curl -sS -X POST http://127.0.0.1:8080/matchup/features -H "Content-Type: application/json" -d "$PAYLOAD")
+            echo "$RESP2" | jq . >> results_features.jsonl
+            total=$((total+1))
+          done < pairs.jsonl
+          echo "total=$total null_hist=$null_hist"
+          ratio=$(awk -v n="$null_hist" -v t="$total" 'BEGIN{ if(t==0){print 1}else{print n/t}}')
+          echo "null_hist_ratio=$ratio"
+          # Warning si demasiados sin HIST (no fallamos el job, sólo avisamos)
+          awk -v r="$ratio" 'BEGIN{ if (r>0.3){ exit 1 } else { exit 0 } }' || echo "::warning::>30% de pairs con HIST=0; revisa cobertura fs_matches_long / tourney mapping"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-fuzz-results
+          path: |
+            pairs.jsonl
+            results.jsonl
+            results_features.jsonl
