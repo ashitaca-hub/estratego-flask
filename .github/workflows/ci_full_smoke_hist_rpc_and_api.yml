@@ -97,16 +97,15 @@ jobs:
         run: |
           set -e
           curl -fsS http://127.0.0.1:8080/health || {
-          echo "Launching Flask app on 8080..."
-          nohup python -c 'from main import app; app.run(host="0.0.0.0", port=8080)' >/tmp/app.log 2>&1 &
-          for i in {1..40}; do
-            curl -fsS http://127.0.0.1:8080/health && break
-            sleep 0.5
-          done
-          curl -fsS http://127.0.0.1:8080/health || (echo "::error::API no responde" && tail -n 200 /tmp/app.log && exit 1)
+            echo "Launching Flask app on 8080..."
+            nohup python -c 'from main import app; app.run(host="0.0.0.0", port=8080)' >/tmp/app.log 2>&1 &
+            for i in {1..40}; do
+              curl -fsS http://127.0.0.1:8080/health && break
+              sleep 0.5
+            done
+            curl -fsS http://127.0.0.1:8080/health || (echo "::error::API no responde" && tail -n 200 /tmp/app.log && exit 1)
           }
           echo "API OK"
-
 
       - name: /matchup with SR IDs
         run: |
@@ -120,9 +119,7 @@ jobs:
           jq -e '.features.deltas.hist_surface, .features.deltas.hist_speed, .features.deltas.hist_month' >/dev/null <<<"$RESP"
           P=$(jq -r '.prob_player' <<<"$RESP")
           awk -v p="$P" 'BEGIN{ if (p>=0 && p<=1){ printf "OK prob=%.4f\n", p; exit 0 } else { exit 1 } }' \
-          || { echo "::error::prob fuera de rango ($P)"; exit 1; }
-          print(f"OK prob={p:.4f}")
-          PY
+            || { echo "::error::prob fuera de rango ($P)"; exit 1; }
 
       - name: /matchup with INT IDs
         run: |
@@ -138,6 +135,4 @@ jobs:
             echo "::warning::IDs no resueltos a INT; revisa players_lookup / players_min"
           P=$(jq -r '.prob_player' <<<"$RESP")
           awk -v p="$P" 'BEGIN{ if (p>=0 && p<=1){ printf "OK prob=%.4f\n", p; exit 0 } else { exit 1 } }' \
-          || { echo "::error::prob fuera de rango ($P)"; exit 1; }
-          print(f"OK prob={p:.4f}")
-          PY
+            || { echo "::error::prob fuera de rango ($P)"; exit 1; }
