@@ -1,0 +1,24 @@
+name: db-speed-bucket-fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - sql/migrations/2025_08_27_speed_bucket_fix.sql
+      - .github/workflows/ci_db_speed_bucket_fix.yml
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_27_speed_bucket_fix.sql
+      - run: |
+          echo "== Cincinnati after fix =="
+          psql "$DATABASE_URL" -c "SELECT tourney_key,surface,speed_rank,speed_bucket FROM public.tourney_speed_resolved WHERE tourney_key='cincinnati';"
