@@ -20,7 +20,7 @@ jobs:
         run: |
           [ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_26_norm_tourney_hotfix.sql
-      - name: Check function and suggestions
+      - name: Check function exists and suggestions count
         run: |
           psql "$DATABASE_URL" -c "\df+ public.norm_tourney"
           psql "$DATABASE_URL" -c "SELECT count(*) AS suggestions FROM public.tourney_key_suggestions;"
