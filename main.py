@@ -500,13 +500,14 @@ def _tourney_meta_fallback(tname: str) -> dict:
         if not rows:
             return {}
         row = rows[0]
-        # Derivar bucket si falta
+        # Derivar bucket si falta (1–33 Fast, 34–66 Medium, >66 Slow)
         if not row.get("speed_bucket") and row.get("speed_rank") is not None:
             r = int(row["speed_rank"])
-            row["speed_bucket"] = "Slow" if r <= 33 else ("Medium" if r <= 66 else "Fast")
+            row["speed_bucket"] = "Fast" if r <= 33 else ("Medium" if r <= 66 else "Slow")
         return row
     except Exception:
         return {}
+
 
 @app.post("/matchup")
 def matchup():
@@ -560,18 +561,19 @@ def matchup():
     p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (isinstance(p_id_in, str) and p_id_in.startswith("sr:")) else None))
     o_sr_norm = _normalize_sr_id(o_sr_id or (o_id_in if (isinstance(o_id_in, str) and o_id_in.startswith("sr:")) else None))
 
-    # Si faltan SR pero tenemos INT, intenta resolverlos:
-if p_sr_norm is None and isinstance(p_int, int):
-    try:
-        p_sr_norm = FS.get_sr_id_from_player_int(p_int)
-    except Exception:
-        pass
-if o_sr_norm is None and isinstance(o_int, int):
-    try:
-        o_sr_norm = FS.get_sr_id_from_player_int(o_int)
-    except Exception:
-        pass
-        
+    # Si faltan SR pero tenemos INT, resuélvelos desde la DB (players_lookup)
+    if p_sr_norm is None and isinstance(p_int, int):
+        try:
+            p_sr_norm = FS.get_sr_id_from_player_int(p_int)
+        except Exception:
+            pass
+    if o_sr_norm is None and isinstance(o_int, int):
+        try:
+            o_sr_norm = FS.get_sr_id_from_player_int(o_int)
+        except Exception:
+            pass
+
+    # NOW features (con tolerancia a que falte alguno)
     try:
         profile_p = SR.get_profile(p_sr_norm) if p_sr_norm else {}
         profile_o = SR.get_profile(o_sr_norm) if o_sr_norm else {}
@@ -642,8 +644,8 @@ if o_sr_norm is None and isinstance(o_int, int):
             "player": player, "opponent": opponent,
             "player_id": p_int if p_int is not None else p_id_in,
             "opponent_id": o_int if o_int is not None else o_id_in,
-            "player_sr_id": _normalize_sr_id(p_sr_id or (p_id_in if isinstance(p_id_in, str) and p_id_in.startswith("sr:") else None)),
-            "opponent_sr_id": _normalize_sr_id(o_sr_id or (o_id_in if isinstance(o_id_in, str) and o_id_in.startswith("sr:") else None)),
+            "player_sr_id": p_sr_norm,
+            "opponent_sr_id": o_sr_norm,
             "tournament": {"name": tname, "month": month},
             "years_back": years_back
         },
@@ -662,6 +664,7 @@ if o_sr_norm is None and isinstance(o_int, int):
             "month": HIST_W_MONTH, "surface": HIST_W_SURF, "speed": HIST_W_SPEED, "denom": _HIST_DENOM
         }
     })
+
 # -----------------------------------------------------------------------------
 # Entrypoint local
 # -----------------------------------------------------------------------------
@@ -674,6 +677,7 @@ if __name__ == "__main__":
     # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
