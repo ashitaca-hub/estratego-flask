@@ -40,7 +40,6 @@ jobs:
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      # Pesos HIST calibrados (GRID)
       HIST_W_MONTH: "0.5"
       HIST_W_SURF:  "2.0"
       HIST_W_SPEED: "2.0"
@@ -115,19 +114,17 @@ jobs:
           echo "== Payload (SR) =="; echo "$PAYLOAD" | jq .
           RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
           echo "== Response (SR) =="; echo "$RESP" | jq .
-          # checks
+          echo "$RESP" > /tmp/resp_sr.json
           jq -e '.features.deltas.hist_surface, .features.deltas.hist_speed, .features.deltas.hist_month' >/dev/null <<<"$RESP"
+          SB=$(jq -r '.speed_bucket' <<<"$RESP")
+          if [ "$TNAME" = "Cincinnati" ]; then
+            test "$SB" = "Fast" || { echo "::error::speed_bucket esperado Fast y fue '$SB'"; exit 1; }
+          fi
           P=$(jq -r '.prob_player' <<<"$RESP")
           awk -v p="$P" 'BEGIN{ if (p>=0 && p<=1){ printf "OK prob=%.4f\n", p; exit 0 } else { exit 1 } }' \
             || { echo "::error::prob fuera de rango ($P)"; exit 1; }
 
-      - name: Guard Cincinnati debe ser Fast
-        run: |
-          SB=$(jq -r '.speed_bucket' <<<"$RESP")
-          test "$SB" = "Fast" || { echo "::error::speed_bucket esperado Fast y fue '$SB'"; exit 1; }
-          echo "OK speed_bucket=$SB"
-
-      - name: /matchup with INT IDs
+      - name: /matchup with INT IDs (NOW activado vía SR lookup)
         run: |
           set -e
           PAYLOAD=$(jq -n --argjson p $P1_INT --argjson o $P2_INT --arg t "$TNAME" --argjson m "$MONTH" --argjson y "$YEARS" \
@@ -135,10 +132,18 @@ jobs:
           echo "== Payload (INT) =="; echo "$PAYLOAD" | jq .
           RESP=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD")
           echo "== Response (INT) =="; echo "$RESP" | jq .
-          # checks
+          echo "$RESP" > /tmp/resp_int.json
           jq -e '.features.deltas.hist_surface, .features.deltas.hist_speed, .features.deltas.hist_month' >/dev/null <<<"$RESP"
-          jq -e '(.inputs.player_id|type=="number") and (.inputs.opponent_id|type=="number")' >/dev/null <<<"$RESP" || \
-            echo "::warning::IDs no resueltos a INT; revisa players_lookup / players_min"
+          # Comprobar que resolvimos SR IDs (NOW activo)
+          jq -e '(.inputs.player_sr_id != null) and (.inputs.opponent_sr_id != null)' /tmp/resp_int.json \
+            || echo "::warning::INT -> SR lookup no resolvió ambos SR IDs; NOW puede estar neutro"
           P=$(jq -r '.prob_player' <<<"$RESP")
           awk -v p="$P" 'BEGIN{ if (p>=0 && p<=1){ printf "OK prob=%.4f\n", p; exit 0 } else { exit 1 } }' \
             || { echo "::error::prob fuera de rango ($P)"; exit 1; }
+
+      - name: Compare SR vs INT prob (deben ser cercanas si NOW está activo)
+        run: |
+          PSR=$(jq -r '.prob_player' /tmp/resp_sr.json)
+          PINT=$(jq -r '.prob_player' /tmp/resp_int.json)
+          awk -v a="$PSR" -v b="$PINT" 'BEGIN{d=a-b; if(d<0)d=-d; printf "|Δprob|=%.4f\n", d; if (d<=0.03) exit 0; else exit 1 }' \
+            || echo "::warning::Δprob > 0.03 (SR vs INT) — revisa lookup SR desde INT"
