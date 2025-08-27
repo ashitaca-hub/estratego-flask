@@ -1,0 +1,167 @@
+name: fuzz-sr-vs-int
+
+on:
+  workflow_dispatch:
+    inputs:
+      years_back:
+        description: "Histórico (años hacia atrás)"
+        required: false
+        default: "4"
+      sample_days:
+        description: "Ventana de muestreo (días hacia atrás)"
+        required: false
+        default: "365"
+      sample_size:
+        description: "Tamaño de la muestra"
+        required: false
+        default: "20"
+      delta_threshold:
+        description: "Umbral |Δprob| para considerar mismatch"
+        required: false
+        default: "0.03"
+      max_mismatches:
+        description: "Máximo de casos permitidos por encima del umbral"
+        required: false
+        default: "3"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SR_API_KEY:   ${{ secrets.SR_API_KEY }}
+      YEARS: ${{ github.event.inputs.years_back }}
+      DAYS:  ${{ github.event.inputs.sample_days }}
+      N:     ${{ github.event.inputs.sample_size }}
+      THRESH: ${{ github.event.inputs.delta_threshold }}
+      MAX_MIS: ${{ github.event.inputs.max_mismatches }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client jq
+          pip install -r requirements.txt || pip install flask requests
+
+      - name: Sanity env
+        run: |
+          test -n "$SUPABASE_URL" || (echo "::error::SUPABASE_URL missing" && exit 1)
+          test -n "$SUPABASE_KEY" || (echo "::error::SUPABASE_KEY missing" && exit 1)
+          test -n "$DATABASE_URL" || (echo "::error::DATABASE_URL missing" && exit 1)
+          test -n "$SR_API_KEY"   || (echo "::error::SR_API_KEY missing (NOW no funcionará)" && exit 1)
+
+      - name: Syntax check (main.py)
+        run: python -c "import compileall,sys; sys.exit(0 if compileall.compile_file('main.py', force=True, quiet=1) else 1)"
+
+      - name: Start API on 8080
+        run: |
+          set -e
+          nohup python -c 'from main import app; app.run(host="0.0.0.0", port=8080)' >/tmp/app.log 2>&1 &
+          for i in {1..40}; do
+            curl -fsS http://127.0.0.1:8080/health && break
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:8080/health || (echo "::error::API no responde" && tail -n 200 /tmp/app.log && exit 1)
+
+      - name: Build random pairs with SR mapping (DB)
+        run: |
+          set -e
+          SQL="
+          WITH uniq AS (
+            SELECT
+              f.match_date,
+              f.tournament_name,
+              EXTRACT(MONTH FROM f.match_date)::int AS mon,
+              LEAST(f.player_id, f.opponent_id)   AS p_low,
+              GREATEST(f.player_id, f.opponent_id) AS p_high
+            FROM public.fs_matches_long f
+            WHERE f.match_date >= (current_date - ($DAYS||' days')::interval)
+            GROUP BY 1,2,3,4,5
+          )
+          SELECT row_to_json(x)
+          FROM (
+            SELECT
+              u.p_high AS p1_int,
+              u.p_low  AS p2_int,
+              u.tournament_name AS tname,
+              u.mon AS mon,
+              CASE WHEN l1.ext_sportradar_id IS NOT NULL
+                   THEN 'sr:competitor:'||l1.ext_sportradar_id END AS p1_sr,
+              CASE WHEN l2.ext_sportradar_id IS NOT NULL
+                   THEN 'sr:competitor:'||l2.ext_sportradar_id END AS p2_sr
+            FROM uniq u
+            LEFT JOIN public.players_lookup l1 ON l1.player_id = u.p_high
+            LEFT JOIN public.players_lookup l2 ON l2.player_id = u.p_low
+            ORDER BY random()
+            LIMIT $N
+          ) x;"
+          psql "$DATABASE_URL" -At -c "$SQL" > pairs.jsonl
+          cat pairs.jsonl
+          L=$(wc -l < pairs.jsonl || echo 0)
+          test "$L" -gt 0 || { echo "::error::No se generaron pares"; exit 1; }
+
+      - name: Fuzz compare SR vs INT
+        run: |
+          set -e
+          : > compare.csv
+          echo "tname,mon,p1_int,p2_int,p1_sr,p2_sr,prob_sr,prob_int,delta" >> compare.csv
+          mismatches=0; compared=0; skipped_sr=0
+          while IFS= read -r line; do
+            p1_int=$(jq -r '.p1_int' <<<"$line")
+            p2_int=$(jq -r '.p2_int' <<<"$line")
+            p1_sr=$(jq -r '.p1_sr' <<<"$line")
+            p2_sr=$(jq -r '.p2_sr' <<<"$line")
+            tname=$(jq -r '.tname'  <<<"$line")
+            mon=$(jq -r '.mon'      <<<"$line")
+
+            # Saltar si no tenemos ambos SR
+            if [ -z "$p1_sr" ] || [ "$p1_sr" = "null" ] || [ -z "$p2_sr" ] || [ "$p2_sr" = "null" ]; then
+              skipped_sr=$((skipped_sr+1))
+              continue
+            fi
+
+            # SR payload
+            PAYLOAD_SR=$(jq -n --arg p "$p1_sr" --arg o "$p2_sr" --arg t "$tname" --argjson m "$mon" --argjson y "$YEARS" \
+              '{player_id:$p, opponent_id:$o, tournament:{name:$t, month:$m}, years_back:$y}')
+            RESP_SR=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD_SR")
+            prob_sr=$(jq -r '.prob_player' <<<"$RESP_SR")
+
+            # INT payload
+            PAYLOAD_INT=$(jq -n --argjson p "$p1_int" --argjson o "$p2_int" --arg t "$tname" --argjson m "$mon" --argjson y "$YEARS" \
+              '{player_id:$p, opponent_id:$o, tournament:{name:$t, month:$m}, years_back:$y}')
+            RESP_INT=$(curl -sS -X POST http://127.0.0.1:8080/matchup -H "Content-Type: application/json" -d "$PAYLOAD_INT")
+            prob_int=$(jq -r '.prob_player' <<<"$RESP_INT")
+
+            # Validaciones básicas
+            awk -v p="$prob_sr"  'BEGIN{exit !(p>=0 && p<=1)}' || { echo "::error::prob_sr fuera de rango"; exit 1; }
+            awk -v p="$prob_int" 'BEGIN{exit !(p>=0 && p<=1)}' || { echo "::error::prob_int fuera de rango"; exit 1; }
+
+            # Delta
+            delta=$(python - <<PY
+p1=float("$prob_sr"); p2=float("$prob_int")
+print(abs(p1-p2))
+PY
+)
+            echo "$tname,$mon,$p1_int,$p2_int,$p1_sr,$p2_sr,$prob_sr,$prob_int,$delta" >> compare.csv
+            compared=$((compared+1))
+            awk -v d="$delta" -v th="$THRESH" 'BEGIN{exit !(d>th)}' && mismatches=$((mismatches+1)) || true
+          done < pairs.jsonl
+
+          echo "compared=$compared, skipped_sr=$skipped_sr, mismatches=$mismatches, threshold=$THRESH, max_mis=$MAX_MIS"
+
+          test "$compared" -gt 0 || { echo "::error::No se pudo comparar ningún par (faltan SR IDs en mapping)"; exit 1; }
+          if [ "$mismatches" -gt "$MAX_MIS" ]; then
+            echo "::error::Demasiados mismatches ($mismatches > $MAX_MIS)"
+            exit 1
+          fi
+          ratio=$(awk -v m="$mismatches" -v c="$compared" 'BEGIN{print (c>0)?(m/c):1}')
+          awk -v r="$ratio" 'BEGIN{ if (r>0.3){ exit 1 } else { exit 0 } }' || echo "::warning::Ratio mismatches > 30% (r=$ratio)"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-sr-vs-int
+          path: compare.csv
