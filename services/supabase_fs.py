@@ -66,19 +66,11 @@ def norm_tourney(txt: str | None) -> str | None:
 # -------------------------------------------------------------------
 # Torneo → surface / speed
 # -------------------------------------------------------------------
-def _speed_bucket_from_rank(speed_rank: Optional[float]) -> Optional[str]:
-    if speed_rank is None:
+def _speed_bucket_from_rank(rank):
+    if rank is None:
         return None
-    try:
-        v = float(speed_rank)
-    except Exception:
-        return None
-    # buckets simples (ajusta si tu vista ya trae bucket)
-    if v <= 33:
-        return "Slow"
-    if v <= 66:
-        return "Medium"
-    return "Fast"
+    r = int(rank)
+    return "Fast" if r <= 33 else ("Medium" if r <= 66 else "Slow")
 
 def get_tourney_meta(tournament_name: str) -> dict:
     """
