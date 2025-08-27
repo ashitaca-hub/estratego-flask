@@ -121,6 +121,12 @@ jobs:
           awk -v p="$P" 'BEGIN{ if (p>=0 && p<=1){ printf "OK prob=%.4f\n", p; exit 0 } else { exit 1 } }' \
             || { echo "::error::prob fuera de rango ($P)"; exit 1; }
 
+      - name: Guard Cincinnati debe ser Fast
+        run: |
+          SB=$(jq -r '.speed_bucket' <<<"$RESP")
+          test "$SB" = "Fast" || { echo "::error::speed_bucket esperado Fast y fue '$SB'"; exit 1; }
+          echo "OK speed_bucket=$SB"
+
       - name: /matchup with INT IDs
         run: |
           set -e
