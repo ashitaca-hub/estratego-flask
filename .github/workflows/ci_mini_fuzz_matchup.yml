@@ -10,11 +10,11 @@ on:
       sample_days:
         description: "Ventana días hacia atrás para samplear"
         required: false
-        default: "365"
+        default: "730"
       sample_size:
         description: "Tamaño de la muestra"
         required: false
-        default: "10"
+        default: "50"
 
 jobs:
   fuzz:
