@@ -42,6 +42,27 @@ def _rpc(fn: str, payload: Dict[str, Any]) -> Any:
         r.raise_for_status()
     return r.json() if r.text else None
 
+def norm_tourney(txt: str | None) -> str | None:
+    """
+    Normaliza nombre de torneo vía RPC (si está expuesto por PostgREST).
+    Devuelve None si no está disponible.
+    """
+    if not txt:
+        return None
+    try:
+        res = _rpc("norm_tourney", {"txt": txt})
+        # PostgREST puede devolver list/dict/str según la config
+        if isinstance(res, list) and res:
+            res = res[0]
+        if isinstance(res, dict) and "norm_tourney" in res:
+            return res["norm_tourney"]
+        if isinstance(res, str):
+            return res
+    except Exception:
+        pass
+    return None
+
+
 # -------------------------------------------------------------------
 # Torneo → surface / speed
 # -------------------------------------------------------------------
@@ -61,11 +82,33 @@ def _speed_bucket_from_rank(speed_rank: Optional[float]) -> Optional[str]:
 
 def get_tourney_meta(tournament_name: str) -> dict:
     """
-    Devuelve {surface, speed_bucket?, speed_rank?, category?} a partir de court_speed_rankig_norm.
-    Si la vista no tiene speed_bucket, lo derivamos con _speed_bucket_from_rank.
+    Prioriza resolver (tourney_speed_resolved por clave normalizada).
+    Si no hay match, cae a court_speed_rankig_norm por ilike.
     """
     if not tournament_name:
         return {}
+    # 1) Resolver por clave normalizada
+    key = norm_tourney(tournament_name)
+    if key:
+        try:
+            rows = _get(
+                "tourney_speed_resolved",
+                {"tourney_key": f"eq.{key}", "limit": 1},
+                select="tourney_key,surface,speed_rank,speed_bucket"
+            )
+            if rows:
+                row = rows[0]
+                meta = {
+                    "surface": (row.get("surface") or "hard").lower(),
+                    "speed_rank": row.get("speed_rank"),
+                    "speed_bucket": row.get("speed_bucket"),
+                }
+                if not meta.get("speed_bucket"):
+                    meta["speed_bucket"] = _speed_bucket_from_rank(meta.get("speed_rank")) or "Medium"
+                return meta
+        except Exception:
+            pass
+    # 2) Fallback compat
     try:
         rows = _get(
             "court_speed_rankig_norm",
@@ -86,6 +129,7 @@ def get_tourney_meta(tournament_name: str) -> dict:
     if not meta.get("speed_bucket"):
         meta["speed_bucket"] = _speed_bucket_from_rank(meta.get("speed_rank")) or "Medium"
     return meta
+
 
 # -------------------------------------------------------------------
 # Histórico (Feature Store)
@@ -187,6 +231,8 @@ def _winrate_speed(player_id: int, speed_bucket: str, years_back: int) -> Option
         or _try_view_winrate_speed(player_id, speed_bucket, years_back)
     )
 
+import datetime as _dt  # al inicio del archivo si no lo tienes
+
 def get_matchup_hist_vector(
     p_id: int,
     o_id: int,
@@ -195,25 +241,39 @@ def get_matchup_hist_vector(
     month: int,
 ) -> dict:
     """
-    Devuelve un diccionario con:
-      {
-        "surface": <str>,
-        "speed_bucket": <str>,
-        "d_hist_month":   <float>,   # (winrate_p - winrate_o) en [0..1] (no clamp aquí)
-        "d_hist_surface": <float>,
-        "d_hist_speed":   <float>,
-      }
-
-    Estrategia:
-      1) Obtener meta del torneo (surface/speed_bucket).
-      2) Intentar winrates por mes/superficie/velocidad para ambos via RPC; si no existen, via vistas.
-      3) Si falta cualquiera, devolver 0.0 en ese delta (no rompe).
+    Primero intenta el RPC 'get_matchup_hist_vector' (as-of, suavizado).
+    Si no está disponible, cae a la lógica actual con winrates.
     """
+    # -------- intento RPC único --------
+    try:
+        payload = {
+            "p_player_id": int(p_id),
+            "p_opponent_id": int(o_id),
+            "p_years_back": int(yrs),
+            "p_as_of": _dt.date.today().isoformat(),
+            "p_tournament_name": tname,
+            "p_month": int(month),
+            # Puedes pasar k si quieres: "p_k_month": 8, "p_k_surface": 8, "p_k_speed": 8
+        }
+        data = _rpc("get_matchup_hist_vector", payload)
+        if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+            data = data[0]
+        if isinstance(data, dict) and "d_hist_month" in data:
+            return {
+                "surface": (data.get("surface") or "hard").lower(),
+                "speed_bucket": data.get("speed_bucket") or "Medium",
+                "d_hist_month": float(data.get("d_hist_month") or 0.0),
+                "d_hist_surface": float(data.get("d_hist_surface") or 0.0),
+                "d_hist_speed": float(data.get("d_hist_speed") or 0.0),
+            }
+    except Exception as e:
+        log.info("RPC get_matchup_hist_vector no disponible, fallback winrates: %s", e)
+
+    # -------- FALLBACK: tu lógica actual con winrates --------
     meta = get_tourney_meta(tname) if tname else {}
     surface = (meta.get("surface") or "hard").lower()
     speed_bucket = meta.get("speed_bucket") or "Medium"
 
-    # Winrates (pueden ser None si no hay datos / no existen vistas-RPC)
     wr_p_month = _winrate_month(p_id, month, yrs)
     wr_o_month = _winrate_month(o_id, month, yrs)
 
@@ -223,12 +283,10 @@ def get_matchup_hist_vector(
     wr_p_speed = _winrate_speed(p_id, speed_bucket, yrs)
     wr_o_speed = _winrate_speed(o_id, speed_bucket, yrs)
 
-    # Deltas: si alguno es None, dejamos 0.0 para esa dimensión
-    def _delta(a: Optional[float], b: Optional[float]) -> float:
+    def _delta(a, b) -> float:
         try:
             if a is None or b is None:
                 return 0.0
-            # asegurar 0..1
             a1 = min(1.0, max(0.0, float(a)))
             b1 = min(1.0, max(0.0, float(b)))
             return a1 - b1
@@ -241,11 +299,8 @@ def get_matchup_hist_vector(
         "d_hist_month": _delta(wr_p_month, wr_o_month),
         "d_hist_surface": _delta(wr_p_surf, wr_o_surf),
         "d_hist_speed": _delta(wr_p_speed, wr_o_speed),
-        # opcionalmente podrías incluir los winrates crudos para depurar:
-        # "wr": {"p": {"month": wr_p_month, "surface": wr_p_surf, "speed": wr_p_speed},
-        #        "o": {"month": wr_o_month, "surface": wr_o_surf, "speed": wr_o_speed}},
     }
-
-    log.info("FS get_matchup_hist_vector p=%s o=%s yrs=%s t=%s m=%s -> %s",
+    log.info("FS get_matchup_hist_vector (fallback) p=%s o=%s yrs=%s t=%s m=%s -> %s",
              p_id, o_id, yrs, tname, month, out)
     return out
+
