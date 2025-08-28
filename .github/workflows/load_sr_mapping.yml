@@ -74,8 +74,8 @@ jobs:
       - name: Build joined mapping (por nombre normalizado)
         run: |
           set -e
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
-          CREATE VIEW public._joined_sr_map AS
+          cat > /tmp/build_joined.sql <<'SQL'
+          CREATE OR REPLACE VIEW public._joined_sr_map AS
           WITH src AS (
             SELECT
               trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey,
@@ -87,10 +87,11 @@ jobs:
             p.player_id,
             s.sr_short
           FROM src s
-          JOIN ${PLAYER_NAME_TABLE} p
+          JOIN estratego_v1.players p
             ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
           WHERE s.sr_short ~ '^[0-9]+$';
           SQL
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/build_joined.sql
 
           # Duplicados en el CSV (mismo SR mapeado a varios player_id)
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
@@ -116,43 +117,43 @@ jobs:
           echo "CSV_AUTHORITATIVE=${CSV_AUTHORITATIVE}"
 
           # Dedup determinista por sr_short
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
-          CREATE VIEW public._joined_dedup AS
+          cat > /tmp/build_dedup.sql <<'SQL'
+          CREATE OR REPLACE VIEW public._joined_dedup AS
           SELECT DISTINCT ON (sr_short)
             sr_short, player_id
           FROM public._joined_sr_map
           ORDER BY sr_short, player_id;
           SQL
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/build_dedup.sql
 
           if [ "${CSV_AUTHORITATIVE}" = "true" ]; then
             echo ">> Modo autoridad: reasignando SR IDs a los player_id del CSV"
             # 1) Quitar propietarios actuales que choquen
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
-            DELETE FROM public.players_ext pe
-            USING public._joined_dedup j
-            WHERE pe.ext_sportradar_id = j.sr_short
-              AND pe.player_id <> j.player_id;
-            SQL
-
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+              DELETE FROM public.players_ext pe
+              USING public._joined_dedup j
+              WHERE pe.ext_sportradar_id = j.sr_short
+                AND pe.player_id <> j.player_id;
+            "
             # 2) Upsert final por player_id
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
-            INSERT INTO public.players_ext(player_id, ext_sportradar_id)
-            SELECT player_id, sr_short FROM public._joined_dedup
-            ON CONFLICT (player_id) DO UPDATE
-              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
-            SQL
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+              INSERT INTO public.players_ext(player_id, ext_sportradar_id)
+              SELECT player_id, sr_short FROM public._joined_dedup
+              ON CONFLICT (player_id) DO UPDATE
+                SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
+            "
           else
             echo ">> Modo conservador: NO tocar SR ya asignados; solo insertar los libres"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
-            INSERT INTO public.players_ext(player_id, ext_sportradar_id)
-            SELECT j.player_id, j.sr_short
-            FROM public._joined_dedup j
-            LEFT JOIN public.players_ext pe
-              ON pe.ext_sportradar_id = j.sr_short
-            WHERE pe.player_id IS NULL  -- libres
-            ON CONFLICT (player_id) DO UPDATE
-              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
-            SQL
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+              INSERT INTO public.players_ext(player_id, ext_sportradar_id)
+              SELECT j.player_id, j.sr_short
+              FROM public._joined_dedup j
+              LEFT JOIN public.players_ext pe
+                ON pe.ext_sportradar_id = j.sr_short
+              WHERE pe.player_id IS NULL
+              ON CONFLICT (player_id) DO UPDATE
+                SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
+            "
           fi
 
       - name: Export post-state & unmatched names
@@ -170,7 +171,7 @@ jobs:
             )
             SELECT s.name
             FROM src s
-            LEFT JOIN ${PLAYER_NAME_TABLE} p
+            LEFT JOIN estratego_v1.players p
               ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
             WHERE p.player_id IS NULL
           ) TO '/tmp/unmatched_names.csv' WITH (FORMAT csv, HEADER true);"
