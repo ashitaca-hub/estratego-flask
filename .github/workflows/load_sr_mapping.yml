@@ -14,7 +14,7 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       # Cambia si tu tabla de nombres no es public.players_min
-      PLAYER_NAME_TABLE: "public.players_min"
+      PLAYER_NAME_TABLE: "estratego_v1.players"
       CSV_AUTHORITATIVE: ${{ github.event.inputs.csv_authoritative }}
 
     steps:
