@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       csv_authoritative:
-        description: "CSV manda (reasigna SR IDs existentes)"
+        description: "CSV manda (reasigna SR IDs existentes en players_ext)"
         required: false
         default: "false"
 
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      # Cambia si tu tabla de nombres no es public.players_min
+      # Tabla con los nombres “oficiales” de tus jugadores
       PLAYER_NAME_TABLE: "estratego_v1.players"
       CSV_AUTHORITATIVE: ${{ github.event.inputs.csv_authoritative }}
 
@@ -22,6 +22,7 @@ jobs:
 
       - name: Check inputs
         run: |
+          set -e
           test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL missing"; exit 1; }
           test -f "data/players_sr_map.csv" || { echo "::error::data/players_sr_map.csv no existe"; exit 1; }
           echo "Primeras líneas del CSV:" && head -n 5 data/players_sr_map.csv || true
@@ -41,7 +42,7 @@ jobs:
             ext_sportradar_id text UNIQUE
           );"
 
-      - name: Stage CSV and upsert mapping (DELIMITER ';')
+      - name: Stage CSV and cleanup (DELIMITER ';')
         run: |
           set -e
           # Limpieza de restos de runs anteriores
@@ -49,39 +50,17 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public._joined_sr_map CASCADE;"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public._tmp_sr_map_csv CASCADE;"
 
-          # 1) staging con columnas genéricas
+          # Staging
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
           CREATE TABLE public._tmp_sr_map_csv(
             name   text,
             sr_full text
           );"
 
-          # 2) Cargar CSV (cabeceras: Name;Player ID) con DELIMITER ';'
+          # Cargar CSV: cabeceras = Name;Player ID
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy public._tmp_sr_map_csv(name,sr_full)
           FROM 'data/players_sr_map.csv'
           WITH (FORMAT csv, HEADER true, DELIMITER ';');"
-
-          # 3) Upsert por nombre normalizado => players_ext
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-          WITH src AS (
-            SELECT
-              trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey,
-              regexp_replace(regexp_replace(sr_full, '.*:', ''), '\D', '', 'g') AS sr_short
-            FROM public._tmp_sr_map_csv
-            WHERE sr_full IS NOT NULL AND sr_full <> ''
-          ),
-          joined AS (
-            SELECT s.sr_short, p.player_id
-            FROM src s
-            JOIN ${PLAYER_NAME_TABLE} p
-              ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
-            WHERE s.sr_short ~ '^[0-9]+$'
-          )
-          INSERT INTO public.players_ext(player_id, ext_sportradar_id)
-          SELECT player_id, sr_short FROM joined
-          ON CONFLICT (player_id) DO UPDATE
-            SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
-
 
       - name: Preview source stats
         run: |
@@ -95,15 +74,11 @@ jobs:
       - name: Build joined mapping (por nombre normalizado)
         run: |
           set -e
-          # joined: target mapping propuesto (player_id <-> sr_short)
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public._joined_sr_map CASCADE;"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
           CREATE VIEW public._joined_sr_map AS
           WITH src AS (
             SELECT
-              -- normaliza name (minúsculas, sin acentos, sin signos)
               trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey,
-              -- deja solo el número final del SR
               regexp_replace(regexp_replace(sr_full, '.*:', ''), '\D', '', 'g') AS sr_short
             FROM public._tmp_sr_map_csv
             WHERE name IS NOT NULL AND sr_full IS NOT NULL
@@ -114,9 +89,10 @@ jobs:
           FROM src s
           JOIN ${PLAYER_NAME_TABLE} p
             ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
-          WHERE s.sr_short ~ '^[0-9]+$';"
+          WHERE s.sr_short ~ '^[0-9]+$';
+          SQL
 
-          # Duplicados en la fuente (mismo SR mapeado a varios player_id por nombre)
+          # Duplicados en el CSV (mismo SR mapeado a varios player_id)
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
             SELECT sr_short, array_agg(player_id ORDER BY player_id) AS player_ids, count(*) AS cnt
             FROM public._joined_sr_map
@@ -126,7 +102,6 @@ jobs:
 
       - name: Export pre-conflicts vs players_ext
         run: |
-          # Qué SR del CSV ya están asignados a OTRO player_id en players_ext
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
             SELECT j.sr_short, j.player_id AS csv_player_id, pe.player_id AS current_player_id
             FROM public._joined_sr_map j
@@ -140,34 +115,35 @@ jobs:
           set -e
           echo "CSV_AUTHORITATIVE=${CSV_AUTHORITATIVE}"
 
-          # Dedup: elegir un (sr_short, player_id) por sr_short determinísticamente
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public._joined_dedup CASCADE;"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          # Dedup determinista por sr_short
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
           CREATE VIEW public._joined_dedup AS
           SELECT DISTINCT ON (sr_short)
             sr_short, player_id
           FROM public._joined_sr_map
-          ORDER BY sr_short, player_id;"
+          ORDER BY sr_short, player_id;
+          SQL
 
           if [ "${CSV_AUTHORITATIVE}" = "true" ]; then
             echo ">> Modo autoridad: reasignando SR IDs a los player_id del CSV"
             # 1) Quitar propietarios actuales que choquen
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
             DELETE FROM public.players_ext pe
             USING public._joined_dedup j
             WHERE pe.ext_sportradar_id = j.sr_short
-              AND pe.player_id <> j.player_id;"
+              AND pe.player_id <> j.player_id;
+            SQL
 
             # 2) Upsert final por player_id
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
             INSERT INTO public.players_ext(player_id, ext_sportradar_id)
             SELECT player_id, sr_short FROM public._joined_dedup
             ON CONFLICT (player_id) DO UPDATE
-              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
+              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
+            SQL
           else
             echo ">> Modo conservador: NO tocar SR ya asignados; solo insertar los libres"
-            # Insertar solo los que no estén ya ocupados por otro
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
             INSERT INTO public.players_ext(player_id, ext_sportradar_id)
             SELECT j.player_id, j.sr_short
             FROM public._joined_dedup j
@@ -175,16 +151,16 @@ jobs:
               ON pe.ext_sportradar_id = j.sr_short
             WHERE pe.player_id IS NULL  -- libres
             ON CONFLICT (player_id) DO UPDATE
-              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
+              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
+            SQL
           fi
 
       - name: Export post-state & unmatched names
         run: |
-          # Estado final de players_ext (muestra)
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-          SELECT * FROM public.players_ext ORDER BY player_id LIMIT 20;"
+          # Muestra del estado final
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.players_ext ORDER BY player_id LIMIT 20;"
 
-          # Nombres del CSV que no hicieron match con tabla de nombres
+          # Nombres del CSV que no hicieron match con la tabla de nombres
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
             WITH src AS (
               SELECT
