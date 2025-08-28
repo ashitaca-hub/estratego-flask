@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      # Cambia esto si tu tabla de nombres no es public.players_min
+      # Cambia si tu tabla de nombres no es public.players_min
       PLAYER_NAME_TABLE: "public.players_min"
 
     steps:
@@ -24,10 +24,10 @@ jobs:
           sudo apt-get update && sudo apt-get install -y postgresql-client
           pip install pandas openpyxl
 
-      - name: Convert Excel -> CSV normalizado
+      - name: Convert Excel -> CSV normalizado (sin heredoc)
         run: |
-          python - <<'PY'
-import pandas as pd, os, re
+          cat > /tmp/convert_excel.py <<'PY'
+import pandas as pd, os, re, sys
 xls = "data/players_sr_map.xlsx"
 df = pd.read_excel(xls)
 
@@ -35,12 +35,13 @@ df = pd.read_excel(xls)
 name_col = next((c for c in df.columns if str(c).strip().lower() in ("name","nombre")), None)
 sr_col   = next((c for c in df.columns if str(c).strip().lower() in ("player id","player_id","sr","sportradar_id")), None)
 if not name_col or not sr_col:
-    raise SystemExit("No encuentro columnas Name y Player ID en el Excel.")
+    sys.exit("No encuentro columnas Name y Player ID en el Excel.")
 
 def sr_short(x):
     if pd.isna(x): return None
     s = str(x).strip()
-    if ":" in s: s = s.split(":")[-1]
+    if ":" in s:
+        s = s.split(":")[-1]
     s = re.sub(r"[^\d]", "", s)
     return s or None
 
@@ -55,6 +56,7 @@ os.makedirs("/tmp", exist_ok=True)
 out.to_csv("/tmp/players_sr_map.csv", index=False)
 print(out.head())
 PY
+          python /tmp/convert_excel.py
 
       - name: Apply SQL (create table/functions, stage data, upsert)
         run: |
