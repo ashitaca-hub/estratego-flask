@@ -1,0 +1,58 @@
+name: db-fix-players-lookup
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apply-and-check:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sanity env & files
+        run: |
+          test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL missing"; exit 1; }
+          test -f "sql/migrations/2025_08_28_fix_players_lookup.sql" || { echo "::error::SQL file not found"; exit 1; }
+
+      - name: Install psql
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply SQL
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_28_fix_players_lookup.sql
+
+      - name: Quick checks (players_ext & players_lookup)
+        run: |
+          echo "== players_ext total =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS players_ext_rows FROM public.players_ext;"
+
+          echo "== join estratego_v1.players ∩ players_ext =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT count(*) AS join_rows
+            FROM estratego_v1.players p
+            JOIN public.players_ext e USING (player_id);
+          "
+
+          echo "== players_lookup con SR asignado (muestra) =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT player_id, name, ext_sportradar_id
+            FROM public.players_lookup
+            WHERE ext_sportradar_id IS NOT NULL
+            ORDER BY player_id
+            LIMIT 10;
+          "
+
+          echo "== total en players_lookup con SR =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT count(*) AS mapped_in_lookup
+            FROM public.players_lookup
+            WHERE ext_sportradar_id IS NOT NULL;
+          "
+
+      - name: Coverage (sr_mapping_coverage)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "TABLE public.sr_mapping_coverage;"
