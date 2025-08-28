@@ -57,7 +57,7 @@ jobs:
       - name: Simular bracket
         run: |
           set -e
-          python scripts/simulate_bracket.py
+          python apps_script/simulate_bracket.py
 
       - name: app.log (tail if fail)
         if: failure()
