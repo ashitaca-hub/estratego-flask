@@ -41,7 +41,7 @@ jobs:
       - name: Start API (Flask) on ${{ env.PORT }}
         run: |
           set -e
-          nohup python -u apps_scripts/start_api.py > app.log 2>&1 &
+          nohup python -u apps_script/start_api.py > app.log 2>&1 &
           for i in $(seq 1 40); do
             if curl -sf http://127.0.0.1:${PORT}/health  >/dev/null 2>&1; then break; fi
             if curl -sf http://127.0.0.1:${PORT}/healthz >/dev/null 2>&1; then break; fi
