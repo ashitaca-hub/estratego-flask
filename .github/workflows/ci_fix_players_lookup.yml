@@ -1,0 +1,77 @@
+name: fix-players-lookup-and-coverage
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sanity env
+        run: |
+          test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL missing"; exit 1; }
+
+      - name: Install psql
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Create/Replace players_lookup view (estratego_v1.players + mapping)
+        run: |
+          cat > /tmp/players_lookup.sql <<'SQL'
+          CREATE OR REPLACE VIEW public.players_lookup AS
+          SELECT
+            p.player_id::int    AS player_id,
+            p.name::text        AS name,
+            e.ext_sportradar_id::text AS ext_sportradar_id
+          FROM estratego_v1.players p
+          LEFT JOIN public.players_ext e USING (player_id)
+          UNION
+          SELECT
+            pm.player_id::int   AS player_id,
+            pm.name::text       AS name,
+            e.ext_sportradar_id::text AS ext_sportradar_id
+          FROM public.players_min pm
+          LEFT JOIN public.players_ext e USING (player_id);
+
+          COMMENT ON VIEW public.players_lookup IS 'Players + Sportradar mapping (estratego_v1.players ∪ public.players_min)';
+          GRANT SELECT ON public.players_lookup TO anon, authenticated, service_role;
+          SQL
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/players_lookup.sql
+
+      - name: Quick checks
+        run: |
+          echo "== players_ext total =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) AS players_ext_rows FROM public.players_ext;"
+
+          echo "== join estratego_v1.players ∩ players_ext =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT count(*) AS join_rows
+            FROM estratego_v1.players p
+            JOIN public.players_ext e USING (player_id);
+          "
+
+          echo "== players_lookup con SR asignado (muestra) =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT player_id, name, ext_sportradar_id
+            FROM public.players_lookup
+            WHERE ext_sportradar_id IS NOT NULL
+            ORDER BY player_id
+            LIMIT 10;
+          "
+
+          echo "== total en players_lookup con SR =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT count(*) AS mapped_in_lookup
+            FROM public.players_lookup
+            WHERE ext_sportradar_id IS NOT NULL;
+          "
+
+      - name: Recompute coverage
+        run: |
+          echo "== sr_mapping_coverage =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "TABLE public.sr_mapping_coverage;"
