@@ -1,4 +1,4 @@
-name: load-sr-mapping
+name: load-sr-mapping-csv
 
 on:
   workflow_dispatch:
@@ -17,99 +17,97 @@ jobs:
       - name: Check inputs
         run: |
           test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL missing"; exit 1; }
-          test -f "data/players_sr_map.xlsx" || { echo "::error::data/players_sr_map.xlsx no existe"; exit 1; }
+          test -f "data/players_sr_map.csv" || { echo "::error::data/players_sr_map.csv no existe"; exit 1; }
+          echo "Primeras líneas del CSV:" && head -n 5 data/players_sr_map.csv || true
 
       - name: Install deps
         run: |
           sudo apt-get update && sudo apt-get install -y postgresql-client
-          pip install pandas openpyxl
 
-      - name: Convert Excel -> CSV normalizado
-        run: |
-          python apps_script/convert_excel.py
-          test -f /tmp/players_sr_map.csv || { echo "::error::No se generó /tmp/players_sr_map.csv"; exit 1; }
-
-      - name: Apply SQL (create table, stage, upsert)
+      - name: Create extensions & target table
         run: |
           set -e
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS unaccent;"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-
-          # 1) Tabla destino (mapping)
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
           CREATE TABLE IF NOT EXISTS public.players_ext(
             player_id int PRIMARY KEY,
             ext_sportradar_id text UNIQUE
           );"
 
-          # 2) Staging temporal
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public._tmp_sr_map;"
+      - name: Stage CSV and upsert mapping (DELIMITER ';')
+        run: |
+          set -e
+          # 1) staging con columnas genéricas
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public._tmp_sr_map_csv;"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-          CREATE TABLE public._tmp_sr_map(
+          CREATE TABLE public._tmp_sr_map_csv(
             name text,
-            sr_full text,
-            sr_short text
+            sr_full text
           );"
 
-          # 3) Cargar CSV a staging
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy public._tmp_sr_map(name,sr_full,sr_short) FROM '/tmp/players_sr_map.csv' WITH (FORMAT csv, HEADER true);"
+          # 2) Cargar CSV (orden de columnas: Name;Player ID) con DELIMITER ';'
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy public._tmp_sr_map_csv(name,sr_full)
+          FROM 'data/players_sr_map.csv'
+          WITH (FORMAT csv, HEADER true, DELIMITER ';');"
 
-          # 4) Upsert por nombre normalizado (sin crear funciones)
+          # 3) Upsert por nombre normalizado => players_ext
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
           WITH src AS (
             SELECT
               trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey,
-              sr_short
-            FROM public._tmp_sr_map
-            WHERE sr_short ~ '^[0-9]+$'
+              -- extrae el último token tras ':' y deja solo dígitos
+              regexp_replace(regexp_replace(sr_full, '.*:', ''), '\D', '', 'g') AS sr_short
+            FROM public._tmp_sr_map_csv
+            WHERE sr_full IS NOT NULL AND sr_full <> ''
           ),
           joined AS (
-            SELECT s.nkey, s.sr_short, p.player_id, p.name
+            SELECT s.sr_short, p.player_id
             FROM src s
             JOIN ${PLAYER_NAME_TABLE} p
               ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
+            WHERE s.sr_short ~ '^[0-9]+$'
           )
           INSERT INTO public.players_ext(player_id, ext_sportradar_id)
           SELECT player_id, sr_short FROM joined
-          ON CONFLICT (player_id) DO UPDATE SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
+          ON CONFLICT (player_id) DO UPDATE SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
+          "
 
-          # 5) Exportar no encontrados para revisar
+      - name: Exportar no encontrados (para revisar)
+        run: |
+          set -e
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
             WITH src AS (
               SELECT
                 name,
                 sr_full,
-                sr_short,
                 trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey
-              FROM public._tmp_sr_map
-              WHERE sr_short ~ '^[0-9]+$'
+              FROM public._tmp_sr_map_csv
             )
-            SELECT s.name, s.sr_full, s.sr_short
+            SELECT s.name, s.sr_full
             FROM src s
             LEFT JOIN ${PLAYER_NAME_TABLE} p
               ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
             WHERE p.player_id IS NULL
           ) TO '/tmp/unmatched_names.csv' WITH (FORMAT csv, HEADER true);"
 
-          # 6) Resumen
-          echo "== RESUMEN =="
+      - name: Resumen
+        run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
           WITH counts AS (
             SELECT
-              (SELECT count(*) FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$') AS total_in,
-              (SELECT count(*) FROM public._tmp_sr_map t
+              (SELECT count(*) FROM public._tmp_sr_map_csv) AS total_in,
+              (SELECT count(*) FROM public._tmp_sr_map_csv t
                  JOIN ${PLAYER_NAME_TABLE} p
                    ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g'))
                     = trim(regexp_replace(lower(unaccent(t.name)), '[^a-z0-9]+', ' ', 'g'))
-               WHERE t.sr_short ~ '^[0-9]+$') AS matched,
-              (SELECT count(*) FROM public.players_ext) AS total_mapped
+              ) AS matched_names,
+              (SELECT count(*) FROM public.players_ext) AS total_in_players_ext
           )
           SELECT * FROM counts;"
 
-      - name: Upload artifacts (CSV usados / no encontrados)
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: sr-mapping-load
-          path: |
-            /tmp/players_sr_map.csv
-            /tmp/unmatched_names.csv
+          path: /tmp/unmatched_names.csv
