@@ -1,0 +1,41 @@
+name: mapping-coverage
+
+on:
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sanity env
+        run: |
+          test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL missing"; exit 1; }
+
+      - name: Apply SQL (vistas de cobertura)
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          test -f sql/migrations/2025_08_28_players_mapping_coverage.sql || { echo "::error::SQL no encontrada"; exit 1; }
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_28_players_mapping_coverage.sql
+
+      - name: Mostrar cobertura
+        run: |
+          psql "$DATABASE_URL" -c "TABLE public.sr_mapping_coverage;"
+
+      - name: Exportar faltantes por frecuencia (top 200)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT * FROM public.sr_missing_by_frequency LIMIT 200
+          ) TO '/tmp/sr_missing_by_frequency.csv' WITH (FORMAT csv, HEADER true);"
+          echo "Primeras filas:"
+          head -n 10 /tmp/sr_missing_by_frequency.csv || true
+
+      - name: Upload artifact (faltantes)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sr-missing-by-frequency
+          path: /tmp/sr_missing_by_frequency.csv
