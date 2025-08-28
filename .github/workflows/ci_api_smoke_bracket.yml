@@ -10,6 +10,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
+      PORT: "8080"
 
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +20,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps (if requirements.txt exists)
+      - name: Install deps
         run: |
           set -e
           if [ -f requirements.txt ]; then
@@ -33,101 +34,27 @@ jobs:
           set -e
           [ -n "$SUPABASE_URL" ] || { echo "::error::SUPABASE_URL missing"; exit 1; }
           [ -n "$SUPABASE_KEY" ] || { echo "::error::SUPABASE_KEY missing"; exit 1; }
-          # SR_API_KEY opcional: si no está, seguimos con histórico puro
           if [ -z "$SR_API_KEY" ]; then echo "::warning::SR_API_KEY missing (seguirá con histórico)"; fi
+          test -f apps_scripts/start_api.py || { echo "::error::apps_scripts/start_api.py no existe"; exit 1; }
+          test -f apps_scripts/simulate_bracket.py || { echo "::error::apps_scripts/simulate_bracket.py no existe"; exit 1; }
 
-      - name: Start API (Flask) on 8080
+      - name: Start API (Flask) on ${{ env.PORT }}
         run: |
           set -e
-          # Arranca la app en background y vuelca logs a app.log
-          nohup python -u - <<'PY' > app.log 2>&1 &
-import os, time
-from main import app
-# En CI usamos 0.0.0.0:8080
-app.run(host="0.0.0.0", port=8080, threaded=True)
-PY
-          # Esperar a que responda /health o /healthz (máx 40s)
+          nohup python -u apps_scripts/start_api.py > app.log 2>&1 &
           for i in $(seq 1 40); do
-            if curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
-            if curl -sf http://127.0.0.1:8080/healthz >/dev/null 2>&1; then break; fi
+            if curl -sf http://127.0.0.1:${PORT}/health  >/dev/null 2>&1; then break; fi
+            if curl -sf http://127.0.0.1:${PORT}/healthz >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          if ! (curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1 || curl -sf http://127.0.0.1:8080/healthz >/dev/null 2>&1); then
-            echo "::error::API no responde"; tail -n 200 app.log || true; exit 1;
+          if ! (curl -sf http://127.0.0.1:${PORT}/health >/dev/null 2>&1 || curl -sf http://127.0.0.1:${PORT}/healthz >/dev/null 2>&1); then
+            echo "::error::API no responde"; tail -n 200 app.log || true; exit 1
           fi
 
-      - name: Simular bracket (8 jugadores, determinista)
+      - name: Simular bracket (8 jugadores)
         run: |
-          python - <<'PY'
-import json, urllib.request
-
-API="http://127.0.0.1:8080/matchup"
-
-# Entrantes (semillas) con SR IDs (mapeados ya)
-entrants = [
-  {"seed":1, "id":"sr:competitor:407573", "name":"Carlos Alcaraz"},
-  {"seed":8, "id":"sr:competitor:214182", "name":"Alex de Minaur"},
-  {"seed":4, "id":"sr:competitor:136042", "name":"Taylor Fritz"},
-  {"seed":5, "id":"sr:competitor:352776", "name":"Jack Draper"},
-  {"seed":2, "id":"sr:competitor:225050", "name":"Jannik Sinner"},
-  {"seed":7, "id":"sr:competitor:808628", "name":"Ben Shelton"},
-  {"seed":3, "id":"sr:competitor:57163",  "name":"Alexander Zverev"},
-  {"seed":6, "id":"sr:competitor:14882",  "name":"Novak Djokovic"},
-]
-
-tournament = {"name":"Cincinnati","month":8}
-years_back = 4
-
-def call_matchup(p, o):
-    payload = {
-      "player_id": p,
-      "opponent_id": o,
-      "tournament": tournament,
-      "years_back": years_back
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req  = urllib.request.Request(API, data=data, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-def first_round_pairs_by_seed(players):
-    ps = sorted(players, key=lambda x: x["seed"])
-    n = len(ps)
-    return [(ps[i], ps[n-1-i]) for i in range(n//2)]
-
-def round_pairs(players):
-    return [(players[i], players[i+1]) for i in range(0,len(players),2)]
-
-def play_round(players, use_seeds):
-    pairs = first_round_pairs_by_seed(players) if use_seeds else round_pairs(players)
-    results=[]; winners=[]
-    for a,b in pairs:
-        r = call_matchup(a["id"], b["id"])
-        prob = float(r.get("prob_player",0.5))
-        winner = a if prob>=0.5 else b
-        results.append({
-            "a": a["name"], "b": b["name"],
-            "a_id": a["id"], "b_id": b["id"],
-            "prob_a": round(prob,6), "winner": winner["name"]
-        })
-        winners.append(winner)
-    return results, winners
-
-round_num=1
-bracket=[]
-current = entrants[:]
-use_seeds = all("seed" in p for p in current)
-while len(current) > 1:
-    res, winners = play_round(current, use_seeds if round_num==1 else False)
-    bracket.append({"round": round_num, "matches": res})
-    current = winners
-    round_num += 1
-
-champion = current[0]
-out = {"ok": True, "tournament":tournament, "years_back":years_back, "bracket":bracket, "champion":champion}
-print("== BRACKET ==")
-print(json.dumps(out, indent=2))
-PY
+          set -e
+          python apps_scripts/simulate_bracket.py
 
       - name: app.log (tail if fail)
         if: failure()
