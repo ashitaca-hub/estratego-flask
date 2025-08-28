@@ -1,0 +1,134 @@
+name: api-smoke-bracket
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bracket:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SR_API_KEY:   ${{ secrets.SR_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sanity env
+        run: |
+          set -e
+          [ -n "$SUPABASE_URL" ] || { echo "::error::SUPABASE_URL missing"; exit 1; }
+          [ -n "$SUPABASE_KEY" ] || { echo "::error::SUPABASE_KEY missing"; exit 1; }
+          [ -n "$SR_API_KEY"   ] || echo "::warning::SR_API_KEY missing (seguirá con histórico)"
+
+      - name: Start API (Flask) on 8080
+        run: |
+          set -e
+          nohup python -u - <<'PY' > app.log 2>&1 &
+import os
+from main import app
+# en CI usamos 8080; threaded=True evita deadlocks si hubiera llamadas internas
+app.run(host="0.0.0.0", port=8080, threaded=True)
+PY
+          # Esperar a que responda /health o /healthz
+          for i in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1 && break
+            curl -sf http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          (curl -sf http://127.0.0.1:8080/health || curl -sf http://127.0.0.1:8080/healthz) >/dev/null || { echo "::error::API no responde"; tail -n 200 app.log || true; exit 1; }
+
+      - name: Simular bracket (8 jugadores, determinista)
+        run: |
+          python - <<'PY'
+import json, urllib.request, urllib.error, time, random
+
+API="http://127.0.0.1:8080/matchup"
+
+# Entrantes (semillas) — todos con SR ID mapeado ya
+entrants = [
+  {"seed":1, "id":"sr:competitor:407573", "name":"Carlos Alcaraz"},
+  {"seed":8, "id":"sr:competitor:214182", "name":"Alex de Minaur"},
+  {"seed":4, "id":"sr:competitor:136042", "name":"Taylor Fritz"},
+  {"seed":5, "id":"sr:competitor:352776", "name":"Jack Draper"},
+  {"seed":2, "id":"sr:competitor:225050", "name":"Jannik Sinner"},
+  {"seed":7, "id":"sr:competitor:808628", "name":"Ben Shelton"},
+  {"seed":3, "id":"sr:competitor:57163",  "name":"Alexander Zverev"},
+  {"seed":6, "id":"sr:competitor:14882",  "name":"Novak Djokovic"},
+]
+
+tournament = {"name":"Cincinnati","month":8}
+years_back = 4
+mode = "deterministic"   # o "mc" si quisieras aleatorio
+
+def call_matchup(p, o):
+    payload = {
+      "player_id": p,
+      "opponent_id": o,
+      "tournament": tournament,
+      "years_back": years_back
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req  = urllib.request.Request(API, data=data, headers={"Content-Type":"application/json"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def first_round_pairs_by_seed(players):
+    # Ordena por seed asc y empareja 1 vs N, 2 vs N-1, etc.
+    ps = sorted(players, key=lambda x: x["seed"])
+    n = len(ps)
+    pairs=[]
+    for i in range(n//2):
+        pairs.append((ps[i], ps[n-1-i]))
+    return pairs
+
+def round_pairs_sequential(players):
+    # Si no hay seeds, empareja 0-1, 2-3, ...
+    pairs=[]
+    for i in range(0,len(players),2):
+        pairs.append((players[i], players[i+1]))
+    return pairs
+
+def play_round(players):
+    # Usa seeds si existen en todos
+    use_seeds = all("seed" in p for p in players)
+    pairs = first_round_pairs_by_seed(players) if use_seeds else round_pairs_sequential(players)
+    results=[]
+    winners=[]
+    for a,b in pairs:
+        r = call_matchup(a["id"], b["id"])
+        prob = float(r.get("prob_player",0.5))
+        # determinista: gana A si prob>=0.5
+        winner = a if prob>=0.5 else b
+        results.append({
+            "a": a["name"],
+            "b": b["name"],
+            "a_id": a["id"],
+            "b_id": b["id"],
+            "prob_a": prob,
+            "winner": winner["name"]
+        })
+        winners.append(winner)
+    return results, winners
+
+# Juega hasta campeón
+round_num=1
+bracket=[]
+current = entrants
+while len(current) > 1:
+    results, winners = play_round(current)
+    bracket.append({"round": round_num, "matches": results})
+    current = winners
+    round_num += 1
+
+champion = current[0]
+out = {"ok": True, "tournament":tournament, "years_back":years_back, "mode":mode, "bracket":bracket, "champion":champion}
+print("== BRACKET ==")
+print(json.dumps(out, indent=2))
+PY
+
+      - name: Mostrar logs app si algo falla
+        if: failure()
+        run: |
+          echo "----- app.log (tail) -----"
+          tail -n 200 app.log || true
