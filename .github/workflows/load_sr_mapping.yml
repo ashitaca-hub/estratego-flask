@@ -41,21 +41,47 @@ jobs:
             ext_sportradar_id text UNIQUE
           );"
 
-      - name: Stage CSV (DELIMITER ';')
+      - name: Stage CSV and upsert mapping (DELIMITER ';')
         run: |
           set -e
-          # Staging genérico
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public._tmp_sr_map_csv;"
+          # Limpieza de restos de runs anteriores
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public._joined_dedup CASCADE;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public._joined_sr_map CASCADE;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public._tmp_sr_map_csv CASCADE;"
+
+          # 1) staging con columnas genéricas
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
           CREATE TABLE public._tmp_sr_map_csv(
             name   text,
             sr_full text
           );"
 
-          # Cargar CSV (cabeceras: Name;Player ID)
+          # 2) Cargar CSV (cabeceras: Name;Player ID) con DELIMITER ';'
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy public._tmp_sr_map_csv(name,sr_full)
           FROM 'data/players_sr_map.csv'
           WITH (FORMAT csv, HEADER true, DELIMITER ';');"
+
+          # 3) Upsert por nombre normalizado => players_ext
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          WITH src AS (
+            SELECT
+              trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey,
+              regexp_replace(regexp_replace(sr_full, '.*:', ''), '\D', '', 'g') AS sr_short
+            FROM public._tmp_sr_map_csv
+            WHERE sr_full IS NOT NULL AND sr_full <> ''
+          ),
+          joined AS (
+            SELECT s.sr_short, p.player_id
+            FROM src s
+            JOIN ${PLAYER_NAME_TABLE} p
+              ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
+            WHERE s.sr_short ~ '^[0-9]+$'
+          )
+          INSERT INTO public.players_ext(player_id, ext_sportradar_id)
+          SELECT player_id, sr_short FROM joined
+          ON CONFLICT (player_id) DO UPDATE
+            SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
+
 
       - name: Preview source stats
         run: |
