@@ -35,8 +35,8 @@ jobs:
           [ -n "$SUPABASE_URL" ] || { echo "::error::SUPABASE_URL missing"; exit 1; }
           [ -n "$SUPABASE_KEY" ] || { echo "::error::SUPABASE_KEY missing"; exit 1; }
           if [ -z "$SR_API_KEY" ]; then echo "::warning::SR_API_KEY missing (seguirá con histórico)"; fi
-          test -f apps_scripts/start_api.py || { echo "::error::apps_scripts/start_api.py no existe"; exit 1; }
-          test -f apps_scripts/simulate_bracket.py || { echo "::error::apps_scripts/simulate_bracket.py no existe"; exit 1; }
+          test -f apps_script/start_api.py || { echo "::error::apps_script/start_api.py no existe"; exit 1; }
+          test -f apps_script/simulate_bracket.py || { echo "::error::apps_script/simulate_bracket.py no existe"; exit 1; }
 
       - name: Start API (Flask) on ${{ env.PORT }}
         run: |
@@ -54,7 +54,7 @@ jobs:
       - name: Simular bracket (8 jugadores)
         run: |
           set -e
-          python apps_scripts/simulate_bracket.py
+          python apps_script/simulate_bracket.py
 
       - name: app.log (tail if fail)
         if: failure()
