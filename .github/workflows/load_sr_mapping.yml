@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      # Si tu tabla de nombres no es public.players_min, puedes cambiarla aquí:
+      # Cambia esto si tu tabla de nombres no es public.players_min
       PLAYER_NAME_TABLE: "public.players_min"
 
     steps:
@@ -30,20 +30,19 @@ jobs:
 import pandas as pd, os, re
 xls = "data/players_sr_map.xlsx"
 df = pd.read_excel(xls)
-# Normaliza encabezados esperados
-cols = {c.strip().lower(): c for c in df.columns}
-name_col = next((c for c in df.columns if c.strip().lower() in ("name","nombre")), None)
-sr_col   = next((c for c in df.columns if c.strip().lower() in ("player id","player_id","sr","sportradar_id")), None)
+
+# Detectar columnas esperadas (Name / Player ID)
+name_col = next((c for c in df.columns if str(c).strip().lower() in ("name","nombre")), None)
+sr_col   = next((c for c in df.columns if str(c).strip().lower() in ("player id","player_id","sr","sportradar_id")), None)
 if not name_col or not sr_col:
     raise SystemExit("No encuentro columnas Name y Player ID en el Excel.")
 
 def sr_short(x):
     if pd.isna(x): return None
     s = str(x).strip()
-    # extrae lo que haya tras el último ':'
     if ":" in s: s = s.split(":")[-1]
-    # valida que es numérico
-    return re.sub(r"[^\d]", "", s)
+    s = re.sub(r"[^\d]", "", s)
+    return s or None
 
 out = pd.DataFrame({
     "name": df[name_col].astype(str).str.strip(),
@@ -106,13 +105,13 @@ PY
           # 5) Resolver player_id por nombre normalizado y upsert
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
           WITH src AS (
-            SELECT norm_name(name) AS nkey, sr_short FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$'
+            SELECT public.norm_name(name) AS nkey, sr_short FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$'
           ),
           joined AS (
             SELECT s.nkey, s.sr_short, p.player_id, p.name
             FROM src s
             JOIN ${PLAYER_NAME_TABLE} p
-              ON norm_name(p.name) = s.nkey
+              ON public.norm_name(p.name) = s.nkey
           )
           INSERT INTO public.players_ext(player_id, ext_sportradar_id)
           SELECT player_id, sr_short FROM joined
@@ -121,12 +120,12 @@ PY
           # 6) Exportar no encontrados (para revisión)
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
             WITH src AS (
-              SELECT norm_name(name) AS nkey, name, sr_full, sr_short FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$'
+              SELECT public.norm_name(name) AS nkey, name, sr_full, sr_short FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$'
             ),
             missed AS (
               SELECT s.name, s.sr_full, s.sr_short
               FROM src s
-              LEFT JOIN ${PLAYER_NAME_TABLE} p ON norm_name(p.name) = s.nkey
+              LEFT JOIN ${PLAYER_NAME_TABLE} p ON public.norm_name(p.name) = s.nkey
               WHERE p.player_id IS NULL
             )
             SELECT * FROM missed
@@ -139,7 +138,7 @@ PY
             SELECT
               (SELECT count(*) FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$') AS total_in,
               (SELECT count(*) FROM public._tmp_sr_map t
-                 JOIN ${PLAYER_NAME_TABLE} p ON norm_name(p.name)=norm_name(t.name)
+                 JOIN ${PLAYER_NAME_TABLE} p ON public.norm_name(p.name)=public.norm_name(t.name)
                WHERE t.sr_short ~ '^[0-9]+$') AS matched,
               (SELECT count(*) FROM public.players_ext) AS total_mapped
           )
