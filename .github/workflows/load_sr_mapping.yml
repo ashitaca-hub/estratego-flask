@@ -1,0 +1,155 @@
+name: load-sr-mapping
+
+on:
+  workflow_dispatch:
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Cambia si tu tabla de nombres no es public.players_min
+      PLAYER_NAME_TABLE: "public.players_min"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check inputs
+        run: |
+          test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL missing"; exit 1; }
+          test -f "data/players_sr_map.xlsx" || { echo "::error::data/players_sr_map.xlsx no existe"; exit 1; }
+
+      - name: Install deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          pip install pandas openpyxl
+
+      - name: Convert Excel -> CSV normalizado (sin heredoc)
+        run: |
+          cat > /tmp/convert_excel.py <<'PY'
+import pandas as pd, os, re, sys
+xls = "data/players_sr_map.xlsx"
+df = pd.read_excel(xls)
+
+# Detectar columnas esperadas (Name / Player ID)
+name_col = next((c for c in df.columns if str(c).strip().lower() in ("name","nombre")), None)
+sr_col   = next((c for c in df.columns if str(c).strip().lower() in ("player id","player_id","sr","sportradar_id")), None)
+if not name_col or not sr_col:
+    sys.exit("No encuentro columnas Name y Player ID en el Excel.")
+
+def sr_short(x):
+    if pd.isna(x): return None
+    s = str(x).strip()
+    if ":" in s:
+        s = s.split(":")[-1]
+    s = re.sub(r"[^\d]", "", s)
+    return s or None
+
+out = pd.DataFrame({
+    "name": df[name_col].astype(str).str.strip(),
+    "sr_full": df[sr_col].astype(str).str.strip(),
+})
+out["sr_short"] = out["sr_full"].apply(sr_short)
+out = out.dropna(subset=["name","sr_short"])
+out = out[out["sr_short"]!=""]
+os.makedirs("/tmp", exist_ok=True)
+out.to_csv("/tmp/players_sr_map.csv", index=False)
+print(out.head())
+PY
+          python /tmp/convert_excel.py
+
+      - name: Apply SQL (create table/functions, stage data, upsert)
+        run: |
+          set -e
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS unaccent;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
+          # 1) Tabla destino (mapping)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          CREATE TABLE IF NOT EXISTS public.players_ext(
+            player_id int PRIMARY KEY,
+            ext_sportradar_id text UNIQUE
+          );"
+
+          # 2) Función normalizadora de nombres (si no existe)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_proc
+              WHERE proname='norm_name' AND pg_function_is_visible(oid)
+            ) THEN
+              EXECUTE $fn$
+                CREATE OR REPLACE FUNCTION public.norm_name(txt text)
+                RETURNS text
+                LANGUAGE sql IMMUTABLE PARALLEL UNSAFE AS
+                $$ SELECT CASE
+                     WHEN $1 IS NULL THEN NULL
+                     ELSE trim(regexp_replace(lower(unaccent($1)), '[^a-z0-9]+', ' ', 'g'))
+                   END $$;
+              $fn$;
+              GRANT EXECUTE ON FUNCTION public.norm_name(text) TO anon, authenticated, service_role;
+            END IF;
+          END$$;"
+
+          # 3) Staging temporal
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public._tmp_sr_map;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          CREATE TABLE public._tmp_sr_map(
+            name text,
+            sr_full text,
+            sr_short text
+          );"
+
+          # 4) Cargar CSV a staging
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy public._tmp_sr_map(name,sr_full,sr_short) FROM '/tmp/players_sr_map.csv' WITH (FORMAT csv, HEADER true);"
+
+          # 5) Resolver player_id por nombre normalizado y upsert
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          WITH src AS (
+            SELECT public.norm_name(name) AS nkey, sr_short FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$'
+          ),
+          joined AS (
+            SELECT s.nkey, s.sr_short, p.player_id, p.name
+            FROM src s
+            JOIN ${PLAYER_NAME_TABLE} p
+              ON public.norm_name(p.name) = s.nkey
+          )
+          INSERT INTO public.players_ext(player_id, ext_sportradar_id)
+          SELECT player_id, sr_short FROM joined
+          ON CONFLICT (player_id) DO UPDATE SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
+
+          # 6) Exportar no encontrados (para revisión)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            WITH src AS (
+              SELECT public.norm_name(name) AS nkey, name, sr_full, sr_short FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$'
+            ),
+            missed AS (
+              SELECT s.name, s.sr_full, s.sr_short
+              FROM src s
+              LEFT JOIN ${PLAYER_NAME_TABLE} p ON public.norm_name(p.name) = s.nkey
+              WHERE p.player_id IS NULL
+            )
+            SELECT * FROM missed
+          ) TO '/tmp/unmatched_names.csv' WITH (FORMAT csv, HEADER true);"
+
+          # 7) Resumen
+          echo "== RESUMEN =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          WITH counts AS (
+            SELECT
+              (SELECT count(*) FROM public._tmp_sr_map WHERE sr_short ~ '^[0-9]+$') AS total_in,
+              (SELECT count(*) FROM public._tmp_sr_map t
+                 JOIN ${PLAYER_NAME_TABLE} p ON public.norm_name(p.name)=public.norm_name(t.name)
+               WHERE t.sr_short ~ '^[0-9]+$') AS matched,
+              (SELECT count(*) FROM public.players_ext) AS total_mapped
+          )
+          SELECT * FROM counts;"
+
+      - name: Upload artifacts (CSV usados / no encontrados)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sr-mapping-load
+          path: |
+            /tmp/players_sr_map.csv
+            /tmp/unmatched_names.csv
