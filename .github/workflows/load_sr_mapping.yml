@@ -2,6 +2,11 @@ name: load-sr-mapping-csv
 
 on:
   workflow_dispatch:
+    inputs:
+      csv_authoritative:
+        description: "CSV manda (reasigna SR IDs existentes)"
+        required: false
+        default: "false"
 
 jobs:
   load:
@@ -10,6 +15,7 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       # Cambia si tu tabla de nombres no es public.players_min
       PLAYER_NAME_TABLE: "public.players_min"
+      CSV_AUTHORITATIVE: ${{ github.event.inputs.csv_authoritative }}
 
     steps:
       - uses: actions/checkout@v4
@@ -35,79 +41,155 @@ jobs:
             ext_sportradar_id text UNIQUE
           );"
 
-      - name: Stage CSV and upsert mapping (DELIMITER ';')
+      - name: Stage CSV (DELIMITER ';')
         run: |
           set -e
-          # 1) staging con columnas genéricas
+          # Staging genérico
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public._tmp_sr_map_csv;"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
           CREATE TABLE public._tmp_sr_map_csv(
-            name text,
+            name   text,
             sr_full text
           );"
 
-          # 2) Cargar CSV (orden de columnas: Name;Player ID) con DELIMITER ';'
+          # Cargar CSV (cabeceras: Name;Player ID)
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy public._tmp_sr_map_csv(name,sr_full)
           FROM 'data/players_sr_map.csv'
           WITH (FORMAT csv, HEADER true, DELIMITER ';');"
 
-          # 3) Upsert por nombre normalizado => players_ext
+      - name: Preview source stats
+        run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-          WITH src AS (
-            SELECT
-              trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey,
-              -- extrae el último token tras ':' y deja solo dígitos
-              regexp_replace(regexp_replace(sr_full, '.*:', ''), '\D', '', 'g') AS sr_short
-            FROM public._tmp_sr_map_csv
-            WHERE sr_full IS NOT NULL AND sr_full <> ''
-          ),
-          joined AS (
-            SELECT s.sr_short, p.player_id
-            FROM src s
-            JOIN ${PLAYER_NAME_TABLE} p
-              ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
-            WHERE s.sr_short ~ '^[0-9]+$'
-          )
-          INSERT INTO public.players_ext(player_id, ext_sportradar_id)
-          SELECT player_id, sr_short FROM joined
-          ON CONFLICT (player_id) DO UPDATE SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;
-          "
+          SELECT
+            count(*)                                     AS total_rows,
+            count(*) FILTER (WHERE sr_full IS NOT NULL)  AS with_sr,
+            count(*) FILTER (WHERE name   IS NOT NULL)   AS with_name
+          FROM public._tmp_sr_map_csv;"
 
-      - name: Exportar no encontrados (para revisar)
+      - name: Build joined mapping (por nombre normalizado)
         run: |
           set -e
+          # joined: target mapping propuesto (player_id <-> sr_short)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public._joined_sr_map CASCADE;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          CREATE VIEW public._joined_sr_map AS
+          WITH src AS (
+            SELECT
+              -- normaliza name (minúsculas, sin acentos, sin signos)
+              trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey,
+              -- deja solo el número final del SR
+              regexp_replace(regexp_replace(sr_full, '.*:', ''), '\D', '', 'g') AS sr_short
+            FROM public._tmp_sr_map_csv
+            WHERE name IS NOT NULL AND sr_full IS NOT NULL
+          )
+          SELECT DISTINCT ON (s.sr_short, p.player_id)
+            p.player_id,
+            s.sr_short
+          FROM src s
+          JOIN ${PLAYER_NAME_TABLE} p
+            ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
+          WHERE s.sr_short ~ '^[0-9]+$';"
+
+          # Duplicados en la fuente (mismo SR mapeado a varios player_id por nombre)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT sr_short, array_agg(player_id ORDER BY player_id) AS player_ids, count(*) AS cnt
+            FROM public._joined_sr_map
+            GROUP BY sr_short
+            HAVING count(*) > 1
+          ) TO '/tmp/duplicates_in_csv_by_sr.csv' WITH (FORMAT csv, HEADER true);"
+
+      - name: Export pre-conflicts vs players_ext
+        run: |
+          # Qué SR del CSV ya están asignados a OTRO player_id en players_ext
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT j.sr_short, j.player_id AS csv_player_id, pe.player_id AS current_player_id
+            FROM public._joined_sr_map j
+            JOIN public.players_ext pe
+              ON pe.ext_sportradar_id = j.sr_short
+            WHERE pe.player_id <> j.player_id
+          ) TO '/tmp/conflicts_pre.csv' WITH (FORMAT csv, HEADER true);"
+
+      - name: Apply mapping (autoridad CSV o no)
+        run: |
+          set -e
+          echo "CSV_AUTHORITATIVE=${CSV_AUTHORITATIVE}"
+
+          # Dedup: elegir un (sr_short, player_id) por sr_short determinísticamente
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public._joined_dedup CASCADE;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          CREATE VIEW public._joined_dedup AS
+          SELECT DISTINCT ON (sr_short)
+            sr_short, player_id
+          FROM public._joined_sr_map
+          ORDER BY sr_short, player_id;"
+
+          if [ "${CSV_AUTHORITATIVE}" = "true" ]; then
+            echo ">> Modo autoridad: reasignando SR IDs a los player_id del CSV"
+            # 1) Quitar propietarios actuales que choquen
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            DELETE FROM public.players_ext pe
+            USING public._joined_dedup j
+            WHERE pe.ext_sportradar_id = j.sr_short
+              AND pe.player_id <> j.player_id;"
+
+            # 2) Upsert final por player_id
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            INSERT INTO public.players_ext(player_id, ext_sportradar_id)
+            SELECT player_id, sr_short FROM public._joined_dedup
+            ON CONFLICT (player_id) DO UPDATE
+              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
+          else
+            echo ">> Modo conservador: NO tocar SR ya asignados; solo insertar los libres"
+            # Insertar solo los que no estén ya ocupados por otro
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            INSERT INTO public.players_ext(player_id, ext_sportradar_id)
+            SELECT j.player_id, j.sr_short
+            FROM public._joined_dedup j
+            LEFT JOIN public.players_ext pe
+              ON pe.ext_sportradar_id = j.sr_short
+            WHERE pe.player_id IS NULL  -- libres
+            ON CONFLICT (player_id) DO UPDATE
+              SET ext_sportradar_id = EXCLUDED.ext_sportradar_id;"
+          fi
+
+      - name: Export post-state & unmatched names
+        run: |
+          # Estado final de players_ext (muestra)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          SELECT * FROM public.players_ext ORDER BY player_id LIMIT 20;"
+
+          # Nombres del CSV que no hicieron match con tabla de nombres
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
             WITH src AS (
               SELECT
                 name,
-                sr_full,
                 trim(regexp_replace(lower(unaccent(name)), '[^a-z0-9]+', ' ', 'g')) AS nkey
               FROM public._tmp_sr_map_csv
             )
-            SELECT s.name, s.sr_full
+            SELECT s.name
             FROM src s
             LEFT JOIN ${PLAYER_NAME_TABLE} p
               ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g')) = s.nkey
             WHERE p.player_id IS NULL
           ) TO '/tmp/unmatched_names.csv' WITH (FORMAT csv, HEADER true);"
 
-      - name: Resumen
+      - name: Summary
         run: |
+          echo "== RESUMEN =="
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-          WITH counts AS (
+          WITH stats AS (
             SELECT
-              (SELECT count(*) FROM public._tmp_sr_map_csv) AS total_in,
-              (SELECT count(*) FROM public._tmp_sr_map_csv t
-                 JOIN ${PLAYER_NAME_TABLE} p
-                   ON trim(regexp_replace(lower(unaccent(p.name)), '[^a-z0-9]+', ' ', 'g'))
-                    = trim(regexp_replace(lower(unaccent(t.name)), '[^a-z0-9]+', ' ', 'g'))
-              ) AS matched_names,
-              (SELECT count(*) FROM public.players_ext) AS total_in_players_ext
+              (SELECT count(*) FROM public._tmp_sr_map_csv) AS csv_rows,
+              (SELECT count(*) FROM public._joined_sr_map)   AS csv_matched_by_name,
+              (SELECT count(*) FROM public.players_ext)      AS players_ext_rows
           )
-          SELECT * FROM counts;"
+          SELECT * FROM stats;"
 
-      - name: Upload artifacts
+      - name: Upload artifacts (conflicts & unmatched & duplicates)
         uses: actions/upload-artifact@v4
         with:
-          name: sr-mapping-load
-          path: /tmp/unmatched_names.csv
+          name: sr-mapping-results
+          path: |
+            /tmp/conflicts_pre.csv
+            /tmp/unmatched_names.csv
+            /tmp/duplicates_in_csv_by_sr.csv
