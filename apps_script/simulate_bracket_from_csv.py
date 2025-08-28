@@ -45,7 +45,7 @@ def call_matchup(payload: dict):
     clean = {k: v for k,v in payload.items() if v is not None}
     data = json.dumps(clean).encode("utf-8")
     req  = urllib.request.Request(API, data=data, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 def read_entrants(path):
@@ -101,6 +101,7 @@ def play_round(players, use_seeds, sample=False):
             "opponent_id": pb["player_id"], "opponent": pb["player"],
             "tournament": TOURNAMENT, "years_back": YEARS_BACK
         }
+        print(f"[{TOURNAMENT['name']}] {a.get('name') or a.get('id')} vs {b.get('name') or b.get('id')}...", flush=True)
         r = call_matchup(payload)
         prob_a = float(r.get("prob_player", 0.5))
 
