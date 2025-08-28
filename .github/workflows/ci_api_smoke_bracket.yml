@@ -11,12 +11,11 @@ jobs:
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
       PORT: "8080"
+      APP_MODULE: "main:app"   # <-- ajusta aquí si tu app está en otro módulo
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -29,16 +28,16 @@ jobs:
             pip install flask
           fi
 
-      - name: Sanity env
+      - name: Sanity & files
         run: |
           set -e
           [ -n "$SUPABASE_URL" ] || { echo "::error::SUPABASE_URL missing"; exit 1; }
           [ -n "$SUPABASE_KEY" ] || { echo "::error::SUPABASE_KEY missing"; exit 1; }
-          if [ -z "$SR_API_KEY" ]; then echo "::warning::SR_API_KEY missing (seguirá con histórico)"; fi
           test -f apps_script/start_api.py || { echo "::error::apps_script/start_api.py no existe"; exit 1; }
-          test -f apps_script/simulate_bracket.py || { echo "::error::apps_script/simulate_bracket.py no existe"; exit 1; }
+          # main.py puede no existir si usas otro módulo; lo avisamos solo como warning:
+          test -f main.py || echo "::warning::main.py no encontrado; usando APP_MODULE=${APP_MODULE}"
 
-      - name: Start API (Flask) on ${{ env.PORT }}
+      - name: Start API
         run: |
           set -e
           nohup python -u apps_script/start_api.py > app.log 2>&1 &
@@ -48,13 +47,17 @@ jobs:
             sleep 1
           done
           if ! (curl -sf http://127.0.0.1:${PORT}/health >/dev/null 2>&1 || curl -sf http://127.0.0.1:${PORT}/healthz >/dev/null 2>&1); then
-            echo "::error::API no responde"; tail -n 200 app.log || true; exit 1
+            echo "::error::API no responde"
+            tail -n 200 app.log || true
+            echo "== Árbol de archivos =="
+            ls -R
+            exit 1
           fi
 
-      - name: Simular bracket (8 jugadores)
+      - name: Simular bracket
         run: |
           set -e
-          python apps_script/simulate_bracket.py
+          python scripts/simulate_bracket.py
 
       - name: app.log (tail if fail)
         if: failure()
