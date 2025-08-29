@@ -1,62 +1,111 @@
--- Índices para acelerar consultas tipo:
---  - histórico "as-of" por jugador y fecha
---  - filtros por rango de fechas
---  - joins por torneo
+-- Índices de performance (versión adaptativa a tus nombres de columnas)
 
 DO $$
+DECLARE
+  v_date_col     text;
+  v_win_col      text;
+  v_los_col      text;
+  v_surface_col  text;
 BEGIN
-  -- ==== estratego_v1.matches (la que usas para construir fs_matches_long) ====
+  ------------------------------------------------------------------
+  -- estratego_v1.matches  (base de fs_matches_long en tu entorno)
+  ------------------------------------------------------------------
   IF to_regclass('estratego_v1.matches') IS NOT NULL THEN
-    -- Si tus columnas son (winner_id, loser_id, date)
-    EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_matches_winner_date_idx ON estratego_v1.matches (winner_id, date)';
-    EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_matches_loser_date_idx  ON estratego_v1.matches (loser_id,  date)';
-    EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_matches_date_idx        ON estratego_v1.matches (date)';
-    -- Si tienes surface/tourney_id y los usas aguas arriba:
+    -- Detecta la columna de fecha/tiempo
+    SELECT c.column_name INTO v_date_col
+    FROM information_schema.columns c
+    WHERE c.table_schema='estratego_v1' AND c.table_name='matches'
+      AND c.column_name IN ('match_date','date','start_time','start_at','started_at','event_date','event_time')
+    ORDER BY array_position(ARRAY[
+      'match_date','date','start_time','start_at','started_at','event_date','event_time'
+    ]::text[], c.column_name)
+    LIMIT 1;
+
+    -- winner/loser (si existen)
+    SELECT
+      (SELECT column_name FROM information_schema.columns
+         WHERE table_schema='estratego_v1' AND table_name='matches' AND column_name='winner_id'),
+      (SELECT column_name FROM information_schema.columns
+         WHERE table_schema='estratego_v1' AND table_name='matches' AND column_name='loser_id')
+    INTO v_win_col, v_los_col;
+
+    IF v_win_col IS NOT NULL AND v_date_col IS NOT NULL THEN
+      EXECUTE format('CREATE INDEX IF NOT EXISTS ev1_matches_winner_date_idx ON estratego_v1.matches (%I, %I)', v_win_col, v_date_col);
+    END IF;
+    IF v_los_col IS NOT NULL AND v_date_col IS NOT NULL THEN
+      EXECUTE format('CREATE INDEX IF NOT EXISTS ev1_matches_loser_date_idx  ON estratego_v1.matches (%I, %I)', v_los_col, v_date_col);
+    END IF;
+    IF v_date_col IS NOT NULL THEN
+      EXECUTE format('CREATE INDEX IF NOT EXISTS ev1_matches_date_idx ON estratego_v1.matches (%I)', v_date_col);
+    END IF;
+
+    -- surface (si existe)
+    SELECT column_name INTO v_surface_col
+    FROM information_schema.columns
+    WHERE table_schema='estratego_v1' AND table_name='matches'
+      AND column_name IN ('surface','court_surface')
+    LIMIT 1;
+    IF v_surface_col IS NOT NULL THEN
+      EXECUTE format('CREATE INDEX IF NOT EXISTS ev1_matches_surface_idx ON estratego_v1.matches (lower(%I))', v_surface_col);
+    END IF;
+
+    -- tourney_id (si existe)
     IF EXISTS (SELECT 1 FROM information_schema.columns
                WHERE table_schema='estratego_v1' AND table_name='matches' AND column_name='tourney_id') THEN
-      EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_matches_tourney_idx   ON estratego_v1.matches (tourney_id)';
-    END IF;
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema='estratego_v1' AND table_name='matches' AND column_name='surface') THEN
-      EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_matches_surface_idx   ON estratego_v1.matches (lower(surface))';
+      EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_matches_tourney_idx ON estratego_v1.matches (tourney_id)';
     END IF;
   END IF;
 
-  -- ==== estratego_v1.tournaments (para resolver nombre -> torneo) ====
-  IF to_regclass('estratego_v1.tournaments') IS NOT NULL THEN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema='estratego_v1' AND table_name='tournaments' AND column_name='name') THEN
-      EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_tourn_name_idx ON estratego_v1.tournaments (lower(name))';
-    END IF;
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema='estratego_v1' AND table_name='tournaments' AND column_name='tourney_id') THEN
-      EXECUTE 'CREATE INDEX IF NOT EXISTS ev1_tourn_id_idx   ON estratego_v1.tournaments (tourney_id)';
-    END IF;
-  END IF;
-
-  -- ==== Si en algún entorno usas public.matches (uuid) ====
+  ------------------------------------------------------------------
+  -- public.matches (si en algún entorno usas esta tabla)
+  ------------------------------------------------------------------
   IF to_regclass('public.matches') IS NOT NULL THEN
-    -- Ajusta columnas si se llaman distinto (player1_id/player2_id/start_time, etc.)
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema='public' AND table_name='matches' AND column_name='player1_id') THEN
-      EXECUTE 'CREATE INDEX IF NOT EXISTS pub_matches_p1_date_idx ON public.matches (player1_id, date)';
+    -- Detecta columnas p1/p2 y fecha
+    SELECT column_name INTO v_date_col
+    FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='matches'
+      AND column_name IN ('match_date','date','start_time','started_at')
+    LIMIT 1;
+
+    SELECT column_name INTO v_win_col
+    FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='matches'
+      AND column_name IN ('player1_id','p1','player_a','player_id')
+    LIMIT 1;
+
+    SELECT column_name INTO v_los_col
+    FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='matches'
+      AND column_name IN ('player2_id','p2','player_b','opponent_id')
+    LIMIT 1;
+
+    IF v_win_col IS NOT NULL AND v_date_col IS NOT NULL THEN
+      EXECUTE format('CREATE INDEX IF NOT EXISTS pub_matches_p1_date_idx ON public.matches (%I, %I)', v_win_col, v_date_col);
     END IF;
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema='public' AND table_name='matches' AND column_name='player2_id') THEN
-      EXECUTE 'CREATE INDEX IF NOT EXISTS pub_matches_p2_date_idx ON public.matches (player2_id, date)';
+    IF v_los_col IS NOT NULL AND v_date_col IS NOT NULL THEN
+      EXECUTE format('CREATE INDEX IF NOT EXISTS pub_matches_p2_date_idx ON public.matches (%I, %I)', v_los_col, v_date_col);
     END IF;
+    IF v_date_col IS NOT NULL THEN
+      EXECUTE format('CREATE INDEX IF NOT EXISTS pub_matches_date_idx ON public.matches (%I)', v_date_col);
+    END IF;
+
+    -- torneo por nombre o id
     IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema='public' AND table_name='matches' AND column_name='date') THEN
-      EXECUTE 'CREATE INDEX IF NOT EXISTS pub_matches_date_idx    ON public.matches (date)';
+               WHERE table_schema='public' AND table_name='matches' AND column_name='tournament_name') THEN
+      EXECUTE 'CREATE INDEX IF NOT EXISTS pub_matches_tname_idx ON public.matches (lower(tournament_name))';
+    ELSIF EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='matches' AND column_name='tourney_id') THEN
+      EXECUTE 'CREATE INDEX IF NOT EXISTS pub_matches_tourid_idx ON public.matches (tourney_id)';
     END IF;
   END IF;
 
-  -- ==== Tabla/clave de velocidades de pista ====
+  ------------------------------------------------------------------
+  -- Tabla de velocidades “keyed” (si existe)
+  ------------------------------------------------------------------
   IF to_regclass('public.court_speed_rankig_norm_compat_keyed') IS NOT NULL THEN
     EXECUTE 'CREATE INDEX IF NOT EXISTS court_speed_keyed_key_idx ON public.court_speed_rankig_norm_compat_keyed (tourney_key)';
   END IF;
 
 END$$;
 
--- Actualiza estadísticas para que el planner aproveche los índices recién creados
 ANALYZE;
