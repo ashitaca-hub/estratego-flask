@@ -11,6 +11,11 @@ YEARS_BACK = int(os.environ.get("YEARS_BACK", "4"))
 MODE = (os.environ.get("MODE", "deterministic") or "deterministic").lower()
 MC_RUNS = int(os.environ.get("MC_RUNS", "0") or 0)
 
+# controles de red
+CALL_TIMEOUT = float(os.environ.get("CALL_TIMEOUT", "8"))   # segundos
+CALL_RETRIES = int(os.environ.get("CALL_RETRIES", "2"))     # reintentos
+BACKOFF_BASE = float(os.environ.get("BACKOFF_BASE", "0.5")) # segundos
+
 def _norm(s: str) -> str:
     s = s.strip().lower()
     s = unicodedata.normalize("NFKD", s)
@@ -37,12 +42,33 @@ def load_name_to_sr(path: str) -> dict:
 
 NAME2SR = load_name_to_sr(MAP_CSV)
 
-def call_matchup(payload: dict, timeout=10):
-    clean = {k: v for k,v in payload.items() if v is not None}
+import time
+from urllib.error import URLError, HTTPError
+
+def call_matchup(payload: dict, timeout=None):
+    if timeout is None:
+        timeout = CALL_TIMEOUT
+    clean = {k: v for k, v in payload.items() if v is not None}
     data = json.dumps(clean).encode("utf-8")
     req  = urllib.request.Request(API, data=data, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    backoff = BACKOFF_BASE
+    for attempt in range(CALL_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (TimeoutError, URLError, HTTPError) as e:
+            if attempt < CALL_RETRIES:
+                time.sleep(backoff)
+                backoff *= 2.0
+                continue
+            # último intento fallido → responder “neutro” para no romper el bracket
+            return {
+                "ok": False,
+                "prob_player": 0.5,
+                "inputs": clean,
+                "error": f"{type(e).__name__}: {getattr(e,'reason',getattr(e,'code',''))}"
+            }
+
 
 def read_entrants(path):
     rows=[]
@@ -95,21 +121,23 @@ def play_round(players, use_seeds, sample=False):
             "opponent_id": pb["player_id"], "opponent": pb["player"],
             "tournament": TOURNAMENT, "years_back": YEARS_BACK
         }
-        # Log sencillo para ver progreso
         print(f"[{TOURNAMENT['name']}] {a.get('name') or a.get('id')} vs {b.get('name') or b.get('id')}...", flush=True)
 
-        r = call_matchup(payload, timeout=10)
+        r = call_matchup(payload)  # ya trae reintentos/backoff
         prob_a = float(r.get("prob_player", 0.5))
 
-        # Capturar IDs resueltos desde el backend
+        # Capturar IDs resueltos desde el backend (si vino respuesta)
         inp = r.get("inputs", {}) or {}
         a_res_id = inp.get("player_id")
         b_res_id = inp.get("opponent_id")
         a_res_sr = inp.get("player_sr_id")
         b_res_sr = inp.get("opponent_sr_id")
 
+        # Diagnóstico
         if not a_res_id or not b_res_id:
             unresolved.append((a.get("name") or a.get("id"), b.get("name") or b.get("id")))
+        if not r.get("ok", True) and r.get("error"):
+            print(f"WARN timeout/HTTP en matchup → uso 0.5. Detalle: {r['error']}", flush=True)
 
         win_a = (random.random() < prob_a) if sample else (prob_a >= 0.5)
         winner = a if win_a else b
@@ -124,8 +152,9 @@ def play_round(players, use_seeds, sample=False):
         })
         winners.append(winner)
     if unresolved:
-        print("WARN no-resueltos:", unresolved)
+        print("WARN no-resueltos:", unresolved, flush=True)
     return results, winners
+
 
 def simulate_once(entrants):
     rnd=1; bracket=[]; current=entrants[:]
