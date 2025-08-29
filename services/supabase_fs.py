@@ -1,10 +1,12 @@
 # services/supabase_fs.py
 from __future__ import annotations
-import os
+import os, json
 import logging
 import urllib.parse
+import psycopg2
 import requests
 from typing import Any, Dict, Optional
+
 
 log = logging.getLogger("supabase_fs")
 
@@ -319,4 +321,94 @@ def get_matchup_hist_vector(
     log.info("FS get_matchup_hist_vector (fallback) p=%s o=%s yrs=%s t=%s m=%s -> %s",
              p_id, o_id, yrs, tname, month, out)
     return out
+
+
+# === Matchup cache helpers (Postgres) ===============================
+
+def _pg_conn_or_env(conn=None):
+    """Devuelve una conexión psycopg2; si no se pasa, abre con DATABASE_URL."""
+    if conn is not None:
+        return conn, False
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL no está definido")
+    return psycopg2.connect(url), True  # (conn, opened_here)
+
+def get_matchup_cache_json(player_id:int, opponent_id:int,
+                           tournament_name:str, mon:int,
+                           speed_bucket:str, years_back:int,
+                           using_sr:bool, conn=None):
+    """
+    Lee caché; devuelve (tourney_key, json|None).
+    Requiere que exista public.norm_tourney y public.get_matchup_cache_json en DB.
+    """
+    pg, opened = _pg_conn_or_env(conn)
+    try:
+        with pg.cursor() as cur:
+            cur.execute("SELECT public.norm_tourney(%s)", (tournament_name,))
+            row = cur.fetchone()
+            tourney_key = row[0] if row else None
+            cur.execute("""
+                SELECT public.get_matchup_cache_json(%s,%s,%s,%s,%s,%s,%s)
+            """, (player_id, opponent_id, tourney_key, mon, speed_bucket, years_back, using_sr))
+            row = cur.fetchone()
+            cached = row[0] if row and row[0] is not None else None
+            return tourney_key, cached
+    finally:
+        if opened:
+            pg.close()
+
+def put_matchup_cache_json(player_id:int, opponent_id:int,
+                           tournament_name:str, mon:int,
+                           surface:str, speed_bucket:str, years_back:int,
+                           using_sr:bool, prob_player:float,
+                           features:dict, flags:dict, weights_hist:dict|None,
+                           sources:dict|None, ttl_seconds:int|None,
+                           conn=None):
+    """
+    Escribe/actualiza caché (UPSERT). Requiere public.put_matchup_cache_json.
+    """
+    pg, opened = _pg_conn_or_env(conn)
+    try:
+        with pg.cursor() as cur:
+            cur.execute("SELECT public.norm_tourney(%s)", (tournament_name,))
+            row = cur.fetchone()
+            tourney_key = row[0] if row else None
+            cur.execute("""
+                SELECT public.put_matchup_cache_json(
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s
+                )
+            """, (player_id, opponent_id, tourney_key, mon, surface, speed_bucket, years_back,
+                  using_sr, prob_player, json.dumps(features), json.dumps(flags),
+                  json.dumps(weights_hist) if weights_hist is not None else None,
+                  json.dumps(sources) if sources is not None else None,
+                  ttl_seconds))
+        if opened:
+            pg.commit()
+    finally:
+        if opened:
+            pg.close()
+
+# === Bracket runs (opcional) ========================================
+def insert_bracket_run(tournament_name:str, tournament_month:int, years_back:int,
+                       mode:str, entrants:list[dict], result:dict, conn=None):
+    """
+    Inserta auditoría de un bracket completo (opcional).
+    Requiere tabla public.bracket_runs.
+    """
+    pg, opened = _pg_conn_or_env(conn)
+    try:
+        with pg.cursor() as cur:
+            cur.execute("""
+                INSERT INTO public.bracket_runs
+                  (tournament_name, tournament_month, years_back, mode, entrants, result)
+                VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+            """, (tournament_name, tournament_month, years_back, mode,
+                  json.dumps(entrants), json.dumps(result)))
+        if opened:
+            pg.commit()
+    finally:
+        if opened:
+            pg.close()
+
 
