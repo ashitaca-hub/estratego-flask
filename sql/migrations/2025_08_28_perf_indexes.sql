@@ -6,6 +6,7 @@ DECLARE
   v_win_col      text;
   v_los_col      text;
   v_surface_col  text;
+  v_relkind      text;
 BEGIN
   ------------------------------------------------------------------
   -- estratego_v1.matches  (base de fs_matches_long en tu entorno)
@@ -100,10 +101,17 @@ BEGIN
   END IF;
 
   ------------------------------------------------------------------
-  -- Tabla de velocidades “keyed” (si existe)
+  -- court_speed_rankig_norm_compat_keyed: sólo si es tabla o MV
   ------------------------------------------------------------------
-  IF to_regclass('public.court_speed_rankig_norm_compat_keyed') IS NOT NULL THEN
+  SELECT c.relkind INTO v_relkind
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname='public' AND c.relname='court_speed_rankig_norm_compat_keyed';
+
+  IF v_relkind IN ('r','m') THEN
     EXECUTE 'CREATE INDEX IF NOT EXISTS court_speed_keyed_key_idx ON public.court_speed_rankig_norm_compat_keyed (tourney_key)';
+  ELSE
+    RAISE NOTICE 'Saltando índice en public.court_speed_rankig_norm_compat_keyed (relkind=%). Es una vista normal; no indexable.', v_relkind;
   END IF;
 
 END$$;
