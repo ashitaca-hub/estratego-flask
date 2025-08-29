@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import urllib.parse
+import json
 from typing import Any
 
 # -----------------------------------------------------------------------------
@@ -423,7 +424,6 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
 # -----------------------------------------------------------------------------
 # ======== Estratego: endpoint /matchup (usar IDs INT canónicos) ========
 # -----------------------------------------------------------------------------
-# (estos imports ya estaban arriba, los dejamos por compat)
 import urllib.parse
 from services import supabase_fs as FS
 from services import sportradar_now as SR
@@ -508,7 +508,7 @@ def _tourney_meta_fallback(tname: str) -> dict:
 def _compute_matchup_payload(body: dict) -> dict:
     """
     Calcula el matchup y devuelve TODO (prob, deltas NOW/HIST, pesos, componentes).
-    Lo usan /matchup y /matchup/features.
+    Intenta leer la caché antes y la escribe después.
     """
     years_back = int(body.get("years_back", 4))
     tourney = body.get("tournament", {}) or {}
@@ -535,7 +535,55 @@ def _compute_matchup_payload(body: dict) -> dict:
     if not meta:
         meta = _tourney_meta_fallback(tname) or {}
     surface_default = (meta.get("surface") or "hard").lower()
-    speed_bucket_meta = meta.get("speed_bucket")
+    speed_bucket_meta = meta.get("speed_bucket") or "Medium"
+
+    # --------- Caché: leer antes de calcular pesado ----------
+    using_sr = bool(SR_API_KEY)
+    ttl_seconds = int(os.getenv("CACHE_TTL_SR_SECS", str(12*3600))) if using_sr else int(os.getenv("CACHE_TTL_HIST_SECS", str(30*24*3600)))
+
+    if p_int is not None and o_int is not None:
+        try:
+            _tkey, cached = FS.get_matchup_cache_json(
+                player_id=p_int, opponent_id=o_int,
+                tournament_name=tname, mon=month,
+                speed_bucket=speed_bucket_meta or "",
+                years_back=years_back, using_sr=using_sr
+            )
+        except Exception as e:
+            app.logger.warning(f"cache get failed: {e}")
+            cached = None
+        if cached:
+            # psycopg2 puede devolver dict o str JSON
+            if isinstance(cached, str):
+                try:
+                    cached = json.loads(cached)
+                except Exception:
+                    cached = {}
+            prob_cached = float(cached.get("prob_player", 0.5))
+            features_cached = cached.get("features", {})
+            flags_cached = cached.get("flags", {})
+            out_cached = {
+                "ok": True,
+                "prob_player": prob_cached,
+                "surface": surface_default,
+                "speed_bucket": speed_bucket_meta,
+                "inputs": {
+                    "player": player, "opponent": opponent,
+                    "player_id": p_int if p_int is not None else p_id_in,
+                    "opponent_id": o_int if o_int is not None else o_id_in,
+                    "player_sr_id": _normalize_sr_id(p_sr_id or (p_id_in if (isinstance(p_id_in, str) and p_id_in.startswith("sr:")) else None)),
+                    "opponent_sr_id": _normalize_sr_id(o_sr_id or (o_id_in if (isinstance(o_id_in, str) and o_id_in.startswith("sr:")) else None)),
+                    "tournament": {"name": tname, "month": month},
+                    "years_back": years_back
+                },
+                "features": {
+                    "deltas": features_cached.get("deltas", {}),
+                    "flags":  features_cached.get("flags",  flags_cached)
+                },
+                "weights_hist": cached.get("weights_hist"),
+                "components": {"cached": True}
+            }
+            return out_cached
 
     # histórico FS (usa INT si el FS lo espera así)
     hist = {}
@@ -549,7 +597,7 @@ def _compute_matchup_payload(body: dict) -> dict:
     if not hist:
         hist = {
             "surface": surface_default,
-            "speed_bucket": speed_bucket_meta or "Medium",
+            "speed_bucket": speed_bucket_meta,
             "d_hist_surface": 0.0,
             "d_hist_speed":   0.0,
             "d_hist_month":   0.0
@@ -633,11 +681,41 @@ def _compute_matchup_payload(body: dict) -> dict:
     z = now_linear + hist_linear + adj
     prob_player = logistic(z)
 
+    features = {
+        "deltas": {
+            "rank_norm": d_rank_norm,
+            "ytd": d_ytd, "last10": d_last10, "h2h": d_h2h, "inactive": d_inactive,
+            "hist_surface": d_hist_surface, "hist_speed": d_hist_speed, "hist_month": d_hist_month
+        },
+        "flags": {
+            "surf_change_p": surf_change_p, "surf_change_o": surf_change_o,
+            "is_local_p": is_local_p, "is_local_o": is_local_o, "mot_p": mot_p, "mot_o": mot_o
+        }
+    }
+
+    # --------- Caché: guardar resultado fresco ----------
+    if p_int is not None and o_int is not None:
+        try:
+            FS.put_matchup_cache_json(
+                player_id=p_int, opponent_id=o_int,
+                tournament_name=tname, mon=month,
+                surface=str(hist.get("surface", surface_default)).lower(),
+                speed_bucket=str(hist.get("speed_bucket", speed_bucket_meta)),
+                years_back=years_back, using_sr=using_sr,
+                prob_player=float(prob_player),
+                features=features, flags=features["flags"],
+                weights_hist={"month": HIST_W_MONTH, "surface": HIST_W_SURF, "speed": HIST_W_SPEED, "denom": _HIST_DENOM},
+                sources={"source": "api", "ver": "v1"},
+                ttl_seconds=ttl_seconds
+            )
+        except Exception as e:
+            app.logger.warning(f"matchup_cache upsert failed: {e}")
+
     return {
         "ok": True,
         "prob_player": prob_player,
         "surface": hist.get("surface", surface_default),
-        "speed_bucket": hist.get("speed_bucket", speed_bucket_meta or "Medium"),
+        "speed_bucket": hist.get("speed_bucket", speed_bucket_meta),
         "inputs": {
             "player": player, "opponent": opponent,
             "player_id": p_int if p_int is not None else p_id_in,
@@ -647,19 +725,9 @@ def _compute_matchup_payload(body: dict) -> dict:
             "tournament": {"name": tname, "month": month},
             "years_back": years_back
         },
-        "features": {
-            "deltas": {
-                "rank_norm": d_rank_norm,
-                "ytd": d_ytd, "last10": d_last10, "h2h": d_h2h, "inactive": d_inactive,
-                "hist_surface": d_hist_surface, "hist_speed": d_hist_speed, "hist_month": d_hist_month
-            },
-            "flags": {
-                "surf_change_p": surf_change_p, "surf_change_o": surf_change_o,
-                "is_local_p": is_local_p, "is_local_o": is_local_o, "mot_p": mot_p, "mot_o": mot_o
-            }
-        },
+        "features": features,
         "weights_hist": { "month": HIST_W_MONTH, "surface": HIST_W_SURF, "speed": HIST_W_SPEED, "denom": _HIST_DENOM },
-        "components": { "now_linear": now_linear, "hist_linear": hist_linear, "adj": adj, "z": z }
+        "components": { "now_linear": now_linear, "hist_linear": hist_linear, "adj": adj, "z": z, "cached": False }
     }
 
 # ------------------------- ENDPOINTS que usan el helper -----------------------
