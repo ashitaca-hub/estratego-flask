@@ -1,12 +1,15 @@
 name: db-perf-indexes
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+
 jobs:
   apply:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply indexes
-        env: 
+
+      - name: Apply performance indexes
+        env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           set -e
