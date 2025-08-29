@@ -14,7 +14,7 @@ on:
       tname:
         description: "Nombre torneo"
         required: false
-        default: "Cincinnati"
+        default: "US Open"
       tmonth:
         description: "Mes (1-12)"
         required: false
@@ -30,7 +30,7 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      SR_API_KEY:   "" #${{ secrets.SR_API_KEY }}
+      SR_API_KEY:   ${{ secrets.SR_API_KEY }}
       PORT: "8080"
       APP_MODULE: "main:app"  # ajusta si tu app está en otro módulo
 
