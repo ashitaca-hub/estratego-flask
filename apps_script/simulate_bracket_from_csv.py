@@ -21,31 +21,27 @@ def _norm(s: str) -> str:
     return " ".join("".join(out).split())
 
 def load_name_to_sr(path: str) -> dict:
-    """Lee data/players_sr_map.csv (Name;Player ID) y devuelve {norm_name: sr_full}"""
     m = {}
     if not os.path.exists(path):
         return m
     with open(path, newline="", encoding="utf-8") as f:
-        # Soporta separador ; (tu CSV) o , si alguna vez cambias
-        sample = f.read(4096)
-        f.seek(0)
+        sample = f.read(4096); f.seek(0)
         delim = ";" if sample.count(";") >= sample.count(",") else ","
         reader = csv.DictReader(f, delimiter=delim)
-        # Columnas típicas: 'Name' y 'Player ID' (o 'name'/'sr_full')
         for r in reader:
             name = (r.get("Name") or r.get("name") or "").strip()
-            sr = (r.get("Player ID") or r.get("sr_full") or "").strip()
+            sr   = (r.get("Player ID") or r.get("sr_full") or "").strip()
             if name and sr:
                 m[_norm(name)] = sr
     return m
 
 NAME2SR = load_name_to_sr(MAP_CSV)
 
-def call_matchup(payload: dict):
+def call_matchup(payload: dict, timeout=10):
     clean = {k: v for k,v in payload.items() if v is not None}
     data = json.dumps(clean).encode("utf-8")
     req  = urllib.request.Request(API, data=data, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 def read_entrants(path):
@@ -58,7 +54,6 @@ def read_entrants(path):
             pid  = (r.get("id") or "").strip()
             name = (r.get("name") or "").strip()
             if not pid and name:
-                # ← mapear por nombre si hay SR en el CSV de mapeo
                 sr = NAME2SR.get(_norm(name))
                 if sr:
                     pid = sr
@@ -78,7 +73,6 @@ def build_participant(entry: dict):
     id_kind, id_val = split_identifier(entry["id"])
     if id_kind in ("sr","int"):
         return {"player_id": id_val, "player": None, "label": entry["name"] or str(id_val)}
-    # fallback: mandar nombre
     name = entry["name"] or id_val
     return {"player_id": None, "player": name, "label": name}
 
@@ -101,13 +95,20 @@ def play_round(players, use_seeds, sample=False):
             "opponent_id": pb["player_id"], "opponent": pb["player"],
             "tournament": TOURNAMENT, "years_back": YEARS_BACK
         }
+        # Log sencillo para ver progreso
         print(f"[{TOURNAMENT['name']}] {a.get('name') or a.get('id')} vs {b.get('name') or b.get('id')}...", flush=True)
-        r = call_matchup(payload)
+
+        r = call_matchup(payload, timeout=10)
         prob_a = float(r.get("prob_player", 0.5))
 
-        # Diagnóstico: si el backend no resolvió a IDs internos, avisa
-        inp = r.get("inputs", {})
-        if not inp.get("player_id") or not inp.get("opponent_id"):
+        # Capturar IDs resueltos desde el backend
+        inp = r.get("inputs", {}) or {}
+        a_res_id = inp.get("player_id")
+        b_res_id = inp.get("opponent_id")
+        a_res_sr = inp.get("player_sr_id")
+        b_res_sr = inp.get("opponent_sr_id")
+
+        if not a_res_id or not b_res_id:
             unresolved.append((a.get("name") or a.get("id"), b.get("name") or b.get("id")))
 
         win_a = (random.random() < prob_a) if sample else (prob_a >= 0.5)
@@ -116,7 +117,10 @@ def play_round(players, use_seeds, sample=False):
             "a": a.get("name") or a.get("id"),
             "b": b.get("name") or b.get("id"),
             "a_id": a.get("id"), "b_id": b.get("id"),
-            "prob_a": round(prob_a,6), "winner": (winner.get("name") or winner.get("id")),
+            "a_id_resolved": a_res_id, "b_id_resolved": b_res_id,
+            "a_sr_id": a_res_sr, "b_sr_id": b_res_sr,
+            "prob_a": round(prob_a,6),
+            "winner": (winner.get("name") or winner.get("id")),
         })
         winners.append(winner)
     if unresolved:
@@ -134,10 +138,16 @@ def simulate_once(entrants):
 
 def write_matches_csv(bracket, path):
     with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f); w.writerow(["round","a","b","a_id","b_id","prob_a","winner"])
+        w = csv.writer(f)
+        w.writerow(["round","a","b","a_id","b_id","a_id_resolved","b_id_resolved","a_sr_id","b_sr_id","prob_a","winner"])
         for rnd in bracket:
             for m in rnd["matches"]:
-                w.writerow([rnd["round"], m["a"], m["b"], m["a_id"], m["b_id"], m["prob_a"], m["winner"]])
+                w.writerow([
+                    rnd["round"], m["a"], m["b"], m["a_id"], m["b_id"],
+                    m.get("a_id_resolved"), m.get("b_id_resolved"),
+                    m.get("a_sr_id"), m.get("b_sr_id"),
+                    m["prob_a"], m["winner"]
+                ])
 
 def main():
     entrants = read_entrants(CSV_IN)
@@ -170,4 +180,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
