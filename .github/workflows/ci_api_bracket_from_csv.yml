@@ -98,6 +98,20 @@ jobs:
             /tmp/bracket.json
             /tmp/bracket_matches.csv
 
+      - name: Render bracket HTML
+        run: |
+          set -e
+          python apps_script/render_bracket_html.py
+
+      - name: Upload bracket artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bracket-viz
+          path: |
+            artifacts/bracket.html
+            artifacts/bracket_matches.csv
+
+
       - name: app.log (tail if fail)
         if: failure()
         run: |
