@@ -116,6 +116,8 @@ def evaluar():
 # -----------------------------------------------------------------------------
 # Tus helpers que usan Sportradar (ajustados a _sr_get/?api_key=)
 # -----------------------------------------------------------------------------
+
+
 def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
     r = _sr_get(f"competitors/{player_id}/profile.json")
     if r.status_code != 200:
@@ -439,6 +441,20 @@ HIST_W_SURF  = float(os.getenv("HIST_W_SURF",  "2.0"))
 HIST_W_SPEED = float(os.getenv("HIST_W_SPEED", "2.0"))
 _HIST_DENOM  = max(1.0, abs(HIST_W_MONTH) + abs(HIST_W_SURF) + abs(HIST_W_SPEED))
 
+def _sr_short_to_int_any(v):
+    """
+    Devuelve el número de SR si v es 'sr:competitor:12345', o int si ya lo es.
+    Si no puede, devuelve None.
+    """
+    try:
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.startswith("sr:competitor:"):
+            return int(v.rsplit(":", 1)[1])
+    except:
+        pass
+    return None
+
 def _rest_get(table: str, params: dict, select: str = "*"):
     base = FS.SUPABASE_URL.rstrip("/") + "/rest/v1/" + table
     q = {"select": select}; q.update(params or {})
@@ -745,6 +761,61 @@ def matchup():
         "features": out["features"],
         "weights_hist": out.get("weights_hist")
     }
+    # === Persistencia del run del bracket (justo antes del return) ===
+try:
+    # 1) Entrants originales tal como llegaron a la simulación
+    #    Si ya tienes una lista 'entrants_list', úsala. Si no, construimos una mínima:
+    entrants_list = []
+    # Suponiendo que tienes una lista 'entrants' que usaste para simular:
+    # - Puede ser lista de dicts con 'name'/'id'/'seed' o simplemente strings.
+    for e in entrants:  # cambia 'entrants' por tu variable si se llama distinto
+        if isinstance(e, dict):
+            entrants_list.append({
+                "name": e.get("name") or e.get("a") or e.get("b") or "",
+                "id": e.get("id") or e.get("sr_id") or "",
+                "seed": e.get("seed")
+            })
+        else:
+            entrants_list.append({"name": str(e), "id": "", "seed": None})
+
+    # 2) Extra de auditoría
+    used_sr = bool(os.environ.get("SR_API_KEY"))  # hubo NOW/Sportradar disponible
+    api_version = os.environ.get("GITHUB_SHA") or os.environ.get("APP_VERSION")
+
+    # 3) Datos del campeón desde tu dict 'champion' (ajusta si se llama distinto)
+    #    Intentamos tener también un id INT “canónico” si existe
+    champ = champion  # tu objeto campeón ya construido
+    champ_name = (champ or {}).get("name")
+    champ_id = (champ or {}).get("id_int") \
+               or _sr_short_to_int_any((champ or {}).get("id"))
+
+    # 4) Construimos el resultado que vamos a guardar (usa tu 'resp' si lo tienes)
+    result_payload = {
+        "ok": True,
+        "mode": mode,  # "deterministic" o "mc"
+        "tournament": {"name": tname, "month": month},
+        "years_back": years_back,
+        "bracket": bracket_rounds,  # tu estructura de rondas con partidos
+        "champion": champion        # tu dict de campeón
+    }
+
+    # 5) Insert en DB (no rompe si no hay psycopg2 gracias al fallback)
+    FS.insert_bracket_run(
+        tournament_name=tname,
+        tournament_month=month,
+        years_back=years_back,
+        mode=mode,
+        entrants=entrants_list,
+        result=result_payload,
+        champion_id=champ_id,
+        champion_name=champ_name,
+        used_sr=used_sr,
+        api_version=api_version
+    )
+except Exception as e:
+    # No romper la respuesta si falla la persistencia
+    app.logger.warning("Persistencia bracket_runs falló: %s", e)
+# === Fin persistencia ===
     return jsonify(resp)
 
 @app.post("/matchup/features")
@@ -760,3 +831,4 @@ if __name__ == "__main__":
     # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
