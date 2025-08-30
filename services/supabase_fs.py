@@ -401,27 +401,58 @@ def put_matchup_cache_json(player_id:int, opponent_id:int,
             pg.close()
 
 # === Bracket runs (opcional) ========================================
-def insert_bracket_run(tournament_name:str, tournament_month:int, years_back:int,
-                       mode:str, entrants:list[dict], result:dict, conn=None):
+def insert_bracket_run(
+    tournament_name: str,
+    tournament_month: int,
+    years_back: int,
+    mode: str,
+    entrants: list[dict],
+    result: dict,
+    champion_id: int | None = None,
+    champion_name: str | None = None,
+    used_sr: bool | None = None,
+    api_version: str | None = None,
+    conn=None,
+):
     """
-    No-op si no hay psycopg2 (evita romper en CI).
+    Inserta una corrida de bracket. Si psycopg2 no está presente, no hace nada (no rompe en CI).
+    Rellena columnas extra solo si se proporcionan.
     """
-    if psycopg2 is None:
+    if psycopg2 is None:  # fallback si no tienes psycopg2 instalado
         return
+
+    cols = ["tournament_name", "tournament_month", "years_back", "mode", "entrants", "result"]
+    vals = [tournament_name, tournament_month, years_back, mode, json.dumps(entrants), json.dumps(result)]
+
+    if champion_id is not None:
+        cols.append("champion_id")
+        vals.append(champion_id)
+    if champion_name is not None:
+        cols.append("champion_name")
+        vals.append(champion_name)
+    if used_sr is not None:
+        cols.append("used_sr")
+        vals.append(used_sr)
+    if api_version is not None:
+        cols.append("api_version")
+        vals.append(api_version)
+
+    placeholders = ", ".join(["%s"] * len(cols))
+    collist = ", ".join(cols)
+
     pg, opened = _pg_conn_or_env(conn)
     try:
         with pg.cursor() as cur:
-            cur.execute("""
-                INSERT INTO public.bracket_runs
-                  (tournament_name, tournament_month, years_back, mode, entrants, result)
-                VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb)
-            """, (tournament_name, tournament_month, years_back, mode,
-                  json.dumps(entrants), json.dumps(result)))
+            cur.execute(
+                f"INSERT INTO public.bracket_runs ({collist}) VALUES ({placeholders})",
+                vals
+            )
         if opened:
             pg.commit()
     finally:
         if opened:
             pg.close()
+
 
 
 
