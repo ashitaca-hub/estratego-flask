@@ -1,6 +1,7 @@
 from __future__ import annotations
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone
+from services import supabase_fs as FS
 import requests
 import logging
 import os
@@ -831,4 +832,5 @@ if __name__ == "__main__":
     # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
