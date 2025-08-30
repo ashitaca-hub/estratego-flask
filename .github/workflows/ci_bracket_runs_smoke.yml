@@ -1,0 +1,49 @@
+name: ci-bracket-runs-smoke
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check DATABASE_URL
+        run: '[ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Insert dummy run
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          WITH e AS (
+            SELECT jsonb_build_array(
+              jsonb_build_object('name','Jannik Sinner','id','sr:competitor:225050','seed',1),
+              jsonb_build_object('name','Carlos Alcaraz','id','sr:competitor:407573','seed',2)
+            ) AS entrants
+          ),
+          r AS (
+            SELECT jsonb_build_object(
+              'ok', true,
+              'mode','deterministic',
+              'tournament', jsonb_build_object('name','Cincinnati','month',8),
+              'years_back',4,
+              'bracket', jsonb_build_array(
+                jsonb_build_object('round',1,'matches', jsonb_build_array(
+                  jsonb_build_object('a','Jannik Sinner','b','Carlos Alcaraz','prob_a',0.52,'winner','Jannik Sinner')
+                ))
+              ),
+              'champion', jsonb_build_object('name','Jannik Sinner','id','sr:competitor:225050')
+            ) AS result
+          )
+          INSERT INTO public.bracket_runs
+            (tournament_name, tournament_month, years_back, mode, entrants, result, champion_name)
+          SELECT 'Cincinnati', 8, 4, 'deterministic', e.entrants, r.result, 'Jannik Sinner'
+          FROM e, r;"
+
+      - name: Check last run
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -c "SELECT id, created_at, tournament_name, tournament_month, mode, champion_name FROM public.bracket_runs_recent LIMIT 5;"
