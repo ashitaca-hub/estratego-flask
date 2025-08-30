@@ -1,14 +1,13 @@
 from __future__ import annotations
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone
-from services import supabase_fs as FS
-import requests
-import logging
-import os
-import re
-import urllib.parse
-import json
+import os, re, json, logging, urllib.parse, requests
 from typing import Any
+
+# Servicios/Utilidades
+from services import supabase_fs as FS
+from services import sportradar_now as SR
+from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
 
 # -----------------------------------------------------------------------------
 # App / Logging
@@ -26,34 +25,31 @@ def health():
 
 @app.get("/healthz")
 def healthz():
-    return health()  # reutiliza tu /health
+    return health()  # alias
 
 # -----------------------------------------------------------------------------
-# Sportradar config (ahora via entorno)
+# Sportradar config
 # -----------------------------------------------------------------------------
 SR_API_KEY = os.environ.get("SR_API_KEY", "").strip()
 SR_BASE = "https://api.sportradar.com/tennis/trial/v3/en"
 
 def _sr_url(path: str, params: dict[str, Any] | None = None) -> str:
     if not SR_API_KEY:
-        # No frenamos aquí; tu CI puede llamar /matchup sin SR
         app.logger.warning("SR_API_KEY no configurada (modo NOW desactivado).")
-    params = params.copy() if params else {}
+    params = (params or {}).copy()
     params["api_key"] = SR_API_KEY or "REPLACE_ME"
     return f"{SR_BASE}/{path}?{urllib.parse.urlencode(params)}"
 
 def _sr_get(path: str, params: dict[str, Any] | None = None, timeout=15) -> requests.Response:
     url = _sr_url(path, params)
-    # log redactado (oculta api_key)
     redacted = re.sub(r'api_key=[^&]+', 'api_key=***', url)
     app.logger.info("SR GET %s", redacted)
     r = requests.get(url, timeout=timeout, headers={"accept": "application/json"})
     app.logger.info("SR RESP %s (ratelimit-remaining=%s)", r.status_code, r.headers.get("x-ratelimit-remaining"))
     return r
 
-
 # -----------------------------------------------------------------------------
-# ENDPOINT '/' (tu evaluador original, ajustado a ?api_key=)
+# ENDPOINT '/' (evaluador original)
 # -----------------------------------------------------------------------------
 @app.route('/', methods=['POST'])
 def evaluar():
@@ -115,10 +111,8 @@ def evaluar():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------------------------------------------------------
-# Tus helpers que usan Sportradar (ajustados a _sr_get/?api_key=)
+# Helpers Sportradar (perfil, últimos, h2h, etc.)
 # -----------------------------------------------------------------------------
-
-
 def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
     r = _sr_get(f"competitors/{player_id}/profile.json")
     if r.status_code != 200:
@@ -236,7 +230,8 @@ def evaluar_torneo_favorito(player_id, resumen_data):
 
     grupo = summaries[0].get("sport_event", {}).get("sport_event_context", {}).get("groups", [{}])[0]
     torneo = (grupo.get("name") or "").lower()
-    resultado = "✔" if jugador_pais and jugador_pais in torneo else "✘"
+    resultado = "✔" si_juega := (jugador_pais and jugador_pais in torneo)
+    resultado = "✔" if si_juega else "✘"
     return resultado, torneo
 
 def evaluar_actividad_reciente(player_id, resumen_data):
@@ -377,10 +372,7 @@ def proximos_partidos_por_torneo():
 
 def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
     r = _sr_get("seasons.json")
-    try:
-        r.raise_for_status()
-    except requests.exceptions.RequestException:
-        raise Exception("Error al obtener temporadas")
+    r.raise_for_status()
     tokens = re.findall(r"[a-z0-9]+", torneo_full.casefold())
     year = None
     tokens_without_year = []
@@ -407,10 +399,7 @@ def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
 
 def obtener_proximos_partidos(season_id: str) -> list[dict]:
     r = _sr_get(f"seasons/{season_id}/summaries.json")
-    try:
-        r.raise_for_status()
-    except requests.exceptions.RequestException:
-        raise Exception("Error al obtener próximos partidos")
+    r.raise_for_status()
     proximos = []
     for evento in r.json().get("summaries", []):
         status = evento.get("sport_event_status", {}).get("status")
@@ -425,14 +414,9 @@ def obtener_proximos_partidos(season_id: str) -> list[dict]:
     return proximos
 
 # -----------------------------------------------------------------------------
-# ======== Estratego: endpoint /matchup (usar IDs INT canónicos) ========
+# ======== Estratego: /matchup (usa IDs INT canónicos; resuelve SR/nombre) ====
 # -----------------------------------------------------------------------------
-import urllib.parse
-from services import supabase_fs as FS
-from services import sportradar_now as SR
-from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
-
-# Tablas/vistas canónicas
+# Tablas/vistas canónicas para resolver IDs
 PLAYER_TABLE_SRID = "players_lookup"  # public -> (player_id INT, name, ext_sportradar_id)
 PLAYER_TABLE_NAME = "players_min"     # public -> (player_id INT, name)
 
@@ -443,10 +427,6 @@ HIST_W_SPEED = float(os.getenv("HIST_W_SPEED", "2.0"))
 _HIST_DENOM  = max(1.0, abs(HIST_W_MONTH) + abs(HIST_W_SURF) + abs(HIST_W_SPEED))
 
 def _sr_short_to_int_any(v):
-    """
-    Devuelve el número de SR si v es 'sr:competitor:12345', o int si ya lo es.
-    Si no puede, devuelve None.
-    """
     try:
         if isinstance(v, int):
             return v
@@ -484,16 +464,13 @@ def _resolve_player_int_by_sr(sr_id: str | None) -> int | None:
     return int(rows[0]["player_id"]) if rows else None
 
 def _resolve_id(pid, pname, psrid) -> int | None:
-    # INT directo o string de dígitos
     if isinstance(pid, int) or (isinstance(pid, str) and pid.isdigit()):
         return int(pid)
-    # SR:...
     sr = psrid or (pid if (isinstance(pid, str) and pid.startswith("sr:")) else None)
     if sr:
         rid = _resolve_player_int_by_sr(sr)
         if rid is not None:
             return rid
-    # Nombre
     if pname:
         rid = _resolve_player_int_by_name(pname)
         if rid is not None:
@@ -501,7 +478,6 @@ def _resolve_id(pid, pname, psrid) -> int | None:
     return None
 
 def _tourney_meta_fallback(tname: str) -> dict:
-    """Busca superficie y velocidad en la tabla de compat. Deriva speed_bucket si sólo hay speed_rank."""
     if not tname:
         return {}
     try:
@@ -513,7 +489,6 @@ def _tourney_meta_fallback(tname: str) -> dict:
         if not rows:
             return {}
         row = rows[0]
-        # Derivar bucket si falta (1–33 Fast, 34–66 Medium, >66 Slow)
         if not row.get("speed_bucket") and row.get("speed_rank") is not None:
             r = int(row["speed_rank"])
             row["speed_bucket"] = "Fast" if r <= 33 else ("Medium" if r <= 66 else "Slow")
@@ -521,18 +496,12 @@ def _tourney_meta_fallback(tname: str) -> dict:
     except Exception:
         return {}
 
-# ====================== NUEVO: helper común para matchup ======================
 def _compute_matchup_payload(body: dict) -> dict:
-    """
-    Calcula el matchup y devuelve TODO (prob, deltas NOW/HIST, pesos, componentes).
-    Intenta leer la caché antes y la escribe después.
-    """
     years_back = int(body.get("years_back", 4))
     tourney = body.get("tournament", {}) or {}
     tname = tourney.get("name") or tourney.get("tourney_name") or ""
     month = int(tourney.get("month") or 1)
 
-    # entrada flexible
     p_id_in = body.get("player_id")
     o_id_in = body.get("opponent_id")
     p_sr_id = body.get("player_sr_id")
@@ -540,11 +509,9 @@ def _compute_matchup_payload(body: dict) -> dict:
     player  = body.get("player")
     opponent= body.get("opponent")
 
-    # resolver IDs INT canónicos
     p_int = _resolve_id(p_id_in, player, p_sr_id)
     o_int = _resolve_id(o_id_in, opponent, o_sr_id)
 
-    # meta torneo
     try:
         meta = FS.get_tourney_meta(tname) or {}
     except Exception:
@@ -554,7 +521,6 @@ def _compute_matchup_payload(body: dict) -> dict:
     surface_default = (meta.get("surface") or "hard").lower()
     speed_bucket_meta = meta.get("speed_bucket") or "Medium"
 
-    # --------- Caché: leer antes de calcular pesado ----------
     using_sr = bool(SR_API_KEY)
     ttl_seconds = int(os.getenv("CACHE_TTL_SR_SECS", str(12*3600))) if using_sr else int(os.getenv("CACHE_TTL_HIST_SECS", str(30*24*3600)))
 
@@ -570,7 +536,6 @@ def _compute_matchup_payload(body: dict) -> dict:
             app.logger.warning(f"cache get failed: {e}")
             cached = None
         if cached:
-            # psycopg2 puede devolver dict o str JSON
             if isinstance(cached, str):
                 try:
                     cached = json.loads(cached)
@@ -602,7 +567,6 @@ def _compute_matchup_payload(body: dict) -> dict:
             }
             return out_cached
 
-    # histórico FS (usa INT si el FS lo espera así)
     hist = {}
     if p_int is not None and o_int is not None:
         try:
@@ -620,11 +584,9 @@ def _compute_matchup_payload(body: dict) -> dict:
             "d_hist_month":   0.0
         }
 
-    # Señales NOW (Sportradar) con SRIDs normalizados
     p_sr_norm = _normalize_sr_id(p_sr_id or (p_id_in if (isinstance(p_id_in, str) and p_id_in.startswith("sr:")) else None))
     o_sr_norm = _normalize_sr_id(o_sr_id or (o_id_in if (isinstance(o_id_in, str) and o_id_in.startswith("sr:")) else None))
 
-    # Si faltan SR pero tenemos INT, resuélvelos desde la DB
     if p_sr_norm is None and isinstance(p_int, int):
         try:
             p_sr_norm = FS.get_sr_id_from_player_int(p_int)
@@ -636,7 +598,6 @@ def _compute_matchup_payload(body: dict) -> dict:
         except Exception:
             pass
 
-    # NOW features
     try:
         profile_p = SR.get_profile(p_sr_norm) if p_sr_norm else {}
         profile_o = SR.get_profile(o_sr_norm) if o_sr_norm else {}
@@ -653,7 +614,6 @@ def _compute_matchup_payload(body: dict) -> dict:
     now_p = SR.compute_now_features(profile_p, last10_p, ytd_p)
     now_o = SR.compute_now_features(profile_o, last10_o, ytd_o)
 
-    # Flags
     surf_change_p = 1 if (now_p.get("last_surface") and now_p["last_surface"] != str(hist.get("surface","")).lower()) else 0
     surf_change_o = 1 if (now_o.get("last_surface") and now_o["last_surface"] != str(hist.get("surface","")).lower()) else 0
     is_local_p = 1 if body.get("country") and body.get("player_country") and body["country"] == body["player_country"] else 0
@@ -661,7 +621,6 @@ def _compute_matchup_payload(body: dict) -> dict:
     mot_p = int(body.get("mot_points_p") or 0)
     mot_o = int(body.get("mot_points_o") or 0)
 
-    # Deltas NOW
     rank_p = now_p.get("ranking_now") or 999
     rank_o = now_o.get("ranking_now") or 999
     d_rank_norm   = clamp((rank_o - rank_p) / 100.0, -1, 1)
@@ -670,12 +629,10 @@ def _compute_matchup_payload(body: dict) -> dict:
     d_h2h         = clamp(((h2h_w + 5) / max(1, (h2h_w + h2h_l + 10))) - ((h2h_l + 5) / max(1, (h2h_w + h2h_l + 10))), -0.25, 0.25)
     d_inactive    = clamp(-(now_p["days_inactive"] - now_o["days_inactive"]) / 30.0, -0.25, 0.25)
 
-    # Deltas Hist
     d_hist_surface = clamp(hist.get("d_hist_surface", 0.0), -0.25, 0.25)
     d_hist_speed   = clamp(hist.get("d_hist_speed",   0.0), -0.25, 0.25)
     d_hist_month   = clamp(hist.get("d_hist_month",   0.0), -0.25, 0.25)
 
-    # Lineales
     now_linear = (
         WEIGHTS["rank_norm"]   * d_rank_norm   +
         WEIGHTS["ytd"]         * d_ytd         +
@@ -689,7 +646,6 @@ def _compute_matchup_payload(body: dict) -> dict:
         HIST_W_SPEED * d_hist_speed
     ) / _HIST_DENOM
 
-    # Ajustes
     adj = 0.0
     adj += ADJUSTS["surf_change"] * (surf_change_p - surf_change_o)
     adj += ADJUSTS["local"]       * (is_local_p - is_local_o)
@@ -710,7 +666,6 @@ def _compute_matchup_payload(body: dict) -> dict:
         }
     }
 
-    # --------- Caché: guardar resultado fresco ----------
     if p_int is not None and o_int is not None:
         try:
             FS.put_matchup_cache_json(
@@ -718,7 +673,7 @@ def _compute_matchup_payload(body: dict) -> dict:
                 tournament_name=tname, mon=month,
                 surface=str(hist.get("surface", surface_default)).lower(),
                 speed_bucket=str(hist.get("speed_bucket", speed_bucket_meta)),
-                years_back=years_back, using_sr=using_sr,
+                years_back=years_back, using_sr=bool(SR_API_KEY),
                 prob_player=float(prob_player),
                 features=features, flags=features["flags"],
                 weights_hist={"month": HIST_W_MONTH, "surface": HIST_W_SURF, "speed": HIST_W_SPEED, "denom": _HIST_DENOM},
@@ -747,12 +702,10 @@ def _compute_matchup_payload(body: dict) -> dict:
         "components": { "now_linear": now_linear, "hist_linear": hist_linear, "adj": adj, "z": z, "cached": False }
     }
 
-# ------------------------- ENDPOINTS que usan el helper -----------------------
 @app.post("/matchup")
 def matchup():
     body = request.get_json(force=True, silent=True) or {}
     out = _compute_matchup_payload(body)
-    # respuesta “ligera” tradicional
     resp = {
         "ok": out["ok"],
         "prob_player": out["prob_player"],
@@ -760,77 +713,20 @@ def matchup():
         "speed_bucket": out["speed_bucket"],
         "inputs": out["inputs"],
         "features": out["features"],
-        "weights_hist": out.get("weights_hist")
+        "weights_hist": out.get("weights_hist"),
     }
-    # === Persistencia del run del bracket (justo antes del return) ===
-try:
-    # 1) Entrants originales tal como llegaron a la simulación
-    #    Si ya tienes una lista 'entrants_list', úsala. Si no, construimos una mínima:
-    entrants_list = []
-    # Suponiendo que tienes una lista 'entrants' que usaste para simular:
-    # - Puede ser lista de dicts con 'name'/'id'/'seed' o simplemente strings.
-    for e in entrants:  # cambia 'entrants' por tu variable si se llama distinto
-        if isinstance(e, dict):
-            entrants_list.append({
-                "name": e.get("name") or e.get("a") or e.get("b") or "",
-                "id": e.get("id") or e.get("sr_id") or "",
-                "seed": e.get("seed")
-            })
-        else:
-            entrants_list.append({"name": str(e), "id": "", "seed": None})
-
-    # 2) Extra de auditoría
-    used_sr = bool(os.environ.get("SR_API_KEY"))  # hubo NOW/Sportradar disponible
-    api_version = os.environ.get("GITHUB_SHA") or os.environ.get("APP_VERSION")
-
-    # 3) Datos del campeón desde tu dict 'champion' (ajusta si se llama distinto)
-    #    Intentamos tener también un id INT “canónico” si existe
-    champ = champion  # tu objeto campeón ya construido
-    champ_name = (champ or {}).get("name")
-    champ_id = (champ or {}).get("id_int") \
-               or _sr_short_to_int_any((champ or {}).get("id"))
-
-    # 4) Construimos el resultado que vamos a guardar (usa tu 'resp' si lo tienes)
-    result_payload = {
-        "ok": True,
-        "mode": mode,  # "deterministic" o "mc"
-        "tournament": {"name": tname, "month": month},
-        "years_back": years_back,
-        "bracket": bracket_rounds,  # tu estructura de rondas con partidos
-        "champion": champion        # tu dict de campeón
-    }
-
-    # 5) Insert en DB (no rompe si no hay psycopg2 gracias al fallback)
-    FS.insert_bracket_run(
-        tournament_name=tname,
-        tournament_month=month,
-        years_back=years_back,
-        mode=mode,
-        entrants=entrants_list,
-        result=result_payload,
-        champion_id=champ_id,
-        champion_name=champ_name,
-        used_sr=used_sr,
-        api_version=api_version
-    )
-except Exception as e:
-    # No romper la respuesta si falla la persistencia
-    app.logger.warning("Persistencia bracket_runs falló: %s", e)
-# === Fin persistencia ===
-    return jsonify(resp)
+    return jsonify(resp), 200
 
 @app.post("/matchup/features")
 def matchup_features():
     body = request.get_json(force=True, silent=True) or {}
     out = _compute_matchup_payload(body)
-    return jsonify(out)
+    return jsonify(out), 200
 
 # -----------------------------------------------------------------------------
-# Entrypoint local
+# Entrypoint
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # usa PORT de entorno (por defecto 8080) -> compatible con CI
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
-
 
