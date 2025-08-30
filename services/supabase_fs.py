@@ -324,36 +324,43 @@ def get_matchup_hist_vector(
 
 
 # === Matchup cache helpers (Postgres) ===============================
+import os, json
+try:
+    import psycopg2  # opcional
+except Exception:
+    psycopg2 = None
+
+DISABLE_DB_CACHE = str(os.environ.get("DISABLE_DB_CACHE", "")).lower() in ("1","true","yes")
 
 def _pg_conn_or_env(conn=None):
-    """Devuelve una conexión psycopg2; si no se pasa, abre con DATABASE_URL."""
     if conn is not None:
         return conn, False
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL no está definido")
-    return psycopg2.connect(url), True  # (conn, opened_here)
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 no instalado; caché deshabilitada")
+    return psycopg2.connect(url), True
 
 def get_matchup_cache_json(player_id:int, opponent_id:int,
                            tournament_name:str, mon:int,
                            speed_bucket:str, years_back:int,
                            using_sr:bool, conn=None):
     """
-    Lee caché; devuelve (tourney_key, json|None).
-    Requiere que exista public.norm_tourney y public.get_matchup_cache_json en DB.
+    Devuelve (tourney_key, json|None). Si no hay psycopg2 o cache desactivada, devuelve (None, None).
     """
+    if DISABLE_DB_CACHE or psycopg2 is None:
+        return None, None
     pg, opened = _pg_conn_or_env(conn)
     try:
         with pg.cursor() as cur:
             cur.execute("SELECT public.norm_tourney(%s)", (tournament_name,))
-            row = cur.fetchone()
-            tourney_key = row[0] if row else None
+            tkey = (cur.fetchone() or [None])[0]
             cur.execute("""
                 SELECT public.get_matchup_cache_json(%s,%s,%s,%s,%s,%s,%s)
-            """, (player_id, opponent_id, tourney_key, mon, speed_bucket, years_back, using_sr))
+            """, (player_id, opponent_id, tkey, mon, speed_bucket or "", years_back, using_sr))
             row = cur.fetchone()
-            cached = row[0] if row and row[0] is not None else None
-            return tourney_key, cached
+            return tkey, (row[0] if row and row[0] is not None else None)
     finally:
         if opened:
             pg.close()
@@ -366,23 +373,27 @@ def put_matchup_cache_json(player_id:int, opponent_id:int,
                            sources:dict|None, ttl_seconds:int|None,
                            conn=None):
     """
-    Escribe/actualiza caché (UPSERT). Requiere public.put_matchup_cache_json.
+    No-op si no hay psycopg2 o cache desactivada.
     """
+    if DISABLE_DB_CACHE or psycopg2 is None:
+        return
     pg, opened = _pg_conn_or_env(conn)
     try:
         with pg.cursor() as cur:
             cur.execute("SELECT public.norm_tourney(%s)", (tournament_name,))
-            row = cur.fetchone()
-            tourney_key = row[0] if row else None
+            tkey = (cur.fetchone() or [None])[0]
             cur.execute("""
                 SELECT public.put_matchup_cache_json(
                     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s
                 )
-            """, (player_id, opponent_id, tourney_key, mon, surface, speed_bucket, years_back,
-                  using_sr, prob_player, json.dumps(features), json.dumps(flags),
-                  json.dumps(weights_hist) if weights_hist is not None else None,
-                  json.dumps(sources) if sources is not None else None,
-                  ttl_seconds))
+            """, (
+                player_id, opponent_id, tkey, mon, surface.lower() if surface else None,
+                speed_bucket or "", years_back, using_sr, float(prob_player),
+                json.dumps(features), json.dumps(flags),
+                json.dumps(weights_hist) if weights_hist is not None else None,
+                json.dumps(sources) if sources is not None else None,
+                ttl_seconds
+            ))
         if opened:
             pg.commit()
     finally:
@@ -393,9 +404,10 @@ def put_matchup_cache_json(player_id:int, opponent_id:int,
 def insert_bracket_run(tournament_name:str, tournament_month:int, years_back:int,
                        mode:str, entrants:list[dict], result:dict, conn=None):
     """
-    Inserta auditoría de un bracket completo (opcional).
-    Requiere tabla public.bracket_runs.
+    No-op si no hay psycopg2 (evita romper en CI).
     """
+    if psycopg2 is None:
+        return
     pg, opened = _pg_conn_or_env(conn)
     try:
         with pg.cursor() as cur:
@@ -410,5 +422,6 @@ def insert_bracket_run(tournament_name:str, tournament_month:int, years_back:int
     finally:
         if opened:
             pg.close()
+
 
 
