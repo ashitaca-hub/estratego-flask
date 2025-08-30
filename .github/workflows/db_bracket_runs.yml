@@ -1,0 +1,27 @@
+name: db-bracket-runs
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check DATABASE_URL
+        run: '[ -n "$DATABASE_URL" ] || { echo "::error::DATABASE_URL missing"; exit 1; }'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Apply migration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/2025_08_30_bracket_runs.sql
+
+      - name: Smoke: listar vistas/tabla
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -c "\d+ public.bracket_runs"
+          psql "$DATABASE_URL" -c "TABLE public.bracket_runs_recent;"
