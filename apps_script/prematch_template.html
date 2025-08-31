@@ -8,16 +8,29 @@
   :root{
     --bg:#0b1220; --card:#121a2b; --muted:#7f8da3; --text:#e8eef9; --ok:#22c55e; --ko:#ef4444; --bar:#1f2937;
     --gold:#fbbf24; --silver:#cbd5e1; --bronze:#d97706; --diamond:#67e8f9; --neutral:#64748b; --red:#ef4444;
+    --chip:#0f172a; --chip-border:rgba(255,255,255,.10);
   }
   html,body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Ubuntu; margin:0}
-  .wrap{max-width:880px;margin:24px auto;padding:16px}
+  .wrap{max-width:920px;margin:24px auto;padding:16px}
   .card{background:var(--card);border-radius:16px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
-  h1{font-size:18px;margin:0 0 12px 0;color:var(--muted);font-weight:600}
+  h1{font-size:18px;margin:0 0 6px 0;color:#c3d2ef;font-weight:700}
+  .subtitle{color:var(--muted);font-size:12px;margin-bottom:12px}
   .vs{display:grid;grid-template-columns:1fr 1fr;gap:16px}
   .pbox{display:flex;gap:12px;align-items:center}
-  .names{display:flex;flex-direction:column;gap:4px}
-  .name{font-weight:700;font-size:18px}
-  .sub{color:var(--muted);font-size:12px}
+  .names{display:flex;flex-direction:column;gap:6px}
+  .name{font-weight:800;font-size:18px}
+  .icons-row{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:4px 8px;border-radius:999px;background:var(--chip);border:1px solid var(--chip-border);
+    font-size:12px;color:#e5e7eb
+  }
+  .chip.warn{border-color:#ef444455}
+  .chip.local{border-color:#60a5fa55}
+  .chip.trophy-g{border-color:#fbbf2455}
+  .chip.trophy-s{border-color:#cbd5e155}
+  .small{color:var(--muted);font-size:12px}
+
   .rank-badge{
     min-width:56px; height:56px; border-radius:12px; display:flex; align-items:center; justify-content:center;
     font-weight:800; font-size:22px; background:#0f172a; border:1px solid rgba(255,255,255,.06);
@@ -26,6 +39,7 @@
   .rank-silver{ color:#0f1419; background:linear-gradient(180deg,#ffffff,#cbd5e1); border-color:#94a3b8 }
   .rank-bronze{ color:#231306; background:linear-gradient(180deg,#ffd7a1,#d97706); border-color:#b45309 }
   .rank-neutral{ color:#cbd5e1; background:#0f172a }
+
   .ball{
     --pct:0; --fill:var(--neutral);
     width:56px; height:56px; border-radius:50%;
@@ -48,6 +62,7 @@
   .meta-col{display:flex;flex-direction:column;gap:6px}
   .meta-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
   .ytd-text{font-size:13px}
+
   .prob{margin-top:18px;padding:14px;border-radius:12px;background:#0f172a;border:1px solid rgba(255,255,255,.06)}
   .bar{height:12px;border-radius:999px;background:var(--bar);position:relative;overflow:hidden}
   .fill{position:absolute;top:0;left:0;height:100%;border-radius:999px;background:linear-gradient(90deg,#22c55e,#f97316)}
@@ -61,7 +76,8 @@
 <body>
 <div class="wrap">
   <div class="card">
-    <h1>Prematch</h1>
+    <h1 id="ttl">Prematch</h1>
+    <div class="subtitle" id="subttl"></div>
 
     <!-- El workflow inyecta aquí el JSON de /matchup -->
     <script>
@@ -90,27 +106,78 @@ function ytdTier(p){
   return 'red';
 }
 function pctText(p){ return p==null ? '—' : (p*100).toFixed(1)+'%'; }
+function odds(x){ return (x>0 && x<1) ? (1/x).toFixed(2) : '—'; }
+
+// bandera emoji desde country code ISO2
+function flagEmoji(cc){
+  if(!cc || cc.length!==2) return '🏁';
+  const A = 0x1F1E6; // Regional Indicator Symbol Letter A
+  const up = cc.trim().toUpperCase();
+  return String.fromCodePoint(A + up.charCodeAt(0)-65, A + up.charCodeAt(1)-65);
+}
+
+function buildIconChips(side, resp){
+  const fl = (resp.features && resp.features.flags) || {};
+  const ex = resp.extras || {};
+  const chips = [];
+
+  // Cambio de superficie
+  const surfKey = side==='p' ? 'surf_change_p' : 'surf_change_o';
+  if (fl[surfKey]) chips.push(`<span class="chip warn" title="Cambio de superficie">⚠️ Cambio</span>`);
+
+  // Local
+  const localKey = side==='p' ? 'is_local_p' : 'is_local_o';
+  const ccKey    = side==='p' ? 'country_p' : 'country_o';
+  if (fl[localKey]) {
+    const flag = flagEmoji(ex[ccKey] || null);
+    chips.push(`<span class="chip local" title="Juega en casa">${flag} Local</span>`);
+  }
+
+  // Defiende puntos / Título
+  const ptsKey   = side==='p' ? 'def_points_p' : 'def_points_o';
+  const titleKey = side==='p' ? 'def_title_p'  : 'def_title_o'; // 'champ' | 'runner' | null
+  const pts = ex[ptsKey];
+  const tit = ex[titleKey];
+  if (pts!=null && pts>0){
+    if (tit==='champ') {
+      chips.push(`<span class="chip trophy-g" title="Defiende título de campeón">🏆 ${pts}</span>`);
+    } else if (tit==='runner') {
+      chips.push(`<span class="chip trophy-s" title="Defiende final">🥈 ${pts}</span>`);
+    } else {
+      chips.push(`<span class="chip" title="Puntos a defender">🎯 ${pts}</span>`);
+    }
+  }
+
+  return chips.join('');
+}
 
 function renderPrematch(resp){
-  // Inputs básicos
   const aName = (resp.inputs.player ?? resp.inputs.player_sr_id ?? 'Player A');
   const bName = (resp.inputs.opponent ?? resp.inputs.opponent_sr_id ?? 'Player B');
   const pA = resp.prob_player ?? 0.5;
   const pB = 1 - pA;
 
-  // Enrich: rank & ytd (si tu /matchup no los trae, déjalos en null)
-  // Puedes mapearlos desde tu fetch SR o FS si ya los calculas.
+  // Meta torneo
+  const t = resp.inputs?.tournament ?? {};
+  const tname = t.name ?? 'Torneo';
+  const mon   = t.month ?? null;
+  const surf  = resp.surface ?? '—';
+  const sb    = resp.speed_bucket ?? '—';
+  document.getElementById('ttl').textContent = `${aName} vs ${bName}`;
+  document.getElementById('subttl').textContent = `${tname}${mon?(' · mes '+mon):''} · ${surf} · ${sb}`;
+
+  // Ranking / YTD (opcional vía extras)
   const aRank = resp.extras?.rank_p ?? null;
   const bRank = resp.extras?.rank_o ?? null;
   const aYTD  = resp.extras?.ytd_wr_p ?? null; // 0..1
   const bYTD  = resp.extras?.ytd_wr_o ?? null;
 
   const deltas = resp.features?.deltas || {};
-  const deltasText = [
-    (deltas.hist_month!=null ? `Mes: ${(deltas.hist_month>=0?'+':'')}${deltas.hist_month.toFixed(3)}`:null),
-    (deltas.hist_surface!=null ? `Superficie: ${(deltas.hist_surface>=0?'+':'')}${deltas.hist_surface.toFixed(3)}`:null),
-    (deltas.hist_speed!=null ? `Velocidad: ${(deltas.hist_speed>=0?'+':'')}${deltas.hist_speed.toFixed(3)}`:null)
-  ].filter(Boolean).join(' · ');
+  const det = [];
+  if (deltas.hist_month!=null)   det.push(`Mes: ${(deltas.hist_month>=0?'+':'')}${deltas.hist_month.toFixed(3)}`);
+  if (deltas.hist_surface!=null) det.push(`Superficie: ${(deltas.hist_surface>=0?'+':'')}${deltas.hist_surface.toFixed(3)}`);
+  if (deltas.hist_speed!=null)   det.push(`Velocidad: ${(deltas.hist_speed>=0?'+':'')}${deltas.hist_speed.toFixed(3)}`);
+  const deltasText = det.join(' · ');
 
   const root = document.getElementById('prematch');
   root.innerHTML = `
@@ -119,6 +186,7 @@ function renderPrematch(resp){
       <div class="rank-badge ${'rank-'+rankTier(aRank)}">#${aRank ?? '—'}</div>
       <div class="names">
         <div class="name">${aName}</div>
+        <div class="icons-row">${buildIconChips('p', resp)}</div>
         <div class="meta">
           <div class="ball" id="ballA" data-tier="${ytdTier(aYTD)}"></div>
           <div class="meta-col">
@@ -131,6 +199,7 @@ function renderPrematch(resp){
     <div class="pbox" style="justify-content:flex-end">
       <div class="names" style="align-items:flex-end">
         <div class="name">${bName}</div>
+        <div class="icons-row" style="justify-content:flex-end">${buildIconChips('o', resp)}</div>
         <div class="meta" style="justify-content:flex-end">
           <div class="meta-col" style="align-items:flex-end">
             <div class="meta-label">YTD Win%</div>
@@ -146,15 +215,16 @@ function renderPrematch(resp){
   <div class="prob" style="margin-top:16px">
     <div class="bar"><div class="fill" style="width:${(pA*100).toFixed(1)}%"></div></div>
     <div class="prob-legend">
-      <div>${aName}: ${(pA*100).toFixed(1)}%</div>
-      <div>${bName}: ${(pB*100).toFixed(1)}%</div>
+      <div>${aName}: ${(pA*100).toFixed(1)}% (cuota ${odds(pA)})</div>
+      <div>${bName}: ${(pB*100).toFixed(1)}% (cuota ${odds(pB)})</div>
     </div>
     ${deltasText ? `<div class="deltas">Señales HIST · ${deltasText}</div>` : ``}
   </div>
 
   <div class="legend">
-    <span class="pill">Rank: Top3=Oro, Top10=Plata, Top20=Bronce</span>
+    <span class="pill">Rank: Top3=Oro · Top10=Plata · Top20=Bronce</span>
     <span class="pill">YTD: <span style="color:var(--red)">Rojo</span> &lt;50 · Bronce 50–59 · Plata 60–79 · Oro 80–89 · Diamante ≥90</span>
+    <span class="pill">Iconos: ⚠️ Cambio superficie · 🏁 Local · 🏆/🥈 Defiende título (+ puntos)</span>
   </div>`;
   // Pinta pelotas
   const ballA = document.getElementById('ballA');
@@ -163,12 +233,16 @@ function renderPrematch(resp){
   if (ballB) ballB.style.setProperty('--pct', (bYTD ?? 0)*100);
 }
 
-// Si el workflow ya inyectó resp, renderiza. Si no, crea un ejemplo:
+// Si el workflow ya inyectó resp, renderiza. Si no, demo:
 if (typeof resp === 'undefined'){
   window.resp = {
-    inputs:{player:'Player A',opponent:'Player B'}, prob_player:0.67,
-    features:{deltas:{hist_month:0.073,hist_surface:0.064,hist_speed:0.004}},
-    extras:{rank_p:3, rank_o:12, ytd_wr_p:0.78, ytd_wr_o:0.61}
+    inputs:{player:'Jannik Sinner',opponent:'Alexander Bublik',tournament:{name:'Cincinnati',month:8}},
+    prob_player:0.71, surface:'hard', speed_bucket:'Medium',
+    features:{deltas:{hist_month:0.250,hist_surface:0.250,hist_speed:0.250},
+              flags:{surf_change_p:false,surf_change_o:true,is_local_p:false,is_local_o:true}},
+    extras:{rank_p:4, rank_o:25, ytd_wr_p:0.78, ytd_wr_o:0.58,
+            country_p:'IT', country_o:'KZ',
+            def_points_p:600, def_title_p:'runner', def_points_o:0, def_title_o:null}
   };
 }
 renderPrematch(resp);
