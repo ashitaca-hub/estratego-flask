@@ -729,8 +729,236 @@ def matchup_features():
 # -----------------------------------------------------------------------------
 # Entrypoint
 # -----------------------------------------------------------------------------
+
+def _fmt_pct(x):
+    try:
+        return f"{100.0*float(x):.1f}%"
+    except Exception:
+        return "—"
+
+def _safe(val, default="—"):
+    return default if val is None else val
+
+def _fetch_now_metrics(sr_id: str | None) -> tuple[dict, str]:
+    """
+    Devuelve (metrics, display_name) para un sr:competitor:X.
+    metrics: {ranking_now, winrate_ytd, wins_ytd, losses_ytd, winrate_last10, days_inactive, last_surface}
+    display_name: nombre desde el profile si existe, o ''.
+    """
+    if not SR_API_KEY or not sr_id:
+        return ({}, "")
+    try:
+        prof = SR.get_profile(sr_id) or {}
+        last10 = SR.get_last10(sr_id) or []
+        ytd = SR.get_ytd_record(sr_id) or {"wins": 0, "losses": 0}
+        now = SR.compute_now_features(prof, last10, ytd) or {}
+        name = ((prof.get("competitor") or {}).get("name")) or ""
+        # completa wins/losses para mostrar
+        now["wins_ytd"] = int(ytd.get("wins", 0))
+        now["losses_ytd"] = int(ytd.get("losses", 0))
+        return (now, name)
+    except Exception:
+        return ({}, "")
+
+def _style_bar(value01: float) -> str:
+    """Devuelve estilo width para una barra 0..1 (sanea límites)."""
+    try:
+        v = max(0.0, min(1.0, float(value01)))
+    except Exception:
+        v = 0.0
+    return f"width:{v*100:.1f}%;"
+
+@app.post("/matchup/prematch")
+def matchup_prematch():
+    """
+    Devuelve HTML de tarjeta pre-partido con métricas NOW + HIST y probabilidad/odds.
+    Acepta el mismo JSON que /matchup (player_id/opponent_id pueden ser INT o SR).
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    out = _compute_matchup_payload(body)
+
+    prob = float(out.get("prob_player", 0.5))
+    p_sr = out["inputs"].get("player_sr_id")
+    o_sr = out["inputs"].get("opponent_sr_id")
+    # Nombres de fallback (pueden venir del payload)
+    p_name_fallback = out["inputs"].get("player") or "Player A"
+    o_name_fallback = out["inputs"].get("opponent") or "Player B"
+
+    # Traemos métricas NOW (si hay SR_API_KEY)
+    p_now, p_name_sr = _fetch_now_metrics(p_sr)
+    o_now, o_name_sr = _fetch_now_metrics(o_sr)
+    p_name = p_name_sr or p_name_fallback
+    o_name = o_name_sr or o_name_fallback
+
+    # H2H
+    h2w, h2l = (0, 0)
+    try:
+        if p_sr and o_sr and SR_API_KEY:
+            h2w, h2l = SR.get_h2h(p_sr, o_sr)
+    except Exception:
+        pass
+
+    # Señales HIST (deltas ya normalizadas por tu feature store)
+    deltas = (out.get("features") or {}).get("deltas") or {}
+    hist_month   = float(deltas.get("hist_month",   0.0))
+    hist_surface = float(deltas.get("hist_surface", 0.0))
+    hist_speed   = float(deltas.get("hist_speed",   0.0))
+
+    # Odds implícitas (decimales)
+    odds_p = (1.0 / prob) if prob > 0 else None
+    odds_o = (1.0 / max(1e-9, 1.0 - prob)) if prob < 1 else None
+
+    # Barras: ranking (menor es mejor) -> escalar aprox con techo 300
+    def rank_score(r):
+        try:
+            r = float(r)
+        except Exception:
+            return 0.0
+        return max(0.0, min(1.0, (300.0 - r) / 300.0))
+    # YTD / last10 ya vienen como proporción 0..1 en compute_now_features
+    p_r = rank_score(p_now.get("ranking_now", 999))
+    o_r = rank_score(o_now.get("ranking_now", 999))
+    p_y = float(p_now.get("winrate_ytd", 0.0))
+    o_y = float(o_now.get("winrate_ytd", 0.0))
+    p_l10 = float(p_now.get("winrate_last10", 0.0))
+    o_l10 = float(o_now.get("winrate_last10", 0.0))
+    p_inact = float(p_now.get("days_inactive", 0)) / 60.0  # 60 días ~ barra llena
+    o_inact = float(o_now.get("days_inactive", 0)) / 60.0
+    p_inact = max(0.0, min(1.0, p_inact))
+    o_inact = max(0.0, min(1.0, o_inact))
+
+    # Flags
+    flags = (out.get("features") or {}).get("flags") or {}
+    flags_html = []
+    if flags.get("surf_change_p") or flags.get("surf_change_o"):
+        flags_html.append("🌀 Surface change")
+    if flags.get("is_local_p") or flags.get("is_local_o"):
+        flags_html.append("🏠 Local factor")
+    if (flags.get("mot_p") or 0) != (flags.get("mot_o") or 0):
+        flags_html.append("⚡ Motivation (points)")
+    flags_html = " · ".join(flags_html) or "—"
+
+    # HTML simple y limpio con barras
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Prematch — {p_name} vs {o_name}</title>
+<style>
+body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color:#111; }}
+h1 {{ font-size: 20px; margin: 0 0 4px 0; }}
+h2 {{ font-size: 16px; margin: 18px 0 8px 0; }}
+.card {{ border:1px solid #eee; border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.04); }}
+.grid {{ display:grid; grid-template-columns: 1fr 120px 1fr; gap:16px; align-items:center; }}
+.name {{ font-weight:600; font-size:18px; }}
+.kv {{ color:#555; font-size:13px; }}
+.center {{ text-align:center; }}
+.badge {{ display:inline-block; padding:4px 8px; border-radius:999px; background:#f5f5f5; font-size:12px; }}
+.row {{ display:flex; align-items:center; gap:8px; margin:6px 0; }}
+.label {{ width:110px; color:#444; font-size:13px; }}
+.bar {{ flex:1; background:#f0f0f0; border-radius:999px; overflow:hidden; height:10px; }}
+.fillP {{ background:#0ea5e9; height:100%; }}
+.fillO {{ background:#ef4444; height:100%; }}
+.meta {{ color:#666; font-size:12px; }}
+.small {{ font-size:12px; color:#666; }}
+.section {{ margin-top:16px; }}
+hr {{ border:none; border-top:1px solid #eee; margin:16px 0; }}
+.foot {{ margin-top:18px; color:#777; font-size:12px; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Prematch</h1>
+    <div class="meta">{out['inputs']['tournament']['name']} · {out.get('surface','hard')} · {out.get('speed_bucket','Medium')}</div>
+
+    <div class="grid" style="margin-top:12px;">
+      <div class="name">{p_name}</div>
+      <div class="center">
+        <div class="badge">Prob A: <b>{prob:.3f}</b></div><br/>
+        <div class="small">Cuota implícita A: {_safe(f'{odds_p:.2f}' if odds_p else None)}</div>
+        <div class="small">Cuota implícita B: {_safe(f'{odds_o:.2f}' if odds_o else None)}</div>
+      </div>
+      <div class="name" style="text-align:right;">{o_name}</div>
+
+      <!-- Ranking -->
+      <div class="row">
+        <div class="label">Ranking</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_r)}"></div></div>
+        <div class="small">{_safe(p_now.get('ranking_now'))}</div>
+      </div>
+      <div></div>
+      <div class="row">
+        <div class="small" style="text-align:right;">{_safe(o_now.get('ranking_now'))}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_r)}"></div></div>
+        <div class="label" style="text-align:right;">Ranking</div>
+      </div>
+
+      <!-- YTD -->
+      <div class="row">
+        <div class="label">YTD WR</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_y)}"></div></div>
+        <div class="small">{_fmt_pct(p_y)} ({_safe(p_now.get('wins_ytd'))}-{_safe(p_now.get('losses_ytd'))})</div>
+      </div>
+      <div></div>
+      <div class="row">
+        <div class="small" style="text-align:right;">{_fmt_pct(o_y)} ({_safe(o_now.get('wins_ytd'))}-{_safe(o_now.get('losses_ytd'))})</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_y)}"></div></div>
+        <div class="label" style="text-align:right;">YTD WR</div>
+      </div>
+
+      <!-- Last10 -->
+      <div class="row">
+        <div class="label">Last 10 WR</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_l10)}"></div></div>
+        <div class="small">{_fmt_pct(p_l10)}</div>
+      </div>
+      <div></div>
+      <div class="row">
+        <div class="small" style="text-align:right;">{_fmt_pct(o_l10)}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_l10)}"></div></div>
+        <div class="label" style="text-align:right;">Last 10 WR</div>
+      </div>
+
+      <!-- Inactividad (menor es mejor, aquí barra “se llena” con más días) -->
+      <div class="row">
+        <div class="label">Inactividad</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_inact)}"></div></div>
+        <div class="small">{int(p_now.get('days_inactive',0))} días</div>
+      </div>
+      <div></div>
+      <div class="row">
+        <div class="small" style="text-align:right;">{int(o_now.get('days_inactive',0))} días</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_inact)}"></div></div>
+        <div class="label" style="text-align:right;">Inactividad</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Señales HIST</h2>
+      <div class="small">Month Δ: {hist_month:+.3f} · Surface Δ: {hist_surface:+.3f} · Speed Δ: {hist_speed:+.3f}</div>
+    </div>
+
+    <div class="section">
+      <h2>H2H / Notas</h2>
+      <div class="small">H2H: {h2w} - {h2l} · Flags: {flags_html}</div>
+    </div>
+
+    <hr/>
+    <div class="foot">
+      Fuente: Hist (Supabase) + NOW (Sportradar). Esta tarjeta resume por qué la probabilidad A={prob:.3f}.
+    </div>
+  </div>
+</body></html>
+"""
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+# -----------------------------------------------------------------------------
+# Entrypoint
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
