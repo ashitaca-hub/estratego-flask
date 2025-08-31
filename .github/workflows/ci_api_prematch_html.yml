@@ -82,30 +82,31 @@ jobs:
           MONTH="${IN_MONTH:-8}"
           YB="${IN_YBACK:-4}"
 
-          # Construye el JSON con jq (sin heredocs/paren-matching)
+          # Construye el JSON con strings y convierte dentro de jq (tolera "08", "", etc.)
           jq -n \
             --arg p "$PLAYER" \
             --arg o "$OPP" \
             --arg t "$TNAME" \
-            --argjson m "$MONTH" \
-            --argjson yb "$YB" \
+            --arg m "$MONTH" \
+            --arg yb "$YB" \
             '{
-              tournament: {name:$t, month:$m},
-              years_back: $yb,
+              tournament: {
+                name: $t,
+                month: ( ($m|tonumber?) // 8 )
+              },
+              years_back: ( ($yb|tonumber?) // 4 ),
               player_id: $p,
               opponent_id: $o
             }' > payload.json
 
           echo "== Payload ==" && cat payload.json | jq .
 
-          # Llama al endpoint HTML
           curl -sS -X POST "http://127.0.0.1:8080/matchup/prematch" \
                -H "Content-Type: application/json" \
                --data @payload.json > prematch.html
 
           grep -qi "<html" prematch.html || { echo "::error::Respuesta no es HTML"; exit 1; }
 
-          # Nombra el artefacto de forma amigable
           SAFE_P=$(echo "$PLAYER" | tr ' :/' '__')
           SAFE_O=$(echo "$OPP"    | tr ' :/' '__')
           SAFE_T=$(echo "$TNAME"  | tr ' /'  '_')
@@ -113,6 +114,7 @@ jobs:
           mv prematch.html "$OUT"
           echo "GENERATED=$OUT" >> $GITHUB_ENV
           echo "== Guardado: $OUT =="
+
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
