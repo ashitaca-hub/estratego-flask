@@ -25,10 +25,10 @@ jobs:
       - name: Syntax check
         run: |
           python - <<'PY'
-import py_compile
-py_compile.compile('main.py', doraise=True)
-print("OK: main.py compila")
-PY
+          import py_compile
+          py_compile.compile('main.py', doraise=True)
+          print("OK: main.py compila")
+          PY
 
       - name: Launch API on 8080
         run: |
@@ -45,13 +45,13 @@ PY
       - name: Build payload
         run: |
           cat > payload.json <<'JSON'
-{
-  "player_id": "sr:competitor:225050",
-  "opponent_id": "sr:competitor:407573",
-  "tournament": { "name": "Cincinnati", "month": 8 },
-  "years_back": 4
-}
-JSON
+          {
+          "player_id": "sr:competitor:225050",
+          "opponent_id": "sr:competitor:407573",
+          "tournament": { "name": "Cincinnati", "month": 8 },
+          "years_back": 4
+          }
+          JSON
 
       - name: Request prematch HTML
         run: |
