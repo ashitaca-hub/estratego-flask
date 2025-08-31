@@ -47,8 +47,8 @@ jobs:
           cat > payload.json <<'JSON'
           {
           "player_id": "sr:competitor:225050",
-          "opponent_id": "sr:competitor:407573",
-          "tournament": { "name": "Cincinnati", "month": 8 },
+          "opponent_id": "sr:competitor:163480",
+          "tournament": { "name": "US Open", "month": 8 },
           "years_back": 4
           }
           JSON
