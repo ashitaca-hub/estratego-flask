@@ -2,6 +2,27 @@ name: api-prematch-html
 
 on:
   workflow_dispatch:
+    inputs:
+      player:
+        description: "Jugador A (nombre, sr:competitor:XXXX o ID interno)"
+        required: false
+        default: "sr:competitor:225050"   # Jannik Sinner
+      opponent:
+        description: "Jugador B (nombre, sr:competitor:XXXX o ID interno)"
+        required: false
+        default: "sr:competitor:407573"   # Carlos Alcaraz
+      tournament:
+        description: "Nombre del torneo"
+        required: false
+        default: "Cincinnati"
+      month:
+        description: "Mes del torneo (1-12)"
+        required: false
+        default: "8"
+      years_back:
+        description: "Histórico en años hacia atrás"
+        required: false
+        default: "4"
 
 jobs:
   prematch:
@@ -10,6 +31,12 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY: ${{ secrets.SR_API_KEY }}
+      IN_PLAYER: ${{ github.event.inputs.player }}
+      IN_OPP: ${{ github.event.inputs.opponent }}
+      IN_TNAME: ${{ github.event.inputs.tournament }}
+      IN_MONTH: ${{ github.event.inputs.month }}
+      IN_YB: ${{ github.event.inputs.years_back }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,12 +50,7 @@ jobs:
           pip install requests
 
       - name: Syntax check
-        run: |
-          python - <<'PY'
-          import py_compile
-          py_compile.compile('main.py', doraise=True)
-          print("OK: main.py compila")
-          PY
+        run: python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
 
       - name: Launch API on 8080
         run: |
@@ -42,16 +64,34 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8080/health
 
-      - name: Build payload
+      - name: Build payload from inputs
         run: |
-          cat > payload.json <<'JSON'
-          {
-          "player_id": "sr:competitor:15894",
-          "opponent_id": "sr:competitor:339377",
-          "tournament": { "name": "US Open", "month": 8 },
-          "years_back": 4
-          }
-          JSON
+          set -euo pipefail
+          P="${IN_PLAYER:-sr:competitor:225050}"
+          O="${IN_OPP:-sr:competitor:407573}"
+          T="${IN_TNAME:-Cincinnati}"
+          M="${IN_MONTH:-8}"
+          YB="${IN_YB:-4}"
+
+          is_sr()  { [[ "$1" == sr:competitor:* ]]; }
+          is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+          if is_sr "$P" || is_int "$P"; then PK="player_id"; else PK="player"; fi
+          if is_sr "$O" || is_int "$O"; then OK="opponent_id"; else OK="opponent"; fi
+
+          jq -n \
+            --arg pk "$PK" --arg pv "$P" \
+            --arg ok "$OK" --arg ov "$O" \
+            --arg t "$T" \
+            --argjson m "${M:-8}" \
+            --argjson yb "${YB:-4}" '
+            {tournament:{name:$t, month:$m}, years_back:$yb}
+            | .[$pk]=$pv
+            | .[$ok]=$ov
+          ' > payload.json
+
+          echo "== Payload =="
+          cat payload.json | jq .
 
       - name: Request prematch HTML
         run: |
@@ -59,6 +99,7 @@ jobs:
                -H "Content-Type: application/json" \
                --data @payload.json > prematch.html
           test -s prematch.html
+          echo "Prematch HTML generado."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
