@@ -77,17 +77,17 @@ jobs:
 
           # Construye JSON de forma segura
           PAYLOAD=$(python - <<'PY'
-            import json, os
-            pl = os.environ["PLAYER"]
-            op = os.environ["OPP"]
-            tn = os.environ["TNAME"]
-            mo = int(os.environ["MONTH"])
-            yb = int(os.environ["YB"])
-            print(json.dumps({
-              "player_id": pl,          # puedes pasar nombre o sr:competitor:X
-              "opponent_id": op,
-              "tournament": {"name": tn, "month": mo},
-              "years_back": yb
+          import json, os
+          pl = os.environ["PLAYER"]
+          op = os.environ["OPP"]
+          tn = os.environ["TNAME"]
+          mo = int(os.environ["MONTH"])
+          yb = int(os.environ["YB"])
+          print(json.dumps({
+            "player_id": pl,          # puedes pasar nombre o sr:competitor:X
+            "opponent_id": op,
+            "tournament": {"name": tn, "month": mo},
+            "years_back": yb
             }))
             PY
             )
