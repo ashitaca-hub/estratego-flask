@@ -6,21 +6,21 @@ on:
       player:
         description: "Jugador A (nombre o sr:competitor:ID)"
         required: false
-        default: "sr:competitor:225050" # Sinner
+        default: "sr:competitor:225050"
       opponent:
         description: "Jugador B (nombre o sr:competitor:ID)"
         required: false
-        default: "sr:competitor:407573" # Alcaraz
+        default: "sr:competitor:407573"
       tname:
         description: "Nombre torneo"
         required: false
         default: "Cincinnati"
       month:
-        description: "Mes del torneo (1-12)"
+        description: "Mes (1-12)"
         required: false
         default: "8"
       years_back:
-        description: "Histórico (años hacia atrás)"
+        description: "Histórico (años)"
         required: false
         default: "4"
 
@@ -31,6 +31,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,16 +48,23 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
+          python - <<'PY'
+          import py_compile
+          py_compile.compile('main.py', doraise=True)
+          print("OK: main.py compila")
+          PY
 
       - name: Launch API on 8080
         run: |
           python apps_script/start_api.py main:app &
           for i in {1..30}; do
             sleep 1
-            curl -fsS http://127.0.0.1:8080/health && break || true
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+              echo "API UP"
+              break
+            fi
           done
-          curl -fsS http://127.0.0.1:8080/health > /dev/null
+          curl -fsS http://127.0.0.1:8080/health
 
       - name: Build payload and call /matchup/prematch
         env:
@@ -68,40 +76,36 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Defaults por si vienen vacíos
           PLAYER="${IN_PLAYER:-sr:competitor:225050}"
           OPP="${IN_OPP:-sr:competitor:407573}"
           TNAME="${IN_TNAME:-Cincinnati}"
           MONTH="${IN_MONTH:-8}"
           YB="${IN_YBACK:-4}"
 
-          # Construye JSON de forma segura
-          PAYLOAD=$(python - <<'PY'
-          import json, os
-          pl = os.environ["PLAYER"]
-          op = os.environ["OPP"]
-          tn = os.environ["TNAME"]
-          mo = int(os.environ["MONTH"])
-          yb = int(os.environ["YB"])
-          print(json.dumps({
-            "player_id": pl,          # puedes pasar nombre o sr:competitor:X
-            "opponent_id": op,
-            "tournament": {"name": tn, "month": mo},
-            "years_back": yb
-            }))
-            PY
-            )
-          echo "== Payload ==" && echo "$PAYLOAD" | jq .
+          # Construye el JSON con jq (sin heredocs/paren-matching)
+          jq -n \
+            --arg p "$PLAYER" \
+            --arg o "$OPP" \
+            --arg t "$TNAME" \
+            --argjson m "$MONTH" \
+            --argjson yb "$YB" \
+            '{
+              tournament: {name:$t, month:$m},
+              years_back: $yb,
+              player_id: $p,
+              opponent_id: $o
+            }' > payload.json
 
-          # Llama al endpoint HTML y guarda archivo
+          echo "== Payload ==" && cat payload.json | jq .
+
+          # Llama al endpoint HTML
           curl -sS -X POST "http://127.0.0.1:8080/matchup/prematch" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD" -o prematch.html
+               -H "Content-Type: application/json" \
+               --data @payload.json > prematch.html
 
-          # Pequeña validación
           grep -qi "<html" prematch.html || { echo "::error::Respuesta no es HTML"; exit 1; }
 
-          # Nombra artefacto con los IDs legibles
+          # Nombra el artefacto de forma amigable
           SAFE_P=$(echo "$PLAYER" | tr ' :/' '__')
           SAFE_O=$(echo "$OPP"    | tr ' :/' '__')
           SAFE_T=$(echo "$TNAME"  | tr ' /'  '_')
