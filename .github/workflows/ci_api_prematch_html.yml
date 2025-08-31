@@ -46,7 +46,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Syntax check
-        run: python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
+        run: |
+          python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
 
       - name: Launch API on 8080
         run: |
