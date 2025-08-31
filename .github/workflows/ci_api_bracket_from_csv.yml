@@ -61,6 +61,14 @@ jobs:
           [ -n "$SUPABASE_KEY" ] || { echo "::error::SUPABASE_KEY missing"; exit 1; }
           test -f main.py || echo "::warning::main.py no encontrado; APP_MODULE=$APP_MODULE"
 
+      - name: Syntax check
+        run: |
+          python - <<'PY'
+          import py_compile
+          py_compile.compile('main.py', doraise=True)
+          print("OK: main.py compila")
+          PY
+
       - name: Start API
         env:
           APP_MODULE: ${{ env.APP_MODULE }}
