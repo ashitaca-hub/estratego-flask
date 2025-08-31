@@ -230,9 +230,12 @@ def evaluar_torneo_favorito(player_id, resumen_data):
 
     grupo = summaries[0].get("sport_event", {}).get("sport_event_context", {}).get("groups", [{}])[0]
     torneo = (grupo.get("name") or "").lower()
-    resultado = "✔" si_juega := (jugador_pais and jugador_pais in torneo)
+
+    # Fijamos si el torneo es “local” por país en el nombre del torneo
+    si_juega = bool(jugador_pais and (jugador_pais in torneo))
     resultado = "✔" if si_juega else "✘"
     return resultado, torneo
+
 
 def evaluar_actividad_reciente(player_id, resumen_data):
     summaries = resumen_data.get("summaries", [])
@@ -729,4 +732,5 @@ def matchup_features():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
