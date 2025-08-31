@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Prematch</title>
+<style>
+  :root{
+    --bg:#0b1220; --card:#121a2b; --muted:#7f8da3; --text:#e8eef9; --ok:#22c55e; --ko:#ef4444; --bar:#1f2937;
+    --gold:#fbbf24; --silver:#cbd5e1; --bronze:#d97706; --diamond:#67e8f9; --neutral:#64748b; --red:#ef4444;
+  }
+  html,body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Ubuntu; margin:0}
+  .wrap{max-width:880px;margin:24px auto;padding:16px}
+  .card{background:var(--card);border-radius:16px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+  h1{font-size:18px;margin:0 0 12px 0;color:var(--muted);font-weight:600}
+  .vs{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .pbox{display:flex;gap:12px;align-items:center}
+  .names{display:flex;flex-direction:column;gap:4px}
+  .name{font-weight:700;font-size:18px}
+  .sub{color:var(--muted);font-size:12px}
+  .rank-badge{
+    min-width:56px; height:56px; border-radius:12px; display:flex; align-items:center; justify-content:center;
+    font-weight:800; font-size:22px; background:#0f172a; border:1px solid rgba(255,255,255,.06);
+  }
+  .rank-gold{ color:#1a1500; background:linear-gradient(180deg,#fff2b3,#fbbf24); border-color:#eab308 }
+  .rank-silver{ color:#0f1419; background:linear-gradient(180deg,#ffffff,#cbd5e1); border-color:#94a3b8 }
+  .rank-bronze{ color:#231306; background:linear-gradient(180deg,#ffd7a1,#d97706); border-color:#b45309 }
+  .rank-neutral{ color:#cbd5e1; background:#0f172a }
+  .ball{
+    --pct:0; --fill:var(--neutral);
+    width:56px; height:56px; border-radius:50%;
+    background:
+      conic-gradient(var(--fill) calc(var(--pct)*1%), #0f172a 0),
+      radial-gradient(circle at 50% 50%, transparent 58%, rgba(255,255,255,.08) 60% 62%, transparent 64%),
+      radial-gradient(ellipse at 30% 50%, rgba(255,255,255,.08) 0 10%, transparent 11%),
+      radial-gradient(ellipse at 70% 50%, rgba(255,255,255,.08) 0 10%, transparent 11%);
+    border:1px solid rgba(255,255,255,.08);
+    box-shadow:inset 0 6px 10px rgba(0,0,0,.25), 0 6px 14px rgba(0,0,0,.25);
+  }
+  .ball[data-tier="diamond"]{ --fill:var(--diamond) }
+  .ball[data-tier="gold"]{ --fill:var(--gold) }
+  .ball[data-tier="silver"]{ --fill:var(--silver) }
+  .ball[data-tier="bronze"]{ --fill:var(--bronze) }
+  .ball[data-tier="red"]{ --fill:var(--red) }
+  .ball[data-tier="neutral"]{ --fill:var(--neutral) }
+
+  .meta{display:flex;gap:14px;align-items:center}
+  .meta-col{display:flex;flex-direction:column;gap:6px}
+  .meta-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .ytd-text{font-size:13px}
+  .prob{margin-top:18px;padding:14px;border-radius:12px;background:#0f172a;border:1px solid rgba(255,255,255,.06)}
+  .bar{height:12px;border-radius:999px;background:var(--bar);position:relative;overflow:hidden}
+  .fill{position:absolute;top:0;left:0;height:100%;border-radius:999px;background:linear-gradient(90deg,#22c55e,#f97316)}
+  .prob-legend{display:flex;justify-content:space-between;font-size:13px;margin-top:8px}
+  .deltas{margin-top:14px;color:var(--muted);font-size:13px}
+  .legend{margin-top:18px;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-block;margin-right:10px}
+  .pill{padding:2px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:#0f172a}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Prematch</h1>
+
+    <!-- El workflow inyecta aquí el JSON de /matchup -->
+    <script>
+      // Reemplaza este objeto en tu workflow con la respuesta real:
+      // const resp = {...}
+    </script>
+
+    <div id="prematch"></div>
+  </div>
+</div>
+
+<script>
+function rankTier(r){
+  if (r==null) return 'neutral';
+  if (r<=3) return 'gold';
+  if (r<=10) return 'silver';
+  if (r<=20) return 'bronze';
+  return 'neutral';
+}
+function ytdTier(p){
+  if (p==null) return 'neutral';
+  if (p>=0.90) return 'diamond';
+  if (p>=0.80) return 'gold';
+  if (p>=0.60) return 'silver';
+  if (p>=0.50) return 'bronze';
+  return 'red';
+}
+function pctText(p){ return p==null ? '—' : (p*100).toFixed(1)+'%'; }
+
+function renderPrematch(resp){
+  // Inputs básicos
+  const aName = (resp.inputs.player ?? resp.inputs.player_sr_id ?? 'Player A');
+  const bName = (resp.inputs.opponent ?? resp.inputs.opponent_sr_id ?? 'Player B');
+  const pA = resp.prob_player ?? 0.5;
+  const pB = 1 - pA;
+
+  // Enrich: rank & ytd (si tu /matchup no los trae, déjalos en null)
+  // Puedes mapearlos desde tu fetch SR o FS si ya los calculas.
+  const aRank = resp.extras?.rank_p ?? null;
+  const bRank = resp.extras?.rank_o ?? null;
+  const aYTD  = resp.extras?.ytd_wr_p ?? null; // 0..1
+  const bYTD  = resp.extras?.ytd_wr_o ?? null;
+
+  const deltas = resp.features?.deltas || {};
+  const deltasText = [
+    (deltas.hist_month!=null ? `Mes: ${(deltas.hist_month>=0?'+':'')}${deltas.hist_month.toFixed(3)}`:null),
+    (deltas.hist_surface!=null ? `Superficie: ${(deltas.hist_surface>=0?'+':'')}${deltas.hist_surface.toFixed(3)}`:null),
+    (deltas.hist_speed!=null ? `Velocidad: ${(deltas.hist_speed>=0?'+':'')}${deltas.hist_speed.toFixed(3)}`:null)
+  ].filter(Boolean).join(' · ');
+
+  const root = document.getElementById('prematch');
+  root.innerHTML = `
+  <div class="vs">
+    <div class="pbox">
+      <div class="rank-badge ${'rank-'+rankTier(aRank)}">#${aRank ?? '—'}</div>
+      <div class="names">
+        <div class="name">${aName}</div>
+        <div class="meta">
+          <div class="ball" id="ballA" data-tier="${ytdTier(aYTD)}"></div>
+          <div class="meta-col">
+            <div class="meta-label">YTD Win%</div>
+            <div class="ytd-text" id="ytdA">${pctText(aYTD)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="pbox" style="justify-content:flex-end">
+      <div class="names" style="align-items:flex-end">
+        <div class="name">${bName}</div>
+        <div class="meta" style="justify-content:flex-end">
+          <div class="meta-col" style="align-items:flex-end">
+            <div class="meta-label">YTD Win%</div>
+            <div class="ytd-text" id="ytdB">${pctText(bYTD)}</div>
+          </div>
+          <div class="ball" id="ballB" data-tier="${ytdTier(bYTD)}"></div>
+        </div>
+      </div>
+      <div class="rank-badge ${'rank-'+rankTier(bRank)}">#${bRank ?? '—'}</div>
+    </div>
+  </div>
+
+  <div class="prob" style="margin-top:16px">
+    <div class="bar"><div class="fill" style="width:${(pA*100).toFixed(1)}%"></div></div>
+    <div class="prob-legend">
+      <div>${aName}: ${(pA*100).toFixed(1)}%</div>
+      <div>${bName}: ${(pB*100).toFixed(1)}%</div>
+    </div>
+    ${deltasText ? `<div class="deltas">Señales HIST · ${deltasText}</div>` : ``}
+  </div>
+
+  <div class="legend">
+    <span class="pill">Rank: Top3=Oro, Top10=Plata, Top20=Bronce</span>
+    <span class="pill">YTD: <span style="color:var(--red)">Rojo</span> &lt;50 · Bronce 50–59 · Plata 60–79 · Oro 80–89 · Diamante ≥90</span>
+  </div>`;
+  // Pinta pelotas
+  const ballA = document.getElementById('ballA');
+  const ballB = document.getElementById('ballB');
+  if (ballA) ballA.style.setProperty('--pct', (aYTD ?? 0)*100);
+  if (ballB) ballB.style.setProperty('--pct', (bYTD ?? 0)*100);
+}
+
+// Si el workflow ya inyectó resp, renderiza. Si no, crea un ejemplo:
+if (typeof resp === 'undefined'){
+  window.resp = {
+    inputs:{player:'Player A',opponent:'Player B'}, prob_player:0.67,
+    features:{deltas:{hist_month:0.073,hist_surface:0.064,hist_speed:0.004}},
+    extras:{rank_p:3, rank_o:12, ytd_wr_p:0.78, ytd_wr_o:0.61}
+  };
+}
+renderPrematch(resp);
+</script>
+</body>
+</html>
