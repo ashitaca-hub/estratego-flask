@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       player:
-        description: "Jugador A (nombre, sr:competitor:XXXX o ID interno)"
+        description: "Jugador A (nombre o sr:competitor:ID)"
         required: false
-        default: "sr:competitor:225050"   # Jannik Sinner
+        default: "sr:competitor:225050" # Sinner
       opponent:
-        description: "Jugador B (nombre, sr:competitor:XXXX o ID interno)"
+        description: "Jugador B (nombre o sr:competitor:ID)"
         required: false
-        default: "sr:competitor:407573"   # Carlos Alcaraz
-      tournament:
-        description: "Nombre del torneo"
+        default: "sr:competitor:407573" # Alcaraz
+      tname:
+        description: "Nombre torneo"
         required: false
         default: "Cincinnati"
       month:
@@ -20,7 +20,7 @@ on:
         required: false
         default: "8"
       years_back:
-        description: "Histórico en años hacia atrás"
+        description: "Histórico (años hacia atrás)"
         required: false
         default: "4"
 
@@ -30,80 +30,88 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      SR_API_KEY: ${{ secrets.SR_API_KEY }}
-      IN_PLAYER: ${{ github.event.inputs.player }}
-      IN_OPP: ${{ github.event.inputs.opponent }}
-      IN_TNAME: ${{ github.event.inputs.tournament }}
-      IN_MONTH: ${{ github.event.inputs.month }}
-      IN_YB: ${{ github.event.inputs.years_back }}
-
+      SR_API_KEY:   ${{ secrets.SR_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install deps
         run: |
-          pip install -r requirements.txt || true
-          pip install requests
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Syntax check
-        run: |
-          python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
+        run: python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
 
       - name: Launch API on 8080
         run: |
           python apps_script/start_api.py main:app &
-          for i in $(seq 1 25); do
+          for i in {1..30}; do
             sleep 1
-            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
-              echo "API up"
-              break
-            fi
+            curl -fsS http://127.0.0.1:8080/health && break || true
           done
-          curl -fsS http://127.0.0.1:8080/health
+          curl -fsS http://127.0.0.1:8080/health > /dev/null
 
-      - name: Build payload from inputs
+      - name: Build payload and call /matchup/prematch
+        env:
+          IN_PLAYER:   ${{ github.event.inputs.player }}
+          IN_OPP:      ${{ github.event.inputs.opponent }}
+          IN_TNAME:    ${{ github.event.inputs.tname }}
+          IN_MONTH:    ${{ github.event.inputs.month }}
+          IN_YBACK:    ${{ github.event.inputs.years_back }}
         run: |
           set -euo pipefail
-          P="${IN_PLAYER:-sr:competitor:225050}"
-          O="${IN_OPP:-sr:competitor:407573}"
-          T="${IN_TNAME:-Cincinnati}"
-          M="${IN_MONTH:-8}"
-          YB="${IN_YB:-4}"
 
-          is_sr()  { [[ "$1" == sr:competitor:* ]]; }
-          is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
+          # Defaults por si vienen vacíos
+          PLAYER="${IN_PLAYER:-sr:competitor:225050}"
+          OPP="${IN_OPP:-sr:competitor:407573}"
+          TNAME="${IN_TNAME:-Cincinnati}"
+          MONTH="${IN_MONTH:-8}"
+          YB="${IN_YBACK:-4}"
 
-          if is_sr "$P" || is_int "$P"; then PK="player_id"; else PK="player"; fi
-          if is_sr "$O" || is_int "$O"; then OK="opponent_id"; else OK="opponent"; fi
+          # Construye JSON de forma segura
+          PAYLOAD=$(python - <<'PY'
+            import json, os
+            pl = os.environ["PLAYER"]
+            op = os.environ["OPP"]
+            tn = os.environ["TNAME"]
+            mo = int(os.environ["MONTH"])
+            yb = int(os.environ["YB"])
+            print(json.dumps({
+              "player_id": pl,          # puedes pasar nombre o sr:competitor:X
+              "opponent_id": op,
+              "tournament": {"name": tn, "month": mo},
+              "years_back": yb
+            }))
+            PY
+            )
+          echo "== Payload ==" && echo "$PAYLOAD" | jq .
 
-          jq -n \
-            --arg pk "$PK" --arg pv "$P" \
-            --arg ok "$OK" --arg ov "$O" \
-            --arg t "$T" \
-            --argjson m "${M:-8}" \
-            --argjson yb "${YB:-4}" '
-            {tournament:{name:$t, month:$m}, years_back:$yb}
-            | .[$pk]=$pv
-            | .[$ok]=$ov
-          ' > payload.json
+          # Llama al endpoint HTML y guarda archivo
+          curl -sS -X POST "http://127.0.0.1:8080/matchup/prematch" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" -o prematch.html
 
-          echo "== Payload =="
-          cat payload.json | jq .
+          # Pequeña validación
+          grep -qi "<html" prematch.html || { echo "::error::Respuesta no es HTML"; exit 1; }
 
-      - name: Request prematch HTML
-        run: |
-          curl -sS -X POST http://127.0.0.1:8080/matchup/prematch \
-               -H "Content-Type: application/json" \
-               --data @payload.json > prematch.html
-          test -s prematch.html
-          echo "Prematch HTML generado."
+          # Nombra artefacto con los IDs legibles
+          SAFE_P=$(echo "$PLAYER" | tr ' :/' '__')
+          SAFE_O=$(echo "$OPP"    | tr ' :/' '__')
+          SAFE_T=$(echo "$TNAME"  | tr ' /'  '_')
+          OUT="prematch_${SAFE_T}_${SAFE_P}_vs_${SAFE_O}.html"
+          mv prematch.html "$OUT"
+          echo "GENERATED=$OUT" >> $GITHUB_ENV
+          echo "== Guardado: $OUT =="
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: prematch
-          path: prematch.html
+          name: prematch_html
+          path: ${{ env.GENERATED }}
+          if-no-files-found: error
