@@ -729,6 +729,28 @@ def matchup_features():
 # -----------------------------------------------------------------------------
 # Entrypoint
 # -----------------------------------------------------------------------------
+
+def _delta_sides(delta: float) -> tuple[float, float]:
+    """
+    Devuelve (left%, right%) para una barra divergente centrada en 0.
+    left = ventaja de B (negativo), right = ventaja de A (positivo).
+    Cada lado se escala a 0..50 (% del ancho total).
+    """
+    try:
+        d = max(-1.0, min(1.0, float(delta)))
+    except Exception:
+        d = 0.0
+    left  = max(0.0, -d) * 50.0
+    right = max(0.0,  d) * 50.0
+    return (left, right)
+
+def _pp(x: float | None) -> str:
+    # 'percentage points' (puntos porcentuales)
+    try:
+        return f"{float(x)*100:.1f} pp"
+    except Exception:
+        return "—"
+
 def _fmt_pct(x):
     try: return f"{100.0*float(x):.1f}%"
     except: return "—"
@@ -810,17 +832,15 @@ def matchup_prematch():
     surface = out.get("surface", "hard")
     sbucket = out.get("speed_bucket", "Medium")
 
-    # IDs y SR para métricas NOW
+    # IDs/SR y nombres
     p_id = _ensure_int_id(out["inputs"].get("player_id"))
     o_id = _ensure_int_id(out["inputs"].get("opponent_id"))
     p_sr = out["inputs"].get("player_sr_id")
     o_sr = out["inputs"].get("opponent_sr_id")
-
-    # Nombres de fallback
     p_name_fallback = out["inputs"].get("player")   or "Player A"
     o_name_fallback = out["inputs"].get("opponent") or "Player B"
 
-    # NOW (Sportradar)
+    # NOW
     p_now, p_name_sr = _fetch_now_metrics(p_sr)
     o_now, o_name_sr = _fetch_now_metrics(o_sr)
     p_name = p_name_sr or p_name_fallback
@@ -828,18 +848,23 @@ def matchup_prematch():
     p_flag = _flag_from_cc(p_now.get("country_code")) if p_now else ""
     o_flag = _flag_from_cc(o_now.get("country_code")) if o_now else ""
 
-    # HIST raw winrates (0..1) por dimensión para A y B
+    # HIST raw (as-of)
     years_back = int(out["inputs"].get("years_back", 4))
     p_wr = _hist_wr_asof_bundle(p_id, mon, surface, sbucket, years_back) if p_id else {}
     o_wr = _hist_wr_asof_bundle(o_id, mon, surface, sbucket, years_back) if o_id else {}
 
-    # Deltas ya calculados por tu pipeline
+    # Deltas (A-B) ya computados
     deltas = (out.get("features") or {}).get("deltas") or {}
     d_mon   = float(deltas.get("hist_month",   0.0))
     d_surf  = float(deltas.get("hist_surface", 0.0))
     d_speed = float(deltas.get("hist_speed",   0.0))
 
-    # Flags
+    # Divergentes (izq = B, der = A)
+    L_mon,   R_mon   = _delta_sides(d_mon)
+    L_surf,  R_surf  = _delta_sides(d_surf)
+    L_speed, R_speed = _delta_sides(d_speed)
+
+    # Flags → iconos
     flags = (out.get("features") or {}).get("flags") or {}
     p_icons = []
     o_icons = []
@@ -850,11 +875,11 @@ def matchup_prematch():
     if flags.get("mot_p"):         p_icons.append("⚡")
     if flags.get("mot_o"):         o_icons.append("⚡")
 
-    # Odds decimales implícitas
+    # Odds implícitas
     odds_p = (1.0/prob) if 0<prob<1 else None
     odds_o = (1.0/max(1e-9,1.0-prob)) if 0<prob<1 else None
 
-    # Barras auxiliares (ranking a 300)
+    # Aux: ranking a barra (0..1 mejor)
     def rank_score(r):
         try: r = float(r)
         except: return 0.0
@@ -862,7 +887,7 @@ def matchup_prematch():
     p_r = rank_score(p_now.get("ranking_now", 999))
     o_r = rank_score(o_now.get("ranking_now", 999))
 
-    # YTD / Last10
+    # YTD / Last10 / Inactividad
     p_y = float(p_now.get("winrate_ytd", 0.0))
     o_y = float(o_now.get("winrate_ytd", 0.0))
     p_l10 = float(p_now.get("winrate_last10", 0.0))
@@ -870,119 +895,172 @@ def matchup_prematch():
     p_inact = max(0.0, min(1.0, float(p_now.get("days_inactive",0))/60.0))
     o_inact = max(0.0, min(1.0, float(o_now.get("days_inactive",0))/60.0))
 
-    # HTML
+    # HTML (prob bi-color + deltas divergentes)
     html = f"""<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Prematch — {p_name} vs {o_name}</title>
 <style>
-body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:22px;color:#111}}
-.card{{border:1px solid #eee;border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.04)}}
+body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:22px;color:#111;background:#0f172a}}
+.card{{border:1px solid #1f2937;border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.4);background:#111827;color:#e5e7eb}}
 .grid{{display:grid;grid-template-columns:1fr 140px 1fr;gap:16px;align-items:center}}
 .name{{font-weight:700;font-size:18px}}
-.small{{font-size:12px;color:#666}}
-.label{{width:120px;color:#444;font-size:13px}}
+.small{{font-size:12px;color:#94a3b8}}
+.label{{width:120px;color:#cbd5e1;font-size:13px}}
 .row{{display:flex;align-items:center;gap:8px;margin:6px 0}}
-.bar{{flex:1;background:#f0f0f0;border-radius:999px;overflow:hidden;height:10px}}
-.fillP{{background:#0ea5e9;height:100%}}
-.fillO{{background:#ef4444;height:100%}}
+.bar{{flex:1;background:#0b1220;border-radius:999px;overflow:hidden;height:10px}}
+.fillP{{background:#22c55e;height:100%}}
+.fillO{{background:#f97316;height:100%}}
 .center{{text-align:center}}
-.badge{{display:inline-block;padding:4px 8px;border-radius:999px;background:#f5f5f5;font-size:12px}}
-.meta{{color:#666;font-size:12px}}
+.badge{{display:inline-block;padding:4px 8px;border-radius:999px;background:#0b1220;color:#e5e7eb;font-size:12px}}
+.meta{{color:#94a3b8;font-size:12px}}
 .section{{margin-top:14px}}
-hr{{border:none;border-top:1px solid #eee;margin:14px 0}}
-.probwrap{{height:16px;border-radius:999px;background:linear-gradient(90deg,#ef4444 0%,#f59e0b 50%,#0ea5e9 100%);position:relative}}
-.probfill{{height:100%;background:rgba(255,255,255,.6);}}
-.icons{{font-size:16px;opacity:.9}}
-.kv{{color:#555;font-size:13px}}
+hr{{border:none;border-top:1px solid #1f2937;margin:14px 0}}
+
+.probcard{{border:1px solid #1f2937;border-radius:12px;padding:12px;background:#0b1220;margin-top:8px}}
+.probrow{{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}}
+.probstrip{{display:flex;height:12px;border-radius:999px;overflow:hidden;background:#0f172a}}
+.probA{{background:#22c55e;height:100%}}
+.probB{{background:#f97316;height:100%}}
+
+.deltaWrap{{display:grid;grid-template-columns:1fr 1fr;gap:2px;align-items:center}}
+.deltaSide{{height:10px;background:#0b1220;border-radius:999px;overflow:hidden;position:relative}}
+.deltaSide .neg{{background:#ef4444;height:100%}}
+.deltaSide .pos{{background:#22c55e;height:100%}}
+.deltaRow{{display:grid;grid-template-columns:120px 1fr 70px;gap:10px;align-items:center;margin:6px 0}}
+
+.kv{{color:#cbd5e1;font-size:13px}}
+.icons{{font-size:16px;opacity:.95}}
 </style>
 </head>
 <body>
 <div class="card">
   <div class="meta">{tname} · {surface} · {sbucket}</div>
-  <div class="grid" style="margin-top:8px">
-    <div class="name">{p_flag+' ' if p_flag else ''}{p_name} <span class="icons">{' '.join(p_icons)}</span></div>
-    <div class="center">
-      <div class="badge">Prob A: <b>{prob:.3f}</b></div>
-      <div class="small">Cuota A: {f"{odds_p:.2f}" if odds_p else "—"} · Cuota B: {f"{odds_o:.2f}" if odds_o else "—"}</div>
-      <div class="probwrap" title="Probabilidad A">
-        <div class="probfill" style="width:{prob*100:.1f}%"></div>
-      </div>
+
+  <!-- Cabecera + Probabilidad bi-color -->
+  <div class="probcard">
+    <div class="probrow">
+      <div class="name">{p_flag+' ' if p_flag else ''}{p_name} <span class="icons">{' '.join(p_icons)}</span></div>
+      <div class="name" style="text-align:right;">{o_name} {o_flag if o_flag else ''} <span class="icons">{' '.join(o_icons)}</span></div>
     </div>
-    <div class="name" style="text-align:right;">{o_name} {o_flag if o_flag else ''} <span class="icons">{' '.join(o_icons)}</span></div>
-
-    <!-- Ranking -->
-    <div class="row"><div class="label">Ranking</div>
-      <div class="bar"><div class="fillP" style="{_style_bar(p_r)}"></div></div>
-      <div class="small">{p_now.get('ranking_now','—')}</div></div>
-    <div></div>
-    <div class="row"><div class="small" style="text-align:right;">{o_now.get('ranking_now','—')}</div>
-      <div class="bar"><div class="fillO" style="{_style_bar(o_r)}"></div></div>
-      <div class="label" style="text-align:right;">Ranking</div></div>
-
-    <!-- YTD -->
-    <div class="row"><div class="label">YTD WR</div>
-      <div class="bar"><div class="fillP" style="{_style_bar(p_y)}"></div></div>
-      <div class="small">{_fmt_pct(p_y)}</div></div>
-    <div></div>
-    <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_y)}</div>
-      <div class="bar"><div class="fillO" style="{_style_bar(o_y)}"></div></div>
-      <div class="label" style="text-align:right;">YTD WR</div></div>
-
-    <!-- Last 10 -->
-    <div class="row"><div class="label">Last 10 WR</div>
-      <div class="bar"><div class="fillP" style="{_style_bar(p_l10)}"></div></div>
-      <div class="small">{_fmt_pct(p_l10)}</div></div>
-    <div></div>
-    <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_l10)}</div>
-      <div class="bar"><div class="fillO" style="{_style_bar(o_l10)}"></div></div>
-      <div class="label" style="text-align:right;">Last 10 WR</div></div>
-
-    <!-- Inactividad -->
-    <div class="row"><div class="label">Inactividad</div>
-      <div class="bar"><div class="fillP" style="{_style_bar(p_inact)}"></div></div>
-      <div class="small">{int(p_now.get('days_inactive',0))} d</div></div>
-    <div></div>
-    <div class="row"><div class="small" style="text-align:right;">{int(o_now.get('days_inactive',0))} d</div>
-      <div class="bar"><div class="fillO" style="{_style_bar(o_inact)}"></div></div>
-      <div class="label" style="text-align:right;">Inactividad</div></div>
+    <div class="probstrip" title="Probabilidad de {p_name}">
+      <div class="probA" style="width:{prob*100:.1f}%"></div>
+      <div class="probB" style="width:{(1.0-prob)*100:.1f}%"></div>
+    </div>
+    <div class="probrow small">
+      <div><b>{prob*100:.1f}%</b></div>
+      <div><b>{(1-prob)*100:.1f}%</b></div>
+    </div>
+    <div class="small">Cuotas implícitas — A: {f"{1/prob:.2f}" if 0<prob<1 else "—"} · B: {f"{1/(1-prob):.2f}" if 0<prob<1 else "—"}</div>
   </div>
 
+  <!-- NOW -->
   <div class="section">
-    <h2>Histórico (as-of, {years_back}y)</h2>
-    <div class="row"><div class="label">Mes</div>
-      <div class="bar"><div class="fillP" style="{_style_bar(p_wr.get('wr_month',0.0))}"></div></div>
-      <div class="small">{_fmt_pct(p_wr.get('wr_month'))}</div></div>
-    <div></div>
-    <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_wr.get('wr_month'))}</div>
-      <div class="bar"><div class="fillO" style="{_style_bar(o_wr.get('wr_month',0.0))}"></div></div>
-      <div class="label" style="text-align:right;">Mes</div></div>
+    <h2 style="margin:8px 0 6px 0;">Forma actual</h2>
+    <!-- Ranking -->
+    <div class="grid">
+      <div class="row"><div class="label">Ranking</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_r)}"></div></div>
+        <div class="small">{p_now.get('ranking_now','—')}</div></div>
+      <div></div>
+      <div class="row"><div class="small" style="text-align:right;">{o_now.get('ranking_now','—')}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_r)}"></div></div>
+        <div class="label" style="text-align:right;">Ranking</div></div>
 
-    <div class="row"><div class="label">Superficie</div>
-      <div class="bar"><div class="fillP" style="{_style_bar(p_wr.get('wr_surface',0.0))}"></div></div>
-      <div class="small">{_fmt_pct(p_wr.get('wr_surface'))}</div></div>
-    <div></div>
-    <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_wr.get('wr_surface'))}</div>
-      <div class="bar"><div class="fillO" style="{_style_bar(o_wr.get('wr_surface',0.0))}"></div></div>
-      <div class="label" style="text-align:right;">Superficie</div></div>
+      <!-- YTD -->
+      <div class="row"><div class="label">YTD WR</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_y)}"></div></div>
+        <div class="small">{_fmt_pct(p_y)}</div></div>
+      <div></div>
+      <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_y)}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_y)}"></div></div>
+        <div class="label" style="text-align:right;">YTD WR</div></div>
 
-    <div class="row"><div class="label">Velocidad</div>
-      <div class="bar"><div class="fillP" style="{_style_bar(p_wr.get('wr_speed',0.0))}"></div></div>
-      <div class="small">{_fmt_pct(p_wr.get('wr_speed'))}</div></div>
-    <div></div>
-    <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_wr.get('wr_speed'))}</div>
-      <div class="bar"><div class="fillO" style="{_style_bar(o_wr.get('wr_speed',0.0))}"></div></div>
-      <div class="label" style="text-align:right;">Velocidad</div></div>
+      <!-- Last 10 -->
+      <div class="row"><div class="label">Last 10 WR</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_l10)}"></div></div>
+        <div class="small">{_fmt_pct(p_l10)}</div></div>
+      <div></div>
+      <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_l10)}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_l10)}"></div></div>
+        <div class="label" style="text-align:right;">Last 10 WR</div></div>
 
-    <div class="small" style="margin-top:6px;">Señales Δ · Mes: {d_mon:+.3f} · Superficie: {d_surf:+.3f} · Velocidad: {d_speed:+.3f}</div>
+      <!-- Inactividad -->
+      <div class="row"><div class="label">Inactividad</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_inact)}"></div></div>
+        <div class="small">{int(p_now.get('days_inactive',0))} d</div></div>
+      <div></div>
+      <div class="row"><div class="small" style="text-align:right;">{int(o_now.get('days_inactive',0))} d</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_inact)}"></div></div>
+        <div class="label" style="text-align:right;">Inactividad</div></div>
+    </div>
+  </div>
+
+  <!-- HIST: barras crudas + Δ divergente -->
+  <div class="section">
+    <h2 style="margin:8px 0 6px 0;">Histórico as-of ({years_back}y)</h2>
+
+    <!-- Winrates crudos (A/B) -->
+    <div class="grid">
+      <div class="row"><div class="label">Mes</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_wr.get('wr_month',0.0))}"></div></div>
+        <div class="small">{_fmt_pct(p_wr.get('wr_month'))}</div></div>
+      <div></div>
+      <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_wr.get('wr_month'))}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_wr.get('wr_month',0.0))}"></div></div>
+        <div class="label" style="text-align:right;">Mes</div></div>
+
+      <div class="row"><div class="label">Superficie</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_wr.get('wr_surface',0.0))}"></div></div>
+        <div class="small">{_fmt_pct(p_wr.get('wr_surface'))}</div></div>
+      <div></div>
+      <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_wr.get('wr_surface'))}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_wr.get('wr_surface',0.0))}"></div></div>
+        <div class="label" style="text-align:right;">Superficie</div></div>
+
+      <div class="row"><div class="label">Velocidad</div>
+        <div class="bar"><div class="fillP" style="{_style_bar(p_wr.get('wr_speed',0.0))}"></div></div>
+        <div class="small">{_fmt_pct(p_wr.get('wr_speed'))}</div></div>
+      <div></div>
+      <div class="row"><div class="small" style="text-align:right;">{_fmt_pct(o_wr.get('wr_speed'))}</div>
+        <div class="bar"><div class="fillO" style="{_style_bar(o_wr.get('wr_speed',0.0))}"></div></div>
+        <div class="label" style="text-align:right;">Velocidad</div></div>
+    </div>
+
+    <!-- Deltas divergentes (centrados en 0) -->
+    <div class="deltaRow">
+      <div class="label">Δ Mes</div>
+      <div class="deltaWrap">
+        <div class="deltaSide"><div class="neg" style="width:{L_mon:.1f}%"></div></div>
+        <div class="deltaSide"><div class="pos" style="width:{R_mon:.1f}%"></div></div>
+      </div>
+      <div class="kv">{_pp(d_mon)}</div>
+    </div>
+    <div class="deltaRow">
+      <div class="label">Δ Superficie</div>
+      <div class="deltaWrap">
+        <div class="deltaSide"><div class="neg" style="width:{L_surf:.1f}%"></div></div>
+        <div class="deltaSide"><div class="pos" style="width:{R_surf:.1f}%"></div></div>
+      </div>
+      <div class="kv">{_pp(d_surf)}</div>
+    </div>
+    <div class="deltaRow">
+      <div class="label">Δ Velocidad</div>
+      <div class="deltaWrap">
+        <div class="deltaSide"><div class="neg" style="width:{L_speed:.1f}%"></div></div>
+        <div class="deltaSide"><div class="pos" style="width:{R_speed:.1f}%"></div></div>
+      </div>
+      <div class="kv">{_pp(d_speed)}</div>
+    </div>
   </div>
 
   <hr/>
-  <div class="small">Fuente: Hist (Supabase) + Now (Sportradar). Prob A={prob:.3f}.</div>
+  <div class="small">Δ = diferencia de winrates (A − B) en puntos porcentuales. Prob A={prob:.3f}.</div>
 </div>
 </body></html>
 """
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
 
 
 # -----------------------------------------------------------------------------
@@ -991,6 +1069,7 @@ hr{{border:none;border-top:1px solid #eee;margin:14px 0}}
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
