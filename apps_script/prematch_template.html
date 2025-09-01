@@ -150,8 +150,13 @@ function buildIconChips(side, resp){
 }
 
 function renderPrematch(resp){
-  const aName = (resp.inputs?.player ?? resp.inputs?.player_sr_id ?? 'Player A');
-  const bName = (resp.inputs?.opponent ?? resp.inputs?.opponent_sr_id ?? 'Player B');
+// ANTES
+// const aName = (resp.inputs?.player ?? resp.inputs?.player_sr_id ?? 'Player A');
+// const bName = (resp.inputs?.opponent ?? resp.inputs?.opponent_sr_id ?? 'Player B');
+
+// DESPUÉS (preferimos nombres bonitos si existen)
+  const aName = resp.extras?.display_p ?? resp.inputs?.player ?? resp.inputs?.player_sr_id ?? 'Player A';
+  const bName = resp.extras?.display_o ?? resp.inputs?.opponent ?? resp.inputs?.opponent_sr_id ?? 'Player B';
   const pA = resp.prob_player ?? 0.5;
   const pB = 1 - pA;
 
