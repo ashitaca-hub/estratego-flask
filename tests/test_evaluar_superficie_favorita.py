@@ -10,20 +10,24 @@ class MockResp:
     def __init__(self, data):
         self.status_code = 200
         self._data = data
+        self.headers = {}
 
     def json(self):
         return self._data
 
+    def raise_for_status(self):
+        pass
+
 
 def test_evaluar_includes_superficie_favorita(monkeypatch):
-    def mock_get(url, headers=None):
+    def mock_get(url, timeout=None, headers=None):
         return MockResp({})
 
     monkeypatch.setattr(main.requests, "get", mock_get)
     monkeypatch.setattr(
         main,
         "obtener_estadisticas_jugador",
-        lambda pid: {
+        lambda pid, year=None, perfil=None: {
             "ranking": 1,
             "victorias_totales": 0,
             "partidos_totales": 0,
@@ -36,7 +40,7 @@ def test_evaluar_includes_superficie_favorita(monkeypatch):
     monkeypatch.setattr(
         main,
         "calcular_superficie_favorita",
-        lambda pid: ("clay", 70.0),
+        lambda pid, perfil=None: ("clay", 70.0),
     )
     monkeypatch.setattr(
         main,

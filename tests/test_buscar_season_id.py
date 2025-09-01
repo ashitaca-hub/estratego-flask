@@ -9,6 +9,8 @@ import main
 class MockResp:
     def __init__(self, data):
         self._data = data
+        self.status_code = 200
+        self.headers = {}
 
     def json(self):
         return self._data
@@ -24,7 +26,7 @@ def test_buscar_season_id_por_nombre_con_ano(monkeypatch):
         ]
     }
 
-    def mock_get(url, headers, timeout):
+    def mock_get(url, headers=None, timeout=None):
         return MockResp(sample)
 
     monkeypatch.setattr(main.requests, "get", mock_get)
@@ -41,7 +43,7 @@ def test_buscar_season_id_por_nombre_mas_reciente(monkeypatch):
         ]
     }
 
-    def mock_get(url, headers, timeout):
+    def mock_get(url, headers=None, timeout=None):
         return MockResp(sample)
 
     monkeypatch.setattr(main.requests, "get", mock_get)
@@ -56,7 +58,7 @@ def test_buscar_season_id_por_nombre_not_found(monkeypatch):
         ]
     }
 
-    def mock_get(url, headers, timeout):
+    def mock_get(url, headers=None, timeout=None):
         return MockResp(sample)
 
     monkeypatch.setattr(main.requests, "get", mock_get)
