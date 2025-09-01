@@ -732,18 +732,18 @@ def matchup_features():
 # -----------------------------------------------------------------------------
 
 
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _json_for_js(obj: dict) -> str:
-    # JSON seguro para incrustar en <script> (evita </script> accidental)
     s = json.dumps(obj, ensure_ascii=False)
-    return s.replace("</", "<\\/")
+    return s.replace("</", "<\\/")  # evita cerrar <script> por accidente
 
 def _render_prematch_with_template(resp_dict: dict) -> str | None:
     """
-    Carga apps_script/prematch_template.html (o el indicado por PREMATCH_TEMPLATE)
+    Carga apps_script/prematch_template.html (o la ruta de PREMATCH_TEMPLATE),
     e inyecta:  const resp = {...};
-    Si no encuentra el template, devuelve None para que el caller haga fallback.
     """
     tpl_path = os.environ.get(
         "PREMATCH_TEMPLATE",
@@ -756,25 +756,36 @@ def _render_prematch_with_template(resp_dict: dict) -> str | None:
         return None
 
     js = f"const resp = {_json_for_js(resp_dict)};"
-    # Si el template tiene marcador // const resp = {...}, lo sustituimos
     if re.search(r"//\s*const\s+resp\s*=", tpl):
-        tpl = re.sub(
-            r"//\s*const\s+resp\s*=\s*\{[\s\S]*?\};?",
-            js,
-            tpl,
-            count=1
-        )
+        tpl = re.sub(r"//\s*const\s+resp\s*=\s*\{[\s\S]*?\};?", js, tpl, count=1)
     else:
-        # Si no hay marcador, inyectamos un <script> con resp justo antes de </head> o </body>
         if "</head>" in tpl:
             tpl = tpl.replace("</head>", f"<script>{js}</script>\n</head>", 1)
         elif "</body>" in tpl:
             tpl = tpl.replace("</body>", f"<script>{js}</script>\n</body>", 1)
         else:
-            # Como último recurso: lo añadimos al final
             tpl = tpl + f"\n<script>{js}</script>\n"
-
     return tpl
+
+def _as_dict(x):
+    """Convierte lo que devuelva tu lógica (/matchup) a dict."""
+    from flask import Response as FlaskResp
+    if isinstance(x, FlaskResp):
+        try:
+            return x.get_json(force=True) or {}
+        except Exception:
+            return {}
+    if isinstance(x, tuple):
+        return _as_dict(x[0])
+    if isinstance(x, dict):
+        return x
+    if isinstance(x, str):
+        try:
+            return json.loads(x)
+        except Exception:
+            return {}
+    return {}
+# --- fin helpers ---
 
 def _delta_sides(delta: float) -> tuple[float, float]:
     """
@@ -868,26 +879,33 @@ def _style_bar(value01: float) -> str:
 
 @app.post("/matchup/prematch")
 def prematch_html():
-    payload = request.get_json(force=True) or {}
-    # 1) Resuelve inputs y calcula el mismo resp_json que usas para /matchup
-    resp_json = handle_matchup(payload)  # <- tu función existente que arma la respuesta JSON
+    payload = request.get_json(silent=True) or {}
 
-    # 2) Intento con template externo
-    html = _render_prematch_with_template(resp_json)
-    if html is not None:
-        return Response(html, mimetype="text/html; charset=utf-8", status=200)
+    # 1) Calcula el mismo dict que devuelves en /matchup (JSON)
+    try:
+        resp_json = handle_matchup(payload)  # <-- usa tu función real
+    except NameError:
+        # Si no existe ese nombre en tu código, devuelve algo razonable
+        resp_json = {"ok": False, "error": "compute function not wired"}
 
-    # 3) Fallback (por si falta el template): HTML mínimo embebido (tu versión actual)
-    #    — si ya tienes un fallback, déjalo tal cual; este es un ejemplo:
-    minimal = f"""<!doctype html>
+    resp_dict = _as_dict(resp_json)
+
+    # 2) Intenta usar el template externo
+    html = _render_prematch_with_template(resp_dict)
+    if html is None:
+        # 3) Fallback: siempre HTML (aunque sea simple) para que el workflow no falle
+        html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Prematch</title></head>
-<body><pre id="json"></pre>
+<body>
+<pre id="json"></pre>
 <script>
-const resp = {_json_for_js(resp_json)};
+const resp = {_json_for_js(resp_dict)};
 document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
 </script>
 </body></html>"""
-    return Response(minimal, mimetype="text/html; charset=utf-8", status=200)
+
+    return Response(html, mimetype="text/html; charset=utf-8", status=200)
+
 
 
 
@@ -898,6 +916,7 @@ document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
