@@ -7,8 +7,14 @@ import psycopg2
 import requests
 from typing import Any, Dict, Optional
 
-
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
+    
 log = logging.getLogger("supabase_fs")
+
+
 
 # === Config Supabase (service role recomendado para backend) ===
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -332,15 +338,72 @@ except Exception:
 
 DISABLE_DB_CACHE = str(os.environ.get("DISABLE_DB_CACHE", "")).lower() in ("1","true","yes")
 
-def _pg_conn_or_env(conn=None):
-    if conn is not None:
-        return conn, False
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL no está definido")
-    if psycopg2 is None:
-        raise RuntimeError("psycopg2 no instalado; caché deshabilitada")
-    return psycopg2.connect(url), True
+def _pg_conn_or_env(existing=None):
+    if existing: return existing, False
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn or psycopg2 is None:
+        raise RuntimeError("DB no disponible (psycopg2 o DATABASE_URL)")
+    return psycopg2.connect(dsn), True
+
+def get_player_meta(pid_int=None, sr_id=None, conn=None):
+    """
+    Devuelve: {name, country_code, rank, ytd_wr, def_points, def_title}
+    - name / country_code: de public.players_lookup (por player_id interno o ext_sportradar_id).
+    - ytd_wr: winrate del año actual en fs_matches_long.
+    - rank/def_*: placeholders (rellénalos si tienes vistas/servicios).
+    """
+    pg, opened = _pg_conn_or_env(conn)
+    out = {"name": None, "country_code": None, "rank": None, "ytd_wr": None,
+           "def_points": None, "def_title": None}
+    try:
+        with pg.cursor() as cur:
+            # 1) Nombre y país desde players_lookup
+            if pid_int is not None:
+                cur.execute("""
+                    SELECT name, country_code
+                    FROM public.players_lookup
+                    WHERE player_id = %s
+                    LIMIT 1
+                """, (pid_int,))
+            elif sr_id:
+                # sr_id viene como 'sr:competitor:XXXX'
+                sr_num = sr_id.split(":")[-1] if ":" in sr_id else sr_id
+                cur.execute("""
+                    SELECT name, country_code
+                    FROM public.players_lookup
+                    WHERE ext_sportradar_id = %s
+                    LIMIT 1
+                """, (sr_num,))
+            row = cur.fetchone()
+            if row:
+                out["name"], out["country_code"] = row[0], row[1]
+
+            # 2) YTD (año actual) en fs_matches_long
+            #    Ten en cuenta que player_id en fs_matches_long es entero interno
+            if pid_int is not None:
+                cur.execute("""
+                    WITH hist AS (
+                      SELECT
+                        CASE WHEN winner_id = player_id THEN 1 ELSE 0 END AS won
+                      FROM public.fs_matches_long
+                      WHERE player_id = %s
+                        AND match_date >= date_trunc('year', current_date)
+                        AND match_date <= current_date
+                    )
+                    SELECT AVG(won::float) FROM hist
+                """, (pid_int,))
+                ytd = cur.fetchone()[0]
+                out["ytd_wr"] = float(ytd) if ytd is not None else None
+
+            # TODO opcional:
+            # 3) Rank actual (si tienes una vista o API para rank en tiempo real)
+            # 4) Puntos a defender (si tienes vista con entradas del torneo actual)
+
+    finally:
+        if opened:
+            pg.close()
+    return out
+
 
 def get_matchup_cache_json(player_id:int, opponent_id:int,
                            tournament_name:str, mon:int,
