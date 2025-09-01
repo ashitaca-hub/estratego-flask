@@ -55,7 +55,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Syntax check
-        run: python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
+        run: |
+          python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
 
       - name: Launch API on 8080 (Flask)
         run: |
@@ -118,22 +119,22 @@ jobs:
           test -f apps_script/prematch_template.html || (echo "Falta apps_script/prematch_template.html" && exit 1)
 
           python - <<'PY'
-import re, json, sys, io, os
-tpl_path = "apps_script/prematch_template.html"
-resp_path = "/tmp/resp.json"
-out_path = "/tmp/prematch.html"
+          import re, json, sys, io, os
+          tpl_path = "apps_script/prematch_template.html"
+          resp_path = "/tmp/resp.json"
+          out_path = "/tmp/prematch.html"
 
-tpl = open(tpl_path, "r", encoding="utf-8").read()
-resp = open(resp_path, "r", encoding="utf-8").read().strip()
-# Inyecta window.resp en el <script id="data-slot">
-out = re.sub(
-    r'<script id="data-slot">.*?</script>',
-    f'<script id="data-slot">window.resp = {resp};</script>',
-    tpl, flags=re.S
-)
-open(out_path, "w", encoding="utf-8").write(out)
-print("OK: generado", out_path)
-PY
+          tpl = open(tpl_path, "r", encoding="utf-8").read()
+          resp = open(resp_path, "r", encoding="utf-8").read().strip()
+          # Inyecta window.resp en el <script id="data-slot">
+          out = re.sub(
+          r'<script id="data-slot">.*?</script>',
+          f'<script id="data-slot">window.resp = {resp};</script>',
+          tpl, flags=re.S
+          )
+          open(out_path, "w", encoding="utf-8").write(out)
+          print("OK: generado", out_path)
+          PY
 
       - name: Upload Prematch HTML
         uses: actions/upload-artifact@v4
