@@ -6,17 +6,17 @@ on:
       player_input:
         description: "Jugador A (sr:competitor:ID o nombre)"
         required: false
-        default: "sr:competitor:225050"  # Jannik Sinner
+        default: "sr:competitor:225050"
       opponent_input:
         description: "Jugador B (sr:competitor:ID o nombre)"
         required: false
-        default: "sr:competitor:407573"  # Carlos Alcaraz
+        default: "sr:competitor:407573"
       tournament_name:
         description: "Nombre del torneo"
         required: false
         default: "US Open"
       month:
-        description: "Mes del torneo (1-12)"
+        description: "Mes (1-12)"
         required: false
         default: "8"
       years_back:
@@ -28,27 +28,24 @@ jobs:
   prematch:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
-      INPUT_PLAYER:   ${{ github.event.inputs.player_input }}
-      INPUT_OPPONENT: ${{ github.event.inputs.opponent_input }}
-      INPUT_TNAME:    ${{ github.event.inputs.tournament_name }}
-      INPUT_MONTH:    ${{ github.event.inputs.month }}
-      INPUT_YEARS:    ${{ github.event.inputs.years_back }}
+      IN_PLAYER:  ${{ github.event.inputs.player_input }}
+      IN_OPP:     ${{ github.event.inputs.opponent_input }}
+      IN_TNAME:   ${{ github.event.inputs.tournament_name }}
+      IN_MONTH:   ${{ github.event.inputs.month }}
+      IN_YEARS:   ${{ github.event.inputs.years_back }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install system deps (jq) and Python deps
+      - name: Install deps (jq + Python)
         run: |
           sudo apt-get update -y
           sudo apt-get install -y jq
@@ -58,7 +55,7 @@ jobs:
         run: |
           python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
 
-      - name: Launch API on 8080 (Flask)
+      - name: Launch API on 8080
         run: |
           set -euo pipefail
           python apps_script/start_api.py main:app &
@@ -72,16 +69,15 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8080/health || (echo "Error: API no responde" && exit 1)
 
-      - name: Build payload for /matchup
+      - name: Build /matchup payload
         run: |
           set -euo pipefail
-          P="${INPUT_PLAYER:-}"
-          O="${INPUT_OPPONENT:-}"
-          T="${INPUT_TNAME:-Cincinnati}"
-          M="${INPUT_MONTH:-8}"
-          Y="${INPUT_YEARS:-4}"
+          P="${IN_PLAYER:-}"
+          O="${IN_OPP:-}"
+          T="${IN_TNAME:-US Open}"
+          M="${IN_MONTH:-8}"
+          Y="${IN_YEARS:-4}"
 
-          # Construye payload: si empieza por "sr:" lo enviamos como *_id, si no como nombre
           jq -n \
             --arg tname "$T" \
             --arg p "$P" \
@@ -99,8 +95,7 @@ jobs:
                | if $osr then {opponent_id:$o} else {opponent:$o} end)
             ' > /tmp/payload.json
 
-          echo "== Payload =="
-          cat /tmp/payload.json | jq .
+          echo "== PAYLOAD ==" && jq . /tmp/payload.json
 
       - name: Call /matchup
         run: |
@@ -110,33 +105,33 @@ jobs:
                -d @/tmp/payload.json \
                -o /tmp/resp.json
 
-          echo "== Respuesta JSON =="
-          cat /tmp/resp.json | jq . >/dev/null || (echo "Error: Respuesta no es JSON válido" && exit 1)
+          echo "== JSON ==" && jq . /tmp/resp.json >/dev/null || (echo "Respuesta no es JSON válido" && exit 1)
 
-      - name: Build Prematch HTML (inject window.resp)
+      - name: Inject window.resp into template
         run: |
           set -euo pipefail
           test -f apps_script/prematch_template.html || (echo "Falta apps_script/prematch_template.html" && exit 1)
 
           python - <<'PY'
-          import re, json, sys, io, os
-          tpl_path = "apps_script/prematch_template.html"
-          resp_path = "/tmp/resp.json"
-          out_path = "/tmp/prematch.html"
-
-          tpl = open(tpl_path, "r", encoding="utf-8").read()
-          resp = open(resp_path, "r", encoding="utf-8").read().strip()
-          # Inyecta window.resp en el <script id="data-slot">
-          out = re.sub(
-          r'<script id="data-slot">.*?</script>',
-          f'<script id="data-slot">window.resp = {resp};</script>',
-          tpl, flags=re.S
-          )
-          open(out_path, "w", encoding="utf-8").write(out)
-          print("OK: generado", out_path)
+          import json, re, sys, io
+          tpl = open("apps_script/prematch_template.html","r",encoding="utf-8").read()
+          data = json.load(open("/tmp/resp.json","r",encoding="utf-8"))
+          js = "window.resp = " + json.dumps(data, ensure_ascii=False) + ";"
+          out = re.sub(r'<script id="data-slot">.*?</script>',
+                       '<script id="data-slot">'+js+'</script>',
+                       tpl, flags=re.S)
+          open("/tmp/prematch.html","w",encoding="utf-8").write(out)
+          print("OK: /tmp/prematch.html")
           PY
 
-      - name: Upload Prematch HTML
+      - name: Verify injection (no demo fallback)
+        run: |
+          set -euo pipefail
+          grep -q "window.resp" /tmp/prematch.html || (echo "No se encontró window.resp en HTML" && exit 1)
+          grep -q "prob_player" /tmp/prematch.html || (echo "No se ve prob_player en HTML" && exit 1)
+          echo "Primeras líneas:"; head -n 40 /tmp/prematch.html
+
+      - name: Upload prematch HTML
         uses: actions/upload-artifact@v4
         with:
           name: prematch_html
