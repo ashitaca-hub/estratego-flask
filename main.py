@@ -721,46 +721,58 @@ def matchup():
     }
     # ===== ENRIQUECER RESPUESTA CON 'extras' PARA PREMATCH =====
 
-def _to_int_or_none(v):
+    def _to_int_or_none(v):
+        try:
+            return int(v) if isinstance(v, (int, str)) and str(v).isdigit() else None
+        except:
+            return None
+
+    extras = {}
+
+    # Identificadores tal como vienen en inputs (interno int o SR string)
+    inp = resp.get("inputs", {})
+    p_int = _to_int_or_none(inp.get("player_id"))
+    o_int = _to_int_or_none(inp.get("opponent_id"))
+    p_sr = (
+        inp.get("player_sr_id")
+        if isinstance(inp.get("player_sr_id"), str)
+        else (inp.get("player_id") if isinstance(inp.get("player_id"), str) else None)
+    )
+    o_sr = (
+        inp.get("opponent_sr_id")
+        if isinstance(inp.get("opponent_sr_id"), str)
+        else (
+            inp.get("opponent_id") if isinstance(inp.get("opponent_id"), str) else None
+        )
+    )
+
     try:
-        return int(v) if isinstance(v, (int, str)) and str(v).isdigit() else None
-    except:
-        return None
+        meta_p = FS.get_player_meta(pid_int=p_int, sr_id=p_sr)
+        meta_o = FS.get_player_meta(pid_int=o_int, sr_id=o_sr)
 
-extras = {}
+        extras.update(
+            {
+                "display_p": meta_p.get("name"),
+                "display_o": meta_o.get("name"),
+                "country_p": meta_p.get("country_code"),
+                "country_o": meta_o.get("country_code"),
+                "ytd_wr_p": meta_p.get("ytd_wr"),  # 0..1
+                "ytd_wr_o": meta_o.get("ytd_wr"),
+                "rank_p": meta_p.get("rank"),  # si está disponible
+                "rank_o": meta_o.get("rank"),
+                # Señales de puntos a defender (opcional, si tienes esa vista)
+                "def_points_p": meta_p.get("def_points"),
+                "def_points_o": meta_o.get("def_points"),
+                "def_title_p": meta_p.get("def_title"),  # 'champ'/'runner'/None
+                "def_title_o": meta_o.get("def_title"),
+            }
+        )
+    except Exception as e:
+        # No rompas el endpoint si falta algo
+        pass
 
-# Identificadores tal como vienen en inputs (interno int o SR string)
-inp = resp.get("inputs", {})
-p_int = _to_int_or_none(inp.get("player_id"))
-o_int = _to_int_or_none(inp.get("opponent_id"))
-p_sr  = inp.get("player_sr_id") if isinstance(inp.get("player_sr_id"), str) else (inp.get("player_id") if isinstance(inp.get("player_id"), str) else None)
-o_sr  = inp.get("opponent_sr_id") if isinstance(inp.get("opponent_sr_id"), str) else (inp.get("opponent_id") if isinstance(inp.get("opponent_id"), str) else None)
-
-try:
-    meta_p = FS.get_player_meta(pid_int=p_int, sr_id=p_sr)
-    meta_o = FS.get_player_meta(pid_int=o_int, sr_id=o_sr)
-
-    extras.update({
-        "display_p": meta_p.get("name"),
-        "display_o": meta_o.get("name"),
-        "country_p": meta_p.get("country_code"),
-        "country_o": meta_o.get("country_code"),
-        "ytd_wr_p":  meta_p.get("ytd_wr"),  # 0..1
-        "ytd_wr_o":  meta_o.get("ytd_wr"),
-        "rank_p":    meta_p.get("rank"),    # si está disponible
-        "rank_o":    meta_o.get("rank"),
-        # Señales de puntos a defender (opcional, si tienes esa vista)
-        "def_points_p": meta_p.get("def_points"),
-        "def_points_o": meta_o.get("def_points"),
-        "def_title_p":  meta_p.get("def_title"),  # 'champ'/'runner'/None
-        "def_title_o":  meta_o.get("def_title"),
-    })
-except Exception as e:
-    # No rompas el endpoint si falta algo
-    pass
-
-resp["extras"] = extras
-# ===== FIN ENRIQUECIMIENTO =====
+    resp["extras"] = extras
+    # ===== FIN ENRIQUECIMIENTO =====
 
     return jsonify(resp), 200
 
