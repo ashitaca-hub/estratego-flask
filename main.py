@@ -46,8 +46,17 @@ def _sr_get(path: str, params: dict[str, Any] | None = None, timeout=15) -> requ
     url = _sr_url(path, params)
     redacted = re.sub(r'api_key=[^&]+', 'api_key=***', url)
     app.logger.info("SR GET %s", redacted)
-    r = requests.get(url, timeout=timeout, headers={"accept": "application/json"})
-    app.logger.info("SR RESP %s (ratelimit-remaining=%s)", r.status_code, r.headers.get("x-ratelimit-remaining"))
+    try:
+        r = requests.get(url, timeout=timeout, headers={"accept": "application/json"})
+        r.raise_for_status()
+    except requests.RequestException:
+        app.logger.exception("SR GET failed %s", redacted)
+        raise
+    app.logger.info(
+        "SR RESP %s (ratelimit-remaining=%s)",
+        r.status_code,
+        r.headers.get("x-ratelimit-remaining"),
+    )
     return r
 
 # -----------------------------------------------------------------------------
