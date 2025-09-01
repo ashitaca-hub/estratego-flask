@@ -69,6 +69,12 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8080/health || (echo "Error: API no responde" && exit 1)
 
+      - name: Show injected script snippet
+        run: |
+          set -euo pipefail
+          sed -n '/<script id="data-slot">/,/<\/script>/p' /tmp/prematch.html | head -n 40
+
+
       - name: Build /matchup payload
         run: |
           set -euo pipefail
