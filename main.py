@@ -1,13 +1,20 @@
 from __future__ import annotations
-from flask import Flask, request, jsonify, Response
+
 from datetime import datetime, timezone
-import os, re, json, logging, urllib.parse, requests
+import json
+import logging
+import os
+import re
+import urllib.parse
 from typing import Any
 
+from flask import Flask, Response, jsonify, request
+import requests
+
 # Servicios/Utilidades
-from services import supabase_fs as FS
 from services import sportradar_now as SR
-from utils.scoring import logistic, clamp, WEIGHTS, ADJUSTS
+from services import supabase_fs as FS
+from utils.scoring import ADJUSTS, WEIGHTS, clamp, logistic
 
 
 # -----------------------------------------------------------------------------
