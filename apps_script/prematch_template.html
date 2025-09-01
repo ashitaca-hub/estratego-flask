@@ -72,19 +72,18 @@
   .legend span{display:inline-block;margin-right:10px}
   .pill{padding:2px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:#0f172a}
 </style>
+
+<!-- El workflow debe inyectar aquí: window.resp = {...JSON de /matchup...}; -->
+<script id="data-slot">
+  // Placeholder: el workflow reemplaza este bloque por:
+  // window.resp = { ... };
+</script>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
     <h1 id="ttl">Prematch</h1>
     <div class="subtitle" id="subttl"></div>
-
-    <!-- El workflow inyecta aquí el JSON de /matchup -->
-    <script>
-      // Reemplaza este objeto en tu workflow con la respuesta real:
-      // const resp = {...}
-    </script>
-
     <div id="prematch"></div>
   </div>
 </div>
@@ -111,7 +110,7 @@ function odds(x){ return (x>0 && x<1) ? (1/x).toFixed(2) : '—'; }
 // bandera emoji desde country code ISO2
 function flagEmoji(cc){
   if(!cc || cc.length!==2) return '🏁';
-  const A = 0x1F1E6; // Regional Indicator Symbol Letter A
+  const A = 0x1F1E6;
   const up = cc.trim().toUpperCase();
   return String.fromCodePoint(A + up.charCodeAt(0)-65, A + up.charCodeAt(1)-65);
 }
@@ -135,7 +134,7 @@ function buildIconChips(side, resp){
 
   // Defiende puntos / Título
   const ptsKey   = side==='p' ? 'def_points_p' : 'def_points_o';
-  const titleKey = side==='p' ? 'def_title_p'  : 'def_title_o'; // 'champ' | 'runner' | null
+  const titleKey = side==='p' ? 'def_title_p'  : 'def_title_o';
   const pts = ex[ptsKey];
   const tit = ex[titleKey];
   if (pts!=null && pts>0){
@@ -147,13 +146,12 @@ function buildIconChips(side, resp){
       chips.push(`<span class="chip" title="Puntos a defender">🎯 ${pts}</span>`);
     }
   }
-
   return chips.join('');
 }
 
 function renderPrematch(resp){
-  const aName = (resp.inputs.player ?? resp.inputs.player_sr_id ?? 'Player A');
-  const bName = (resp.inputs.opponent ?? resp.inputs.opponent_sr_id ?? 'Player B');
+  const aName = (resp.inputs?.player ?? resp.inputs?.player_sr_id ?? 'Player A');
+  const bName = (resp.inputs?.opponent ?? resp.inputs?.opponent_sr_id ?? 'Player B');
   const pA = resp.prob_player ?? 0.5;
   const pB = 1 - pA;
 
@@ -226,26 +224,27 @@ function renderPrematch(resp){
     <span class="pill">YTD: <span style="color:var(--red)">Rojo</span> &lt;50 · Bronce 50–59 · Plata 60–79 · Oro 80–89 · Diamante ≥90</span>
     <span class="pill">Iconos: ⚠️ Cambio superficie · 🏁 Local · 🏆/🥈 Defiende título (+ puntos)</span>
   </div>`;
-  // Pinta pelotas
   const ballA = document.getElementById('ballA');
   const ballB = document.getElementById('ballB');
   if (ballA) ballA.style.setProperty('--pct', (aYTD ?? 0)*100);
   if (ballB) ballB.style.setProperty('--pct', (bYTD ?? 0)*100);
 }
 
-// Si el workflow ya inyectó resp, renderiza. Si no, demo:
-if (typeof resp === 'undefined'){
-  window.resp = {
-    inputs:{player:'Jannik Sinner',opponent:'Alexander Bublik',tournament:{name:'Cincinnati',month:8}},
-    prob_player:0.71, surface:'hard', speed_bucket:'Medium',
-    features:{deltas:{hist_month:0.250,hist_surface:0.250,hist_speed:0.250},
-              flags:{surf_change_p:false,surf_change_o:true,is_local_p:false,is_local_o:true}},
-    extras:{rank_p:4, rank_o:25, ytd_wr_p:0.78, ytd_wr_o:0.58,
-            country_p:'IT', country_o:'KZ',
-            def_points_p:600, def_title_p:'runner', def_points_o:0, def_title_o:null}
-  };
-}
-renderPrematch(resp);
+// Render: usa window.resp si el workflow ya la inyectó; si no, demo.
+(function(){
+  if (!window.resp){
+    window.resp = {
+      inputs:{player:'Jannik Sinner',opponent:'Alexander Bublik',tournament:{name:'Cincinnati',month:8}},
+      prob_player:0.71, surface:'hard', speed_bucket:'Medium',
+      features:{deltas:{hist_month:0.250,hist_surface:0.250,hist_speed:0.250},
+                flags:{surf_change_p:false,surf_change_o:true,is_local_p:false,is_local_o:true}},
+      extras:{rank_p:4, rank_o:25, ytd_wr_p:0.78, ytd_wr_o:0.58,
+              country_p:'IT', country_o:'KZ',
+              def_points_p:600, def_title_p:'runner', def_points_o:0, def_title_o:null}
+    };
+  }
+  renderPrematch(window.resp);
+})();
 </script>
 </body>
 </html>
