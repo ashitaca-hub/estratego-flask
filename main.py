@@ -18,7 +18,8 @@ logging.basicConfig(level=logging.INFO)
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    return jsonify({"error": str(e)}), 500
+    app.logger.exception(e)
+    return jsonify({"error": "Internal server error"}), 500
 
 @app.get("/health")
 def health():
@@ -109,7 +110,8 @@ def evaluar():
             "cambio_superficie": "✔" if cambio_superficie_bool else "✘"
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.exception(e)
+        return jsonify({"error": "Internal server error"}), 500
 
 # -----------------------------------------------------------------------------
 # Helpers Sportradar (perfil, últimos, h2h, etc.)
@@ -357,7 +359,8 @@ def proximos_partidos():
         partidos = obtener_proximos_partidos(season_id)
         return jsonify({"season_id": season_id, "partidos": partidos})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.exception(e)
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route('/proximos_partidos_por_torneo', methods=['POST'])
 def proximos_partidos_por_torneo():
@@ -372,7 +375,8 @@ def proximos_partidos_por_torneo():
         partidos = obtener_proximos_partidos(season_id)
         return jsonify({"season_id": season_id, "partidos": partidos})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.exception(e)
+        return jsonify({"error": "Internal server error"}), 500
 
 def buscar_season_id_por_nombre(torneo_full: str) -> str | None:
     r = _sr_get("seasons.json")
