@@ -3,122 +3,141 @@ name: api-prematch-html
 on:
   workflow_dispatch:
     inputs:
-      player:
-        description: "Jugador A (nombre o sr:competitor:ID)"
+      player_input:
+        description: "Jugador A (sr:competitor:ID o nombre)"
         required: false
-        default: "sr:competitor:225050"
-      opponent:
-        description: "Jugador B (nombre o sr:competitor:ID)"
+        default: "sr:competitor:225050"  # Jannik Sinner
+      opponent_input:
+        description: "Jugador B (sr:competitor:ID o nombre)"
         required: false
-        default: "sr:competitor:407573"
-      tname:
-        description: "Nombre torneo"
+        default: "sr:competitor:407573"  # Carlos Alcaraz
+      tournament_name:
+        description: "Nombre del torneo"
         required: false
-        default: "Cincinnati"
+        default: "US Open"
       month:
-        description: "Mes (1-12)"
+        description: "Mes del torneo (1-12)"
         required: false
         default: "8"
       years_back:
-        description: "Histórico (años)"
+        description: "Histórico (años hacia atrás)"
         required: false
         default: "4"
 
 jobs:
   prematch:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
+      INPUT_PLAYER:   ${{ github.event.inputs.player_input }}
+      INPUT_OPPONENT: ${{ github.event.inputs.opponent_input }}
+      INPUT_TNAME:    ${{ github.event.inputs.tournament_name }}
+      INPUT_MONTH:    ${{ github.event.inputs.month }}
+      INPUT_YEARS:    ${{ github.event.inputs.years_back }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install system deps (jq) and Python deps
         run: |
-          python -m pip install --upgrade pip
+          sudo apt-get update -y
+          sudo apt-get install -y jq
           pip install -r requirements.txt
 
       - name: Syntax check
-        run: |
-          python - <<'PY'
-          import py_compile
-          py_compile.compile('main.py', doraise=True)
-          print("OK: main.py compila")
-          PY
+        run: python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
 
-      - name: Launch API on 8080
-        run: |
-          python apps_script/start_api.py main:app &
-          for i in {1..30}; do
-            sleep 1
-            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
-              echo "API UP"
-              break
-            fi
-          done
-          curl -fsS http://127.0.0.1:8080/health
-
-      - name: Build payload and call /matchup/prematch
-        env:
-          IN_PLAYER:   ${{ github.event.inputs.player }}
-          IN_OPP:      ${{ github.event.inputs.opponent }}
-          IN_TNAME:    ${{ github.event.inputs.tname }}
-          IN_MONTH:    ${{ github.event.inputs.month }}
-          IN_YBACK:    ${{ github.event.inputs.years_back }}
+      - name: Launch API on 8080 (Flask)
         run: |
           set -euo pipefail
+          python apps_script/start_api.py main:app &
+          # Espera a que /health responda
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+              echo "API lista"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/health || (echo "Error: API no responde" && exit 1)
 
-          PLAYER="${IN_PLAYER:-sr:competitor:225050}"
-          OPP="${IN_OPP:-sr:competitor:407573}"
-          TNAME="${IN_TNAME:-Cincinnati}"
-          MONTH="${IN_MONTH:-8}"
-          YB="${IN_YBACK:-4}"
+      - name: Build payload for /matchup
+        run: |
+          set -euo pipefail
+          P="${INPUT_PLAYER:-}"
+          O="${INPUT_OPPONENT:-}"
+          T="${INPUT_TNAME:-Cincinnati}"
+          M="${INPUT_MONTH:-8}"
+          Y="${INPUT_YEARS:-4}"
 
-          # Construye el JSON con strings y convierte dentro de jq (tolera "08", "", etc.)
+          # Construye payload: si empieza por "sr:" lo enviamos como *_id, si no como nombre
           jq -n \
-            --arg p "$PLAYER" \
-            --arg o "$OPP" \
-            --arg t "$TNAME" \
-            --arg m "$MONTH" \
-            --arg yb "$YB" \
-            '{
-              tournament: {
-                name: $t,
-                month: ( ($m|tonumber?) // 8 )
-              },
-              years_back: ( ($yb|tonumber?) // 4 ),
-              player_id: $p,
-              opponent_id: $o
-            }' > payload.json
+            --arg tname "$T" \
+            --arg p "$P" \
+            --arg o "$O" \
+            --argjson mon ${M:-8} \
+            --argjson yb ${Y:-4} \
+            '
+            {
+              tournament:{name:$tname, month:$mon},
+              years_back:$yb
+            }
+            + ( ($p|test("^sr:")) as $psr
+               | if $psr then {player_id:$p} else {player:$p} end)
+            + ( ($o|test("^sr:")) as $osr
+               | if $osr then {opponent_id:$o} else {opponent:$o} end)
+            ' > /tmp/payload.json
 
-          echo "== Payload ==" && cat payload.json | jq .
+          echo "== Payload =="
+          cat /tmp/payload.json | jq .
 
-          curl -sS -X POST "http://127.0.0.1:8080/matchup/prematch" \
+      - name: Call /matchup
+        run: |
+          set -euo pipefail
+          curl -sS -X POST "http://127.0.0.1:8080/matchup" \
                -H "Content-Type: application/json" \
-               --data @payload.json > prematch.html
+               -d @/tmp/payload.json \
+               -o /tmp/resp.json
 
-          grep -qi "<html" prematch.html || { echo "::error::Respuesta no es HTML"; exit 1; }
+          echo "== Respuesta JSON =="
+          cat /tmp/resp.json | jq . >/dev/null || (echo "Error: Respuesta no es JSON válido" && exit 1)
 
-          SAFE_P=$(echo "$PLAYER" | tr ' :/' '__')
-          SAFE_O=$(echo "$OPP"    | tr ' :/' '__')
-          SAFE_T=$(echo "$TNAME"  | tr ' /'  '_')
-          OUT="prematch_${SAFE_T}_${SAFE_P}_vs_${SAFE_O}.html"
-          mv prematch.html "$OUT"
-          echo "GENERATED=$OUT" >> $GITHUB_ENV
-          echo "== Guardado: $OUT =="
+      - name: Build Prematch HTML (inject window.resp)
+        run: |
+          set -euo pipefail
+          test -f apps_script/prematch_template.html || (echo "Falta apps_script/prematch_template.html" && exit 1)
 
+          python - <<'PY'
+import re, json, sys, io, os
+tpl_path = "apps_script/prematch_template.html"
+resp_path = "/tmp/resp.json"
+out_path = "/tmp/prematch.html"
 
-      - name: Upload artifact
+tpl = open(tpl_path, "r", encoding="utf-8").read()
+resp = open(resp_path, "r", encoding="utf-8").read().strip()
+# Inyecta window.resp en el <script id="data-slot">
+out = re.sub(
+    r'<script id="data-slot">.*?</script>',
+    f'<script id="data-slot">window.resp = {resp};</script>',
+    tpl, flags=re.S
+)
+open(out_path, "w", encoding="utf-8").write(out)
+print("OK: generado", out_path)
+PY
+
+      - name: Upload Prematch HTML
         uses: actions/upload-artifact@v4
         with:
           name: prematch_html
-          path: ${{ env.GENERATED }}
+          path: /tmp/prematch.html
           if-no-files-found: error
