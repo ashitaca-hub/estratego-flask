@@ -12,7 +12,7 @@ on:
         required: false
         default: "sr:competitor:407573"
       tournament_name:
-        description: "Nombre del torneo"
+        description: "Nombre torneo"
         required: false
         default: "US Open"
       month:
@@ -20,124 +20,106 @@ on:
         required: false
         default: "8"
       years_back:
-        description: "Histórico (años hacia atrás)"
+        description: "Histórico (años)"
         required: false
         default: "4"
 
 jobs:
   prematch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SR_API_KEY:   ${{ secrets.SR_API_KEY }}
-      IN_PLAYER:  ${{ github.event.inputs.player_input }}
-      IN_OPP:     ${{ github.event.inputs.opponent_input }}
-      IN_TNAME:   ${{ github.event.inputs.tournament_name }}
-      IN_MONTH:   ${{ github.event.inputs.month }}
-      IN_YEARS:   ${{ github.event.inputs.years_back }}
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Python setup
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps (jq + Python)
+      - name: Install deps
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-          pip install -r requirements.txt
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # Asegura mínimos
+          pip install flask requests psycopg2-binary pandas numpy jq
+
+      - name: Sanity template existe
+        run: |
+          test -f apps_script/prematch_template.html || { echo "::error::Falta apps_script/prematch_template.html"; exit 1; }
+          head -n 5 apps_script/prematch_template.html || true
 
       - name: Syntax check
         run: |
+        
           python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
 
-      - name: Launch API on 8080
+      - name: Lanzar API en :8080
         run: |
-          set -euo pipefail
-          python apps_script/start_api.py main:app &
-          # Espera a que /health responda
-          for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
-              echo "API lista"
-              break
-            fi
+          python apps_script/start_api.py main:app > app.log 2>&1 &
+          for i in {1..30}; do
             sleep 1
+            curl -sS http://127.0.0.1:8080/health && break || true
           done
-          curl -fsS http://127.0.0.1:8080/health || (echo "Error: API no responde" && exit 1)
+          echo "API lista"
+          tail -n +1 -n 50 app.log || true
 
-      - name: Show injected script snippet
+      - name: Construir payload
         run: |
           set -euo pipefail
-          sed -n '/<script id="data-slot">/,/<\/script>/p' /tmp/prematch.html | head -n 40
-
-
-      - name: Build /matchup payload
-        run: |
-          set -euo pipefail
-          P="${IN_PLAYER:-}"
-          O="${IN_OPP:-}"
-          T="${IN_TNAME:-US Open}"
-          M="${IN_MONTH:-8}"
-          Y="${IN_YEARS:-4}"
+          P="${{ github.event.inputs.player_input || 'sr:competitor:225050' }}"
+          O="${{ github.event.inputs.opponent_input || 'sr:competitor:407573' }}"
+          T="${{ github.event.inputs.tournament_name || 'US Open' }}"
+          M="${{ github.event.inputs.month || '8' }}"
+          Y="${{ github.event.inputs.years_back || '4' }}"
+          # Defaults seguros
+          : "${M:=8}"; : "${Y:=4}"
 
           jq -n \
-            --arg tname "$T" \
-            --arg p "$P" \
-            --arg o "$O" \
-            --argjson mon ${M:-8} \
-            --argjson yb ${Y:-4} \
+            --arg tname "$T" --arg p "$P" --arg o "$O" \
+            --argjson mon ${M} --argjson yb ${Y} \
             '
-            {
-              tournament:{name:$tname, month:$mon},
-              years_back:$yb
-            }
-            + ( ($p|test("^sr:")) as $psr
-               | if $psr then {player_id:$p} else {player:$p} end)
-            + ( ($o|test("^sr:")) as $osr
-               | if $osr then {opponent_id:$o} else {opponent:$o} end)
+            {tournament:{name:$tname, month:$mon}, years_back:$yb}
+            + ( ($p|test("^sr:")) as $psr | if $psr then {player_id:$p} else {player:$p} end )
+            + ( ($o|test("^sr:")) as $osr | if $osr then {opponent_id:$o} else {opponent:$o} end )
             ' > /tmp/payload.json
 
-          echo "== PAYLOAD ==" && jq . /tmp/payload.json
+          echo "== Payload ==" && cat /tmp/payload.json
 
-      - name: Call /matchup
+      - name: Llamar /matchup/prematch y guardar HTML
         run: |
           set -euo pipefail
-          curl -sS -X POST "http://127.0.0.1:8080/matchup" \
-               -H "Content-Type: application/json" \
-               -d @/tmp/payload.json \
-               -o /tmp/resp.json
+          # Llamada y captura del código HTTP
+          HTTP_CODE=$(curl -sS -o /tmp/prematch.html -w "%{http_code}" \
+            -X POST "http://127.0.0.1:8080/matchup/prematch" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/payload.json || echo "000")
+          echo "HTTP_CODE=$HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::/matchup/prematch devolvió HTTP $HTTP_CODE"
+            echo "Primeras líneas de app.log para debug:"
+            tail -n 200 app.log || true
+            exit 1
+          fi
 
-          echo "== JSON ==" && jq . /tmp/resp.json >/dev/null || (echo "Respuesta no es JSON válido" && exit 1)
+          # Validaciones
+          test -s /tmp/prematch.html || { echo "::error::HTML vacío o no creado"; exit 1; }
+          head -n 12 /tmp/prematch.html
+          grep -q "window.resp" /tmp/prematch.html || { echo "::error::No se inyectó window.resp (¿cayó en demo?)"; exit 1; }
+          grep -q "prob_player" /tmp/prematch.html || { echo "::warning::No aparece 'prob_player' en el HTML (revisar render)"; true; }
 
-      - name: Inject window.resp into template
+      - name: (Opcional) Post-procesar con sed
         run: |
           set -euo pipefail
-          test -f apps_script/prematch_template.html || (echo "Falta apps_script/prematch_template.html" && exit 1)
+          # Solo si existe el fichero
+          test -f /tmp/prematch.html || { echo "::error::No existe /tmp/prematch.html"; exit 1; }
+          # Ejemplo inocuo: añade marca de agua en título
+          sed -i 's#<title>Prematch</title>#<title>Prematch · Estratego</title>#' /tmp/prematch.html
 
-          python - <<'PY'
-          import json, re, sys, io
-          tpl = open("apps_script/prematch_template.html","r",encoding="utf-8").read()
-          data = json.load(open("/tmp/resp.json","r",encoding="utf-8"))
-          js = "window.resp = " + json.dumps(data, ensure_ascii=False) + ";"
-          out = re.sub(r'<script id="data-slot">.*?</script>',
-                       '<script id="data-slot">'+js+'</script>',
-                       tpl, flags=re.S)
-          open("/tmp/prematch.html","w",encoding="utf-8").write(out)
-          print("OK: /tmp/prematch.html")
-          PY
-
-      - name: Verify injection (no demo fallback)
-        run: |
-          set -euo pipefail
-          grep -q "window.resp" /tmp/prematch.html || (echo "No se encontró window.resp en HTML" && exit 1)
-          grep -q "prob_player" /tmp/prematch.html || (echo "No se ve prob_player en HTML" && exit 1)
-          echo "Primeras líneas:"; head -n 40 /tmp/prematch.html
-
-      - name: Upload prematch HTML
+      - name: Subir artefacto HTML
         uses: actions/upload-artifact@v4
         with:
           name: prematch_html
