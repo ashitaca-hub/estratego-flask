@@ -10,9 +10,13 @@ class MockResp:
     def __init__(self, data):
         self.status_code = 200
         self._data = data
+        self.headers = {}
 
     def json(self):
         return self._data
+
+    def raise_for_status(self):
+        pass
 
 
 def test_viene_de_cambio_de_superficie_true(monkeypatch):
@@ -26,7 +30,7 @@ def test_viene_de_cambio_de_superficie_true(monkeypatch):
         ]
     }
 
-    def mock_get(url, headers):
+    def mock_get(url, headers=None, timeout=None):
         return MockResp(sample)
 
     monkeypatch.setattr(main.requests, "get", mock_get)
@@ -45,7 +49,7 @@ def test_viene_de_cambio_de_superficie_false(monkeypatch):
         ]
     }
 
-    def mock_get(url, headers):
+    def mock_get(url, headers=None, timeout=None):
         return MockResp(sample)
 
     monkeypatch.setattr(main.requests, "get", mock_get)

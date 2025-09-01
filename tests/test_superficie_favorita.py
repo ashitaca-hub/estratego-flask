@@ -10,9 +10,13 @@ class MockResp:
     def __init__(self, data):
         self.status_code = 200
         self._data = data
+        self.headers = {}
 
     def json(self):
         return self._data
+
+    def raise_for_status(self):
+        pass
 
 
 def test_calcular_superficie_favorita(monkeypatch):
@@ -28,7 +32,7 @@ def test_calcular_superficie_favorita(monkeypatch):
         ]
     }
 
-    def mock_get(url):
+    def mock_get(url, timeout=None, headers=None):
         return MockResp(sample)
 
     monkeypatch.setattr(main.requests, "get", mock_get)
@@ -50,7 +54,7 @@ def test_calcular_superficie_favorita_zero(monkeypatch):
         ]
     }
 
-    def mock_get(url):
+    def mock_get(url, timeout=None, headers=None):
         return MockResp(sample)
 
     monkeypatch.setattr(main.requests, "get", mock_get)

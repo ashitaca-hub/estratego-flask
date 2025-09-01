@@ -80,9 +80,11 @@ def evaluar():
         if r_resumen.status_code != 200:
             return jsonify({"error": "❌ Error al obtener summaries.json"}), 500
         resumen_data = r_resumen.json()
-
-        jugador_stats = obtener_estadisticas_jugador(jugador_id)
-        superficie_favorita, porcentaje_superficie_favorita = calcular_superficie_favorita(jugador_id)
+        perfil_jugador = get_player_profile(jugador_id)
+        jugador_stats = obtener_estadisticas_jugador(jugador_id, perfil=perfil_jugador)
+        superficie_favorita, porcentaje_superficie_favorita = calcular_superficie_favorita(
+            jugador_id, perfil=perfil_jugador
+        )
         ultimos5, detalle5 = obtener_ultimos5_winnerid(jugador_id, resumen_data)
         torneo_local, nombre_torneo = evaluar_torneo_favorito(jugador_id, resumen_data)
         h2h = obtener_h2h_extend(jugador_id, rival_id)
@@ -125,12 +127,15 @@ def evaluar():
 # -----------------------------------------------------------------------------
 # Helpers Sportradar (perfil, últimos, h2h, etc.)
 # -----------------------------------------------------------------------------
-def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
+def get_player_profile(player_id):
     r = _sr_get(f"competitors/{player_id}/profile.json")
     if r.status_code != 200:
         raise Exception("No se pudo obtener el perfil del jugador")
+    return r.json()
 
-    data = r.json()
+
+def obtener_estadisticas_jugador(player_id, year=datetime.now().year, perfil=None):
+    data = perfil or get_player_profile(player_id)
     ranking = data.get("competitor_rankings", [{}])[0].get("rank", None)
     total_wins = 0
     total_matches = 0
@@ -162,11 +167,9 @@ def obtener_estadisticas_jugador(player_id, year=datetime.now().year):
         "porcentaje_superficie": round(porcentaje_clay, 1),
     }
 
-def calcular_superficie_favorita(player_id):
-    r = _sr_get(f"competitors/{player_id}/profile.json")
-    if r.status_code != 200:
-        raise Exception("No se pudo obtener el perfil del jugador")
-    data = r.json()
+
+def calcular_superficie_favorita(player_id, perfil=None):
+    data = perfil or get_player_profile(player_id)
 
     superficie_stats = {}
     for periodo in data.get("periods", []):
