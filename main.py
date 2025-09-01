@@ -877,37 +877,6 @@ def _style_bar(value01: float) -> str:
         v = 0.0
     return f"width:{v*100:.1f}%;"
 
-@app.post("/matchup/prematch")
-def prematch_html():
-    payload = request.get_json(silent=True) or {}
-
-    # 1) Calcula el mismo dict que devuelves en /matchup (JSON)
-    try:
-        resp_json = handle_matchup(payload)  # <-- usa tu función real
-    except NameError:
-        # Si no existe ese nombre en tu código, devuelve algo razonable
-        resp_json = {"ok": False, "error": "compute function not wired"}
-
-    resp_dict = _as_dict(resp_json)
-
-    # 2) Intenta usar el template externo
-    html = _render_prematch_with_template(resp_dict)
-    if html is None:
-        # 3) Fallback: siempre HTML (aunque sea simple) para que el workflow no falle
-        html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Prematch</title></head>
-<body>
-<pre id="json"></pre>
-<script>
-const resp = {_json_for_js(resp_dict)};
-document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
-</script>
-</body></html>"""
-
-    return Response(html, mimetype="text/html; charset=utf-8", status=200)
-
-
-
 
 
 # -----------------------------------------------------------------------------
@@ -916,6 +885,7 @@ document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
