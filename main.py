@@ -728,12 +728,8 @@ def matchup_features():
     return jsonify(out), 200
 
 # -----------------------------------------------------------------------------
-# Entrypoint
+# Prematch HTML helpers y endpoint
 # -----------------------------------------------------------------------------
-
-
-
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _json_for_js(obj: dict) -> str:
@@ -785,7 +781,6 @@ def _as_dict(x):
         except Exception:
             return {}
     return {}
-# --- fin helpers ---
 
 def _delta_sides(delta: float) -> tuple[float, float]:
     """
@@ -812,63 +807,6 @@ def _fmt_pct(x):
     try: return f"{100.0*float(x):.1f}%"
     except: return "—"
 
-def _style_bar(v01: float) -> str:
-    try: v = max(0.0, min(1.0, float(v01)))
-    except: v = 0.0
-    return f"width:{v*100:.1f}%;"
-
-def _flag_from_cc(cc: str | None) -> str:
-    # convierte "ES" -> 🇪🇸 (si no hay, devuelve "")
-    if not cc or len(cc) != 2: return ""
-    base = 127397
-    return chr(ord(cc[0].upper())+base) + chr(ord(cc[1].upper())+base)
-
-def _ensure_int_id(x):
-    # el /matchup ya suele devolver IDs internos en inputs.player_id/opponent_id;
-    # si vinieran SR (str), aquí podríamos mapearlos (players_lookup), pero
-    # usamos directamente lo que entrega /matchup.
-    return int(x) if isinstance(x, int) or (isinstance(x,str) and x.isdigit()) else None
-
-def _hist_wr_asof_bundle(pid: int, mon: int, surface: str, speed_bucket: str, years_back: int):
-    """
-    Devuelve dict con wr_month, wr_surface, wr_speed (0..1 o None) usando funciones as-of del FS.
-    """
-    try:
-        sql = """
-        SELECT
-          public.fs_month_winrate_asof($1,$2,$3,current_date)::float  AS wr_month,
-          public.fs_surface_winrate_asof($1,$4,$3,current_date)::float AS wr_surface,
-          public.fs_speed_winrate_asof($1,$5,$3,current_date)::float   AS wr_speed
-        """
-        rows = FS.pg_query(sql, (pid, mon, years_back, surface, speed_bucket)) or []
-        return rows[0] if rows else {}
-    except Exception:
-        return {}
-
-def _safe(val, default="—"):
-    return default if val is None else val
-
-def _fetch_now_metrics(sr_id: str | None) -> tuple[dict, str]:
-    """
-    Devuelve (metrics, display_name) para un sr:competitor:X.
-    metrics: {ranking_now, winrate_ytd, wins_ytd, losses_ytd, winrate_last10, days_inactive, last_surface}
-    display_name: nombre desde el profile si existe, o ''.
-    """
-    if not SR_API_KEY or not sr_id:
-        return ({}, "")
-    try:
-        prof = SR.get_profile(sr_id) or {}
-        last10 = SR.get_last10(sr_id) or []
-        ytd = SR.get_ytd_record(sr_id) or {"wins": 0, "losses": 0}
-        now = SR.compute_now_features(prof, last10, ytd) or {}
-        name = ((prof.get("competitor") or {}).get("name")) or ""
-        # completa wins/losses para mostrar
-        now["wins_ytd"] = int(ytd.get("wins", 0))
-        now["losses_ytd"] = int(ytd.get("losses", 0))
-        return (now, name)
-    except Exception:
-        return ({}, "")
-
 def _style_bar(value01: float) -> str:
     """Devuelve estilo width para una barra 0..1 (sanea límites)."""
     try:
@@ -877,7 +815,30 @@ def _style_bar(value01: float) -> str:
         v = 0.0
     return f"width:{v*100:.1f}%;"
 
+@app.post("/matchup/prematch")
+def matchup_prematch_html():
+    """
+    Devuelve una página HTML (usando apps_script/prematch_template.html)
+    con la variable JS global:  const resp = {...};
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    out = _compute_matchup_payload(body)
 
+    html = _render_prematch_with_template(out)
+    if not html:
+        # Fallback simple si falta el template
+        safe_json = _json_for_js(out)
+        html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Prematch</title></head>
+<body>
+<pre id="json"></pre>
+<script>
+const resp = {safe_json};
+document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
+</script>
+</body></html>"""
+
+    return Response(html, mimetype="text/html; charset=utf-8", status=200)
 
 # -----------------------------------------------------------------------------
 # Entrypoint
@@ -885,11 +846,3 @@ def _style_bar(value01: float) -> str:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
