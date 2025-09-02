@@ -50,20 +50,13 @@ def make_prematch_bp(compute_fn):
     compute_fn: función que recibe el payload (dict) y devuelve el MISMO dict
     que usas en /matchup (con prob_player, inputs, features, etc).
     """
-    bp = Blueprint("prematch", __name__)
+    bp = Blueprint("prematch", __name__, template_folder=".")
 
     @bp.route("/matchup/prematch", methods=["POST"])
+@bp.route("/matchup/prematch", methods=["POST"])
 def prematch():
-    # payload recibido (player_id, opponent_id, etc.)
     payload = request.get_json(force=True, silent=True) or {}
-
-    # Llamamos a la función que calcula el matchup (la misma que usa /matchup)
     out = main._compute_matchup_payload(payload)
-    # Enriquecemos con extras (rank, ytd, etc.)
     out = main.enrich_resp_with_extras(out)
-
-    # Serializamos a JSON para inyectarlo en la plantilla
     resp_json = json.dumps(out)
-
-    # Renderizamos la plantilla moderna
-    return render_template("apps_script/prematch_template.html", json_data=resp_json)
+    return render_template("prematch_template.html", json_data=resp_json)  # 👈 nombre “plano”
