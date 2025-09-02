@@ -149,13 +149,6 @@ jobs:
           print("[OK] Generados prematch.html y prematch.json")
           PY
 
-      - name: Upload artifact (prematch.html)
-        uses: actions/upload-artifact@v4
-        with:
-          name: prematch_html
-          path: prematch.html
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Save input payload
         run: |
@@ -167,9 +160,39 @@ jobs:
             "years_back": ${YEARS_BACK}
           }
           EOF
-      
+
+      - name: Verify generated files before upload
+        run: |
+          echo "Workspace:"
+          pwd
+          ls -lah
+          echo "Check prematch.html exists and size:"
+          test -f prematch.html && du -h prematch.html || (echo "prematch.html NOT FOUND" && exit 1)
+          echo "First 5 lines:"
+          head -n 5 prematch.html || true
+
+      - name: Upload artifact (prematch.html)
+        uses: actions/upload-artifact@v4
+        with:
+            name: prematch_html_${{ inputs.player_id }}_vs_${{ inputs.opponent_id }}_${{ inputs.tournament_name }}
+            path: prematch.html
+            if-no-files-found: error
+            retention-days: 7
+
+      - name: Upload artifact (prematch.json)
+        uses: actions/upload-artifact@v4
+        with:
+            name: prematch_json_${{ inputs.player_id }}_vs_${{ inputs.opponent_id }}_${{ inputs.tournament_name }}
+            path: prematch.json
+            if-no-files-found: error
+            retention-days: 7
+
       - name: Upload artifact (prematch_input.json)
         uses: actions/upload-artifact@v4
         with:
-          name: prematch_input_${{ inputs.player_id }}_vs_${{ inputs.opponent_id }}_${{ inputs.tournament_name }}
-          path: prematch_input.json
+            name: prematch_input_${{ inputs.player_id }}_vs_${{ inputs.opponent_id }}_${{ inputs.tournament_name }}
+            path: prematch_input.json
+            if-no-files-found: error
+            retention-days: 7
+      
+
