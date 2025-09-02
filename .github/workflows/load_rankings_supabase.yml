@@ -143,7 +143,7 @@ jobs:
           PY
 
       - name: Run loader
-        run: python load_rankings_supabase.py
+        run: python apps_script/load_rankings_supabase.py
 
       - name: Quick check (psql)
         if: env.DATABASE_URL != ''
