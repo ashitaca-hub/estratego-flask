@@ -1,69 +1,65 @@
-name: api-prematch-html
+name: CI – Prematch HTML (DB-only)
 
 on:
-  workflow_dispatch:
-    inputs:
-      player_input:
-        description: "Jugador A (sr:competitor:ID o nombre)"
-        required: false
-        default: "sr:competitor:225050"
-      opponent_input:
-        description: "Jugador B (sr:competitor:ID o nombre)"
-        required: false
-        default: "sr:competitor:407573"
-      tournament_name:
-        description: "Nombre torneo"
-        required: false
-        default: "US Open"
-      month:
-        description: "Mes (1-12)"
-        required: false
-        default: "8"
-      years_back:
-        description: "Histórico (años)"
-        required: false
-        default: "4"
+  workflow_dispatch: {}
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  prematch:
+  prematch-ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      SR_API_KEY:   ${{ secrets.SR_API_KEY }}
+      # 👉 SOLO Postgres (sin PostgREST)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      # Silenciar INFO de supabase_fs (esos “SUPABASE_URL / SUPABASE_KEY no configurados.”)
+      LOG_LEVEL: WARNING
+
+      # ⚠️ NO definimos SUPABASE_URL ni SUPABASE_KEY en Opción A
+      # SUPABASE_URL: (no set)
+      # SUPABASE_KEY: (no set)
+
+      # Si quieres fallback a Sportradar en tiempo real, añade tu API key:
+      # SR_API_KEY: ${{ secrets.SR_API_KEY }}
+
+      PYTHONUNBUFFERED: "1"
+      FLASK_ENV: testing
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Python setup
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install deps
         run: |
-          pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Asegura mínimos
-          pip install flask requests psycopg2-binary pandas numpy jq
+          python -m pip install --upgrade pip
+          # Dependencias típicas del proyecto (ajusta si usas otras)
+          pip install flask requests psycopg2-binary
 
+      # (Opcional) sanity DB: que existe y responde
+      - name: DB sanity check
+        run: |
+          psql "$DATABASE_URL" -c "select now();"
+          # vistas/tablas necesarias para rank/YTD
+          psql "$DATABASE_URL" -c "select count(*) from public.rankings_snapshot_int limit 1;" || true
+          psql "$DATABASE_URL" -c "select * from public.v_player_rank_now_int order by rank asc limit 3;" || true
+          psql "$DATABASE_URL" -c "select * from public.v_player_ytd_now_int  limit 3;" || true
 
       - name: Run prematch smoke tests (JSON + HTML)
-        env:
-          # asegúrate de tenerlos configurados como secrets si los necesitas en runtime:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}  # o anon si solo lectura
-          SR_API_KEY: ${{ secrets.SR_API_KEY }}                   # opcional si haces fallback SR
-          FLASK_ENV: testing
         run: |
           python - << 'PY'
           import json
-          from main import app  # importa tu Flask app
+          from main import app
 
           client = app.test_client()
 
-          # IDs de ejemplo en el mismo espacio que fs_matches_long (cámbialos si usas otros)
+          # IDs de ejemplo (mismo espacio que fs_matches_long – ajusta si usas otros)
           P_ID = 225050   # Sinner (ejemplo)
           O_ID = 407573   # Alcaraz (ejemplo)
 
@@ -80,99 +76,14 @@ jobs:
           data = r.get_json()
           assert "extras" in data, "extras missing"
           ex = data["extras"]
-
-          # chequear rank/ytd presentes (permitimos None pero claves deben existir)
           for k in ["rank_p","rank_o","ytd_wr_p","ytd_wr_o"]:
               assert k in ex, f"{k} missing in extras"
-
-          print("[OK] /matchup extras keys present:", {k: ex.get(k) for k in ["rank_p","rank_o","ytd_wr_p","ytd_wr_o"]})
+          print("[OK] /matchup extras:", {k: ex.get(k) for k in ["rank_p","rank_o","ytd_wr_p","ytd_wr_o"]})
 
           # --- 2) HTML /matchup/prematch ---
           r2 = client.post("/matchup/prematch", json=payload)
           assert r2.status_code == 200, r2.data
           html = r2.get_data(as_text=True)
           assert "window.resp" in html, "window.resp not injected in prematch HTML"
-          # opcional: verificar que rank aparece como badge (#) o que el JSON está dentro del script
           print("[OK] /matchup/prematch HTML rendered with window.resp")
-
           PY
-
-
-      - name: Sanity template existe
-        run: |
-          test -f apps_script/prematch_template.html || { echo "::error::Falta apps_script/prematch_template.html"; exit 1; }
-          head -n 5 apps_script/prematch_template.html || true
-
-      - name: Syntax check
-        run: |
-        
-          python -c "import py_compile; py_compile.compile('main.py', doraise=True); print('OK: main.py compila')"
-
-      - name: Lanzar API en :8080
-        run: |
-          python apps_script/start_api.py main:app > app.log 2>&1 &
-          for i in {1..30}; do
-            sleep 1
-            curl -sS http://127.0.0.1:8080/health && break || true
-          done
-          echo "API lista"
-          tail -n +1 -n 50 app.log || true
-
-      - name: Construir payload
-        run: |
-          set -euo pipefail
-          P="${{ github.event.inputs.player_input || 'sr:competitor:225050' }}"
-          O="${{ github.event.inputs.opponent_input || 'sr:competitor:407573' }}"
-          T="${{ github.event.inputs.tournament_name || 'US Open' }}"
-          M="${{ github.event.inputs.month || '8' }}"
-          Y="${{ github.event.inputs.years_back || '4' }}"
-          # Defaults seguros
-          : "${M:=8}"; : "${Y:=4}"
-
-          jq -n \
-            --arg tname "$T" --arg p "$P" --arg o "$O" \
-            --argjson mon ${M} --argjson yb ${Y} \
-            '
-            {tournament:{name:$tname, month:$mon}, years_back:$yb}
-            + ( ($p|test("^sr:")) as $psr | if $psr then {player_id:$p} else {player:$p} end )
-            + ( ($o|test("^sr:")) as $osr | if $osr then {opponent_id:$o} else {opponent:$o} end )
-            ' > /tmp/payload.json
-
-          echo "== Payload ==" && cat /tmp/payload.json
-
-      - name: Llamar /matchup/prematch y guardar HTML
-        run: |
-          set -euo pipefail
-          # Llamada y captura del código HTTP
-          HTTP_CODE=$(curl -sS -o /tmp/prematch.html -w "%{http_code}" \
-            -X POST "http://127.0.0.1:8080/matchup/prematch" \
-            -H "Content-Type: application/json" \
-            --data @/tmp/payload.json || echo "000")
-          echo "HTTP_CODE=$HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::/matchup/prematch devolvió HTTP $HTTP_CODE"
-            echo "Primeras líneas de app.log para debug:"
-            tail -n 200 app.log || true
-            exit 1
-          fi
-
-          # Validaciones
-          test -s /tmp/prematch.html || { echo "::error::HTML vacío o no creado"; exit 1; }
-          head -n 12 /tmp/prematch.html
-          grep -q "window.resp" /tmp/prematch.html || { echo "::error::No se inyectó window.resp (¿cayó en demo?)"; exit 1; }
-          grep -q "prob_player" /tmp/prematch.html || { echo "::warning::No aparece 'prob_player' en el HTML (revisar render)"; true; }
-
-      - name: (Opcional) Post-procesar con sed
-        run: |
-          set -euo pipefail
-          # Solo si existe el fichero
-          test -f /tmp/prematch.html || { echo "::error::No existe /tmp/prematch.html"; exit 1; }
-          # Ejemplo inocuo: añade marca de agua en título
-          sed -i 's#<title>Prematch</title>#<title>Prematch · Estratego</title>#' /tmp/prematch.html
-
-      - name: Subir artefacto HTML
-        uses: actions/upload-artifact@v4
-        with:
-          name: prematch_html
-          path: /tmp/prematch.html
-          if-no-files-found: error
