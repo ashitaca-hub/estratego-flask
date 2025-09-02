@@ -1,0 +1,24 @@
+name: Cargar ranking ATP (SR → Supabase)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "5 4 * * MON"  # opcional: lunes 04:05 UTC
+
+jobs:
+  load-ranking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SR_API_KEY: ${{ secrets.SR_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: |
+          python -m pip install --upgrade pip
+          pip install requests psycopg2-binary
+      - name: Ejecutar loader
+        run: python apps_script/load_rankings_sportradar.py
