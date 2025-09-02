@@ -35,6 +35,49 @@ HEADERS_SB = {
     "Content-Type": "application/json",
 }
 
+def norm_tourney_name(name: str, conn=None) -> str:
+    if not name: return None
+    # Usa tu función SQL si existe; si no, normaliza aquí
+    try:
+        pg, opened = _pg_conn_or_env(conn)
+        try:
+            with pg.cursor() as cur:
+                cur.execute("SELECT public.norm_tourney(%s)", (name,))
+                key, = cur.fetchone()
+                return key
+        finally:
+            if opened: pg.close()
+    except Exception:
+        # fallback mínimo
+        import re
+        return re.sub(r'[^a-z0-9]+', ' ', name.lower()).strip()
+
+def get_tourney_country(tourney_name: str, conn=None) -> str|None:
+    key = norm_tourney_name(tourney_name, conn=conn)
+    if not key: return None
+    pg, opened = _pg_conn_or_env(conn)
+    try:
+        with pg.cursor() as cur:
+            cur.execute("""
+                SELECT country_code
+                FROM public.tourney_country_map
+                WHERE tourney_key = public.norm_tourney(%s)
+                LIMIT 1
+            """, (tourney_name,))
+            r = cur.fetchone()
+            if r:
+                return r[0]
+    finally:
+        if opened: pg.close()
+    # fallback estático mínimo (por si no cargaste la tabla)
+    STATIC = {
+        "cincinnati": "USA",
+        "us open": "USA",
+        "paris masters": "FRA",
+        "indian wells": "USA",
+    }
+    return STATIC.get(key)
+
 def _get(table: str, params: Dict[str, Any] | None = None, select: str = "*") -> list[dict]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL / SUPABASE_KEY no configurados.")
