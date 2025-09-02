@@ -162,6 +162,31 @@ def get_tourney_meta(tournament_name: str) -> dict:
         meta["speed_bucket"] = _speed_bucket_from_rank(meta.get("speed_rank")) or "Medium"
     return meta
 
+def get_tourney_country(tournament_name: str | None) -> str | None:
+    """Devuelve un ISO-2 si lo tienes en tablas; si no, None."""
+    if not tournament_name:
+        return None
+    key = norm_tourney(tournament_name)
+    # 1) resolved (preferido)
+    try:
+        rows = _get("tourney_speed_resolved",
+                    {"tourney_key": f"eq.{key}", "limit": 1},
+                    select="country_code")
+        if rows and rows[0].get("country_code"):
+            return rows[0]["country_code"]
+    except Exception:
+        pass
+    # 2) compat
+    try:
+        rows = _get("court_speed_rankig_norm",
+                    {"tournament_name": f"ilike.*{tournament_name}*", "limit": 1},
+                    select="country_code")
+        if rows and rows[0].get("country_code"):
+            return rows[0]["country_code"]
+    except Exception:
+        pass
+    return None
+
 
 # ───────────────────────────────────────────────────────────────────
 # Feature store – winrates (RPC o vistas precalculadas)
