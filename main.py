@@ -15,7 +15,7 @@ import requests
 from services import sportradar_now as SR
 from services import supabase_fs as FS
 from utils.scoring import ADJUSTS, WEIGHTS, clamp, logistic
-from prematch_bp import prematch_bp
+from apps_script.prematch_bp import bp as prematch_bp  # 👈 ruta correcta al paquete
 
 
 # -----------------------------------------------------------------------------
@@ -979,6 +979,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
