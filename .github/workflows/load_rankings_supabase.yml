@@ -11,10 +11,11 @@ jobs:
     timeout-minutes: 20
 
     env:
-      SR_API_KEY: ${{ secrets.SR_API_KEY }}               # Sportradar
+      # Secrets necesarios (configúralos en Settings → Secrets and variables → Actions)
+      SR_API_KEY: ${{ secrets.SR_API_KEY }}               # Sportradar API key
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}           # https://<project>.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}           # opcional: psql directo
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}           # opcional: para psql (DDL/checks)
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -31,34 +32,43 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests "supabase>=2.4.0" psycopg2-binary
 
-      # (OPCIONAL) Crear tabla/índices con psql si proporcionas DATABASE_URL
+      # (OPCIONAL) Crear tabla/índices y vista con psql si proporcionas DATABASE_URL
       - name: Ensure table (via psql)
         if: env.DATABASE_URL != ''
         run: |
           cat > /tmp/init_rankings.sql << 'SQL'
+          -- Tabla snapshot (esquema basado en snapshot_date/player_id INT)
           create table if not exists public.rankings_snapshot_int (
-            asof_date date not null,
-            sr_id_text text not null,         -- "sr:competitor:225050"
-            sr_id_num  int  not null,         -- 225050
-            rank       int  not null,
-            points     int,
+            snapshot_date date not null,
+            year int not null,
+            week int not null,
+            player_id int not null,            -- id externo SR (digits)
+            rank int not null,
+            points int,
             player_name text,
             country_code text,
-            movement   int,
+            movement int,
             competitions_played int,
-            source     text default 'sportradar',
+            source text default 'sportradar',
             created_at timestamptz default now(),
             updated_at timestamptz default now(),
-            primary key (asof_date, sr_id_num)
+            primary key (snapshot_date, player_id)
           );
-          create index if not exists rankings_snapshot_int_date_idx
-            on public.rankings_snapshot_int (asof_date);
+
+          create index if not exists rankings_snapshot_int_week_idx
+            on public.rankings_snapshot_int (year, week);
+
+          -- Vista: ranking vigente por jugador (último snapshot disponible)
           create or replace view public.v_player_rank_now_int as
-          select distinct on (sr_id_num)
-            sr_id_num as player_id_int,
-            rank, points, asof_date
+          select distinct on (player_id)
+            player_id,
+            rank,
+            points,
+            snapshot_date,
+            year,
+            week
           from public.rankings_snapshot_int
-          order by sr_id_num, asof_date desc, rank asc;
+          order by player_id, snapshot_date desc, week desc, rank asc;
           SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/init_rankings.sql
 
@@ -68,7 +78,7 @@ jobs:
           import os, re
           from datetime import date
           import requests
-          from supabase import create_client, Client
+          from supabase import create_client
 
           SR_API_KEY = os.environ["SR_API_KEY"]
           SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -76,77 +86,72 @@ jobs:
           BASE_URL = "https://api.sportradar.com/tennis/trial/v3/en"
 
           def digits(s: str) -> int | None:
-            import re
-            m = re.sub(r"\D", "", s or "")
-            return int(m) if m else None
+              m = re.sub(r"\D", "", s or "")
+              return int(m) if m else None
 
           def fetch_atp_rankings():
-            r = requests.get(f"{BASE_URL}/rankings.json",
-                             headers={"accept":"application/json","x-api-key":SR_API_KEY},
-                             timeout=30)
-            r.raise_for_status()
-            data = r.json()
-            for blk in data.get("rankings", []):
-              if (blk.get("name") == "ATP") and ((blk.get("gender") or "").lower() == "men"):
-                year = int(blk.get("year"))
-                week = int(blk.get("week"))
-                rows = []
-                for cr in blk.get("competitor_rankings", []):
-                  comp = cr.get("competitor") or {}
-                  sr_text = comp.get("id")
-                  sr_num  = digits(sr_text)
-                  if not sr_num or not cr.get("rank"):
-                    continue
-                  rows.append({
-                    "asof_date": date.today().isoformat(),
-                    "sr_id_text": sr_text,
-                    "sr_id_num": sr_num,
-                    "rank": int(cr["rank"]),
-                    "points": cr.get("points"),
-                    "player_name": comp.get("name"),
-                    "country_code": comp.get("country_code"),
-                    "movement": cr.get("movement"),
-                    "competitions_played": cr.get("competitions_played"),
-                    "source": "sportradar",
-                  })
-                return rows, year, week
-            return [], None, None
+              r = requests.get(f"{BASE_URL}/rankings.json",
+                               headers={"accept":"application/json","x-api-key":SR_API_KEY},
+                               timeout=30)
+              r.raise_for_status()
+              data = r.json()
+              for blk in data.get("rankings", []):
+                  if (blk.get("name") == "ATP") and ((blk.get("gender") or "").lower() == "men"):
+                      year = int(blk.get("year"))
+                      week = int(blk.get("week"))
+                      rows = []
+                      for cr in blk.get("competitor_rankings", []):
+                          comp = cr.get("competitor") or {}
+                          pid = digits(comp.get("id"))        # sr:competitor:225050 -> 225050
+                          if not pid or not cr.get("rank"):
+                              continue
+                          rows.append({
+                              "snapshot_date": date.today().isoformat(),
+                              "year": year,
+                              "week": week,
+                              "player_id": pid,
+                              "rank": int(cr["rank"]),
+                              "points": cr.get("points"),
+                              "player_name": comp.get("name"),
+                              "country_code": comp.get("country_code"),
+                              "movement": cr.get("movement"),
+                              "competitions_played": cr.get("competitions_played"),
+                              "source": "sportradar",
+                          })
+                      return rows, year, week
+              return [], None, None
 
           def main():
-            supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-            rows, year, week = fetch_atp_rankings()
-            if not rows:
-              print("No rankings found.")
-              return
+              supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+              rows, year, week = fetch_atp_rankings()
+              if not rows:
+                  print("No rankings found."); return
 
-            # Asegura tabla si no existe (vía REST no podemos DDL; confía en step psql o crea manualmente)
-            # Upsert idempotente por (asof_date, sr_id_num)
-            # Nota: upsert requiere PK/unique en esos campos o 'on_conflict' explícito
-            res = supabase.table("rankings_snapshot_int").upsert(
-              rows,
-              on_conflict="asof_date,sr_id_num"
-            ).execute()
+              # Upsert idempotente por (snapshot_date, player_id)
+              supabase.table("rankings_snapshot_int").upsert(
+                  rows, on_conflict="snapshot_date,player_id"
+              ).execute()
 
-            print(f"UPSERT OK - inserted/updated: {len(rows)}  (year={year}, week={week})")
+              print(f"UPSERT OK - inserted/updated: {len(rows)} (year={year}, week={week})")
 
-            # Mini resumen: Top 10 de hoy desde Supabase
-            top = supabase.table("rankings_snapshot_int") \
-                          .select("sr_id_num,rank,points,player_name") \
-                          .eq("asof_date", date.today().isoformat()) \
-                          .order("rank", desc=False) \
-                          .limit(10) \
-                          .execute()
-            print("Top10 hoy:", top.data)
+              # Top10 del snapshot de hoy (debug)
+              top = supabase.table("rankings_snapshot_int") \
+                  .select("player_id,rank,points,player_name") \
+                  .eq("snapshot_date", date.today().isoformat()) \
+                  .order("rank") \
+                  .limit(10) \
+                  .execute()
+              print("Top10 hoy:", top.data)
 
           if __name__ == "__main__":
-            main()
+              main()
           PY
 
       - name: Run loader
-        run: python apps_script/load_rankings_supabase.py
+        run: python load_rankings_supabase.py
 
-      - name: Quick check (psql)
+      - name: Quick checks (psql)
         if: env.DATABASE_URL != ''
         run: |
-          psql "$DATABASE_URL" -c "select count(*) as filas_hoy from public.rankings_snapshot_int where asof_date = current_date;"
-          psql "$DATABASE_URL" -c "select * from public.v_player_rank_now_int order by rank asc limit 10;"
+          psql "$DATABASE_URL" -c "select count(*) as filas_hoy from public.rankings_snapshot_int where snapshot_date = current_date;"
+          psql "$DATABASE_URL" -c "select player_id, rank, points, snapshot_date from public.v_player_rank_now_int order by rank asc limit 10;"
