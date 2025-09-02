@@ -1,88 +1,105 @@
 # poblar_2025_sportradar.py
-import os, time, json, re
+import os, time, re
 import requests
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime
 
-CONFIG = {
-    "SR_API_KEY": os.getenv("SR_API_KEY", "TU_KEY_AQUI"),
-    "BASE_URL": "https://api.sportradar.com/tennis/trial/v3/en",
-    # OJO: pon aquí season_ids 2025 que quieras cargar
-    "SEASON_IDS": [
-        # "sr:season:XXXXX",
-    ],
-    # Alternativa: descubrir seasons a partir de competitions (si los sabes)
-    "COMPETITIONS": [
-        # "sr:competition:XXXX",  # opcional
-    ],
-    "DB_DSN": os.getenv("DATABASE_URL", "postgresql://user:pass@host:5432/dbname"),
-    "RATE_SLEEP": 0.35,  # ~3 req/seg
-}
+SR_API_KEY = os.getenv("SR_API_KEY", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+BASE_URL = "https://api.sportradar.com/tennis/trial/v3/en"
+RATE_SLEEP = float(os.getenv("RATE_SLEEP", "0.35"))
+
+# Si quieres pasar listas manuales (sobrescriben el descubrimiento):
+OVERRIDE_SEASON_IDS = [s.strip() for s in os.getenv("SEASON_IDS_CSV", "").split(",") if s.strip()]
+OVERRIDE_COMPETITIONS = [c.strip() for c in os.getenv("COMPETITIONS_CSV", "").split(",") if c.strip()]
+
+def sr_get(path):
+    url = f"{BASE_URL}{path}"
+    r = requests.get(url, headers={"accept":"application/json", "x-api-key": SR_API_KEY}, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"SR {r.status_code}: {r.text[:200]}")
+    return r.json()
 
 def digits(s):
     m = re.sub(r"\D", "", s or "")
     return int(m) if m else None
 
-def sr_get(path):
-    url = f"{CONFIG['BASE_URL']}{path}"
-    headers = {"accept": "application/json", "x-api-key": CONFIG["SR_API_KEY"]}
-    r = requests.get(url, headers=headers, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"SR error {r.status_code}: {r.text[:200]}")
-    return r.json()
+# ---- 1) DESCUBRIR COMPETITIONS (ATP + GRAND SLAMS) ----
+def discover_atp_gs_competitions():
+    data = sr_get("/competitions.json")
+    comps = data.get("competitions", []) or []
 
-def discover_seasons_for_2025():
-    season_ids = set(CONFIG["SEASON_IDS"])
-    for comp_id in CONFIG["COMPETITIONS"]:
-        data = sr_get(f"/competitions/{comp_id}/seasons.json")
-        for s in data.get("seasons", []):
-            # Heurística: coge temporadas con year >= 2025 o fechas 2025
-            yr = s.get("year")
-            sid = s.get("id")
-            if yr and int(yr) == 2025:
-                season_ids.add(sid)
-    return list(season_ids)
+    keep = []
+    for c in comps:
+        gender = (c.get("gender") or "").lower()           # "men", "women", "mixed", ...
+        name = (c.get("name") or "")
+        cat = c.get("category") or {}
+        cat_name = (cat.get("name") or "")
 
+        # Criterios:
+        # - Queremos ATP Tour + Grand Slams (no Challenger, no Doubles, no Mixed).
+        # - gender: men (para ATP/GS masculino).
+        # Notas: Los GS a veces no indican "ATP" en category; por eso aceptamos "Grand Slam".
+        if gender and gender != "men":
+            continue
+        cn = cat_name.lower()
+        nn = name.lower()
+
+        is_grand_slam = ("grand" in cn and "slam" in cn) or any(gs in nn for gs in ["australian open", "roland garros", "wimbledon", "us open"])
+        is_atp_tour   = ("atp" in cn and "challenger" not in cn) and ("doubles" not in nn)
+
+        if is_grand_slam or is_atp_tour:
+            keep.append({"id": c["id"], "name": name, "category": cat_name, "gender": gender or "n/a"})
+
+    return keep
+
+# ---- 2) DE COMPETITION → SEASONS 2025 ----
+def seasons_2025_for_competition(comp_id):
+    data = sr_get(f"/competitions/{comp_id}/seasons.json")
+    out = []
+    for s in data.get("seasons", []):
+        year = s.get("year")
+        if str(year) == "2025":
+            out.append({"id": s["id"], "name": s.get("name"), "year": year})
+    return out
+
+# ---- 3) DESCARGAR SUMMARIES DE UNA SEASON ----
 def fetch_season_summaries(season_id):
     data = sr_get(f"/seasons/{season_id}/summaries.json")
     rows = []
-    for ev in data.get("summaries", []):
+    for ev in data.get("summaries", []) or []:
         status = ev.get("sport_event_status", {}).get("status")
-        if status not in ("closed", "ended"):  # solo partidos finalizados
+        if status not in ("closed", "ended"):
             continue
 
-        sport_event = ev.get("sport_event", {})
-        start_time = sport_event.get("start_time")  # ISO 8601
-        comp = sport_event.get("competition", {}) or {}
-        tournament_name = comp.get("name")
-        surface = comp.get("surface")  # si viene
-        ext_event_id = sport_event.get("id")
+        se = ev.get("sport_event", {}) or {}
+        st = se.get("start_time")
+        comp = se.get("competition", {}) or {}
+        tname = comp.get("name")
+        surface = comp.get("surface")
+        ext_event_id = se.get("id")
         ext_season_id = comp.get("season", {}).get("id") or season_id
 
-        # participantes
-        comps = sport_event.get("competitors", []) or []
-        ids = [digits(c.get("id")) for c in comps]  # int externos SR
-        names = [c.get("name") for c in comps]
+        comps = se.get("competitors", []) or []
+        ids = [digits(c.get("id")) for c in comps]
         if len(ids) != 2 or None in ids:
-            continue  # partidos raros o datos incompletos
-
-        p_id, o_id = ids[0], ids[1]
-        # ganador por winner_id
-        w_full = ev.get("sport_event_status", {}).get("winner_id")
-        w_id = digits(w_full)
-
-        if not start_time or not ext_event_id or not w_id:
             continue
 
-        dt = datetime.fromisoformat(start_time.replace("Z", "+00:00")).date().isoformat()
+        winner_full = ev.get("sport_event_status", {}).get("winner_id")
+        w_id = digits(winner_full)
+        if not st or not ext_event_id or not w_id:
+            continue
 
-        # Dos filas (formato long): una para cada jugador
-        rows.append((dt, p_id, o_id, w_id, tournament_name, surface, ext_season_id, ext_event_id))
-        rows.append((dt, o_id, p_id, w_id, tournament_name, surface, ext_season_id, ext_event_id))
+        dt = datetime.fromisoformat(st.replace("Z", "+00:00")).date().isoformat()
+        p_id, o_id = ids[0], ids[1]
 
+        # Formato "long": dos filas por partido
+        rows.append((dt, p_id, o_id, w_id, tname, surface, ext_season_id, ext_event_id))
+        rows.append((dt, o_id, p_id, w_id, tname, surface, ext_season_id, ext_event_id))
     return rows
 
+# ---- 4) UPSERT EN BD ----
 def upsert_matches_long_base(conn, rows):
     if not rows:
         return 0
@@ -103,24 +120,50 @@ def upsert_matches_long_base(conn, rows):
     return len(rows)
 
 def main():
-    season_ids = CONFIG["SEASON_IDS"] or discover_seasons_for_2025()
-    if not season_ids:
-        raise RuntimeError("No hay season_ids configurados ni COMPETITIONS para descubrirlos.")
+    assert SR_API_KEY, "Falta SR_API_KEY"
+    assert DATABASE_URL, "Falta DATABASE_URL"
 
-    conn = psycopg2.connect(CONFIG["DB_DSN"])
-    total_rows = 0
+    # Si pasas SEASON_IDS, se usan tal cual. Si no, descubrimos por competitions 2025.
+    season_ids = list(OVERRIDE_SEASON_IDS)
+    if not season_ids:
+        comp_ids = list(OVERRIDE_COMPETITIONS)
+        comps = []
+        if not comp_ids:
+            # Descubrir competitions ATP + Grand Slams automáticamente
+            comps = discover_atp_gs_competitions()
+            comp_ids = [c["id"] for c in comps]
+            print(f"[INFO] Competitions detectadas (ATP+GS): {len(comp_ids)}")
+        else:
+            print(f"[INFO] Competitions provistas: {len(comp_ids)}")
+
+        for cid in comp_ids:
+            try:
+                seas = seasons_2025_for_competition(cid)
+                for s in seas:
+                    season_ids.append(s["id"])
+            except Exception as e:
+                print(f"[WARN] No se pudo leer seasons de {cid}: {e}")
+            time.sleep(RATE_SLEEP)
+
+        # Unicos y ordenados
+        season_ids = sorted(set(season_ids))
+
+    print(f"[INFO] Seasons 2025 a cargar: {len(season_ids)}")
+    conn = psycopg2.connect(DATABASE_URL)
+
+    total = 0
     for sid in season_ids:
-        print(f"[INFO] Season {sid} ...")
         try:
             rows = fetch_season_summaries(sid)
             n = upsert_matches_long_base(conn, rows)
-            total_rows += n
-            print(f"[OK] {sid}: {n} filas (long) upserted")
+            total += n
+            print(f"[OK] {sid}: {n} filas long (2 por partido) upserted")
         except Exception as e:
             print(f"[ERR] {sid}: {e}")
-        time.sleep(CONFIG["RATE_SLEEP"])
+        time.sleep(RATE_SLEEP)
+
     conn.close()
-    print(f"[DONE] Filas totales (long): {total_rows}")
+    print(f"[DONE] Total filas long insertadas/actualizadas: {total}")
 
 if __name__ == "__main__":
     main()
