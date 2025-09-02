@@ -968,7 +968,7 @@ def matchup_prematch_html():
     resp_json = json.dumps(out)
 
     # Renderiza la plantilla moderna
-    return render_template("prematch_template.html", json_data=resp_json)
+    return render_template("apps_script/prematch_template.html", json_data=resp_json)
 
 # -----------------------------------------------------------------------------
 # Entrypoint
@@ -976,6 +976,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
