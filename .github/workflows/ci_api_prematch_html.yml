@@ -70,6 +70,16 @@ jobs:
           psql "$DATABASE_URL" -c "select * from public.v_player_rank_now_int  order by rank asc limit 3;" || true
           psql "$DATABASE_URL" -c "select * from public.v_player_ytd_now_int   limit 3;" || true
 
+      - name: List files
+        run: |
+          ls -R
+          test -f apps_script/prematch_template.html && echo "Template OK"
+          python - << 'PY'
+          import importlib
+          import apps_script.prematch_bp as m
+          print("Import OK:", m)
+          PY
+
       - name: Echo inputs y chequeo DB de ranking
         run: |
           echo "Inputs:"
