@@ -2,6 +2,7 @@
 from __future__ import annotations
 from flask import Blueprint, request, Response, render_template
 import os, json, re
+from main import get_matchup_payload  # si lo importas desde main
 
 
 def _json_for_js(obj: dict) -> str:
@@ -50,20 +51,20 @@ def make_prematch_bp(compute_fn):
     compute_fn: función que recibe el payload (dict) y devuelve el MISMO dict
     que usas en /matchup (con prob_player, inputs, features, etc).
     """
-bp = Blueprint("prematch", __name__, template_folder=".")
+prematch_bp = Blueprint(
+    "prematch",
+    __name__,
+    template_folder="apps_script"  # 👈 importante: carpeta donde vive la plantilla
+)
 
-@bp.route("/prematch", methods=["POST"])
-def prematch():
-    payload = request.get_json(force=True, silent=True) or {}
+@prematch_bp.route("/matchup/prematch", methods=["POST"])
+def matchup_prematch_html():
+    try:
+        data = request.get_json(force=True)
+        resp_json = get_matchup_payload(data)
 
-    # IMPORT TARDÍO para evitar import circular con main.py
-    from main import _compute_matchup_payload, enrich_resp_with_extras
-
-    out = _compute_matchup_payload(payload)
-    out = enrich_resp_with_extras(out)
-
-    resp_json = json.dumps(out)
-    return render_template("prematch_template.html", json_data=resp_json)
-
-# Alias por compatibilidad si en main.py importas 'prematch_bp'
-prematch_bp = bp
+        # Ahora sí buscará en apps_script/prematch_template.html
+        return render_template("prematch_template.html", json_data=resp_json)
+    except Exception as e:
+        logging.exception("Error en prematch")
+        return jsonify({"error": "Internal server error"}), 500
