@@ -1,7 +1,8 @@
 # apps_script/prematch_bp.py
 from __future__ import annotations
-from flask import Blueprint, request, Response
+from flask import Blueprint, request, Response, render_template
 import os, json, re
+from . import main  # o donde tengas la función que genera el payload
 
 def _json_for_js(obj: dict) -> str:
     s = json.dumps(obj, ensure_ascii=False)
@@ -51,16 +52,18 @@ def make_prematch_bp(compute_fn):
     """
     bp = Blueprint("prematch", __name__)
 
-    @bp.post("/matchup/prematch")
-    def prematch_html():
-        payload = request.get_json(silent=True) or {}
-        try:
-            # compute_fn debe retornar un dict, no una Response
-            resp_dict = compute_fn(payload) or {}
-        except Exception as e:
-            resp_dict = {"ok": False, "error": f"compute failed: {e}"}
+    @bp.route("/matchup/prematch", methods=["POST"])
+def prematch():
+    # payload recibido (player_id, opponent_id, etc.)
+    payload = request.get_json(force=True, silent=True) or {}
 
-        html = _render_prematch_with_template(resp_dict) or _fallback_html(resp_dict)
-        return Response(html, mimetype="text/html; charset=utf-8", status=200)
+    # Llamamos a la función que calcula el matchup (la misma que usa /matchup)
+    out = main._compute_matchup_payload(payload)
+    # Enriquecemos con extras (rank, ytd, etc.)
+    out = main.enrich_resp_with_extras(out)
 
-    return bp
+    # Serializamos a JSON para inyectarlo en la plantilla
+    resp_json = json.dumps(out)
+
+    # Renderizamos la plantilla moderna
+    return render_template("prematch_template.html", json_data=resp_json)
