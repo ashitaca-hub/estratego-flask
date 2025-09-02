@@ -957,29 +957,18 @@ def _style_bar(value01: float) -> str:
 
 @app.post("/matchup/prematch")
 def matchup_prematch_html():
-    """
-    Devuelve una página HTML (usando apps_script/prematch_template.html)
-    con la variable JS global:  const resp = {...};
-    """
     body = request.get_json(force=True, silent=True) or {}
+
+    # Calcula el payload base
     out = _compute_matchup_payload(body)
-    out = enrich_resp_with_extras(out)  # ← Añade esta línea
+    # Enriquecer con extras (rank, ytd, etc.)
+    out = enrich_resp_with_extras(out)
 
-    html = _render_prematch_with_template(out)
-    if not html:
-        # Fallback simple si falta el template
-        safe_json = _json_for_js(out)
-        html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Prematch</title></head>
-<body>
-<pre id="json"></pre>
-<script>
-const resp = {safe_json};
-document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
-</script>
-</body></html>"""
+    # Serializa a JSON para inyectarlo en la plantilla
+    resp_json = json.dumps(out)
 
-    return Response(html, mimetype="text/html; charset=utf-8", status=200)
+    # Renderiza la plantilla moderna
+    return render_template("prematch_template.html", json_data=resp_json)
 
 # -----------------------------------------------------------------------------
 # Entrypoint
@@ -987,6 +976,7 @@ document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
