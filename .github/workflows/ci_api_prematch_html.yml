@@ -147,10 +147,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload artifact (prematch.json)
+      - name: Save input payload
+        run: |
+          cat > prematch_input.json <<EOF
+          {
+            "player_id": ${P_ID},
+            "opponent_id": ${O_ID},
+            "tournament": {"name": "${T_NAME}", "month": ${T_MONTH}},
+            "years_back": ${YEARS_BACK}
+          }
+          EOF
+      
+      - name: Upload artifact (prematch_input.json)
         uses: actions/upload-artifact@v4
         with:
-          name: prematch_json
-          path: prematch.json
-          if-no-files-found: error
-          retention-days: 7
+          name: prematch_input_${{ inputs.player_id }}_vs_${{ inputs.opponent_id }}_${{ inputs.tournament_name }}
+          path: prematch_input.json
