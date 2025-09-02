@@ -64,14 +64,18 @@ jobs:
           import os, re, requests, psycopg2
           from psycopg2.extras import execute_values
           from datetime import date
-
+      
           SR_API_KEY   = os.environ["SR_API_KEY"]
           DATABASE_URL = os.environ["DATABASE_URL"]
           BASE_URL     = "https://api.sportradar.com/tennis/trial/v3/en"
-
-          def digits(s):
-              return int(re.sub(r"\\D","", s or "")) if s else None
-
+      
+          def digits(s: str | None):
+              if not s:
+                  return None
+              # Quita todo lo no numérico: "sr:competitor:225050" -> "225050"
+              d = re.sub(r"\D", "", s)
+              return int(d) if d else None
+      
           def fetch_atp_rankings():
               r = requests.get(f"{BASE_URL}/rankings.json",
                                headers={"accept":"application/json","x-api-key":SR_API_KEY},
@@ -84,9 +88,10 @@ jobs:
                       rows = []
                       for cr in blk.get("competitor_rankings", []):
                           comp = cr.get("competitor") or {}
-                          pid = digits(comp.get("id"))
+                          pid = digits(comp.get("id")) or digits(comp.get("sr_id"))  # fallback extra
                           rk  = cr.get("rank")
-                          if not pid or not rk: continue
+                          if pid is None or rk is None:
+                              continue
                           rows.append((
                               date.today().isoformat(),
                               year, week, pid, int(rk),
@@ -99,7 +104,7 @@ jobs:
                           ))
                       return rows, year, week
               return [], None, None
-
+      
           UPSERT_SQL = """
           insert into public.rankings_snapshot_int
             (snapshot_date, year, week, player_id, rank, points, player_name, country_code, movement, competitions_played, source)
@@ -113,7 +118,7 @@ jobs:
             competitions_played = excluded.competitions_played,
             updated_at = now();
           """
-
+      
           def main():
               rows, year, week = fetch_atp_rankings()
               if not rows:
@@ -123,10 +128,11 @@ jobs:
                   execute_values(cur, UPSERT_SQL, rows, page_size=2000)
               conn.close()
               print(f"UPSERT OK - {len(rows)} filas (year={year}, week={week})")
-
+      
           if __name__ == "__main__":
               main()
           PY
+
 
       - name: Run loader
         run: python load_rankings_pg.py
