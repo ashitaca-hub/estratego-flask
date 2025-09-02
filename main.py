@@ -15,6 +15,7 @@ import requests
 from services import sportradar_now as SR
 from services import supabase_fs as FS
 from utils.scoring import ADJUSTS, WEIGHTS, clamp, logistic
+from prematch_bp import prematch_bp
 
 
 # -----------------------------------------------------------------------------
@@ -22,6 +23,8 @@ from utils.scoring import ADJUSTS, WEIGHTS, clamp, logistic
 # -----------------------------------------------------------------------------
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
+
+app.register_blueprint(prematch_bp, url_prefix="/matchup")
 
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -976,6 +979,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
