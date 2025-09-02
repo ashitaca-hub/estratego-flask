@@ -66,4 +66,4 @@ def prematch():
     resp_json = json.dumps(out)
 
     # Renderizamos la plantilla moderna
-    return render_template("prematch_template.html", json_data=resp_json)
+    return render_template("apps_script/prematch_template.html", json_data=resp_json)
