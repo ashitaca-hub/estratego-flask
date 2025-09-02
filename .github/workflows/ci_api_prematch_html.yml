@@ -47,6 +47,57 @@ jobs:
           # Asegura mínimos
           pip install flask requests psycopg2-binary pandas numpy jq
 
+
+      - name: Run prematch smoke tests (JSON + HTML)
+        env:
+          # asegúrate de tenerlos configurados como secrets si los necesitas en runtime:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}  # o anon si solo lectura
+          SR_API_KEY: ${{ secrets.SR_API_KEY }}                   # opcional si haces fallback SR
+          FLASK_ENV: testing
+        run: |
+          python - << 'PY'
+          import json
+          from main import app  # importa tu Flask app
+
+          client = app.test_client()
+
+          # IDs de ejemplo en el mismo espacio que fs_matches_long (cámbialos si usas otros)
+          P_ID = 225050   # Sinner (ejemplo)
+          O_ID = 407573   # Alcaraz (ejemplo)
+
+          payload = {
+              "player_id": P_ID,
+              "opponent_id": O_ID,
+              "tournament": {"name": "Cincinnati", "month": 8},
+              "years_back": 4
+          }
+
+          # --- 1) JSON /matchup ---
+          r = client.post("/matchup", json=payload)
+          assert r.status_code == 200, r.data
+          data = r.get_json()
+          assert "extras" in data, "extras missing"
+          ex = data["extras"]
+
+          # chequear rank/ytd presentes (permitimos None pero claves deben existir)
+          for k in ["rank_p","rank_o","ytd_wr_p","ytd_wr_o"]:
+              assert k in ex, f"{k} missing in extras"
+
+          print("[OK] /matchup extras keys present:", {k: ex.get(k) for k in ["rank_p","rank_o","ytd_wr_p","ytd_wr_o"]})
+
+          # --- 2) HTML /matchup/prematch ---
+          r2 = client.post("/matchup/prematch", json=payload)
+          assert r2.status_code == 200, r2.data
+          html = r2.get_data(as_text=True)
+          assert "window.resp" in html, "window.resp not injected in prematch HTML"
+          # opcional: verificar que rank aparece como badge (#) o que el JSON está dentro del script
+          print("[OK] /matchup/prematch HTML rendered with window.resp")
+
+          PY
+
+
       - name: Sanity template existe
         run: |
           test -f apps_script/prematch_template.html || { echo "::error::Falta apps_script/prematch_template.html"; exit 1; }
