@@ -1,0 +1,152 @@
+name: Cargar ranking ATP (Sportradar → Supabase)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "10 4 * * MON"  # Lunes 04:10 UTC (ajusta si quieres)
+
+jobs:
+  load-ranking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      SR_API_KEY: ${{ secrets.SR_API_KEY }}               # Sportradar
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}           # https://<project>.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}           # opcional: psql directo
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests "supabase>=2.4.0" psycopg2-binary
+
+      # (OPCIONAL) Crear tabla/índices con psql si proporcionas DATABASE_URL
+      - name: Ensure table (via psql)
+        if: env.DATABASE_URL != ''
+        run: |
+          cat > /tmp/init_rankings.sql << 'SQL'
+          create table if not exists public.rankings_snapshot_int (
+            asof_date date not null,
+            sr_id_text text not null,         -- "sr:competitor:225050"
+            sr_id_num  int  not null,         -- 225050
+            rank       int  not null,
+            points     int,
+            player_name text,
+            country_code text,
+            movement   int,
+            competitions_played int,
+            source     text default 'sportradar',
+            created_at timestamptz default now(),
+            updated_at timestamptz default now(),
+            primary key (asof_date, sr_id_num)
+          );
+          create index if not exists rankings_snapshot_int_date_idx
+            on public.rankings_snapshot_int (asof_date);
+          create or replace view public.v_player_rank_now_int as
+          select distinct on (sr_id_num)
+            sr_id_num as player_id_int,
+            rank, points, asof_date
+          from public.rankings_snapshot_int
+          order by sr_id_num, asof_date desc, rank asc;
+          SQL
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/init_rankings.sql
+
+      - name: Write loader script
+        run: |
+          cat > load_rankings_supabase.py << 'PY'
+          import os, re
+          from datetime import date
+          import requests
+          from supabase import create_client, Client
+
+          SR_API_KEY = os.environ["SR_API_KEY"]
+          SUPABASE_URL = os.environ["SUPABASE_URL"]
+          SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          BASE_URL = "https://api.sportradar.com/tennis/trial/v3/en"
+
+          def digits(s: str) -> int | None:
+            import re
+            m = re.sub(r"\D", "", s or "")
+            return int(m) if m else None
+
+          def fetch_atp_rankings():
+            r = requests.get(f"{BASE_URL}/rankings.json",
+                             headers={"accept":"application/json","x-api-key":SR_API_KEY},
+                             timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            for blk in data.get("rankings", []):
+              if (blk.get("name") == "ATP") and ((blk.get("gender") or "").lower() == "men"):
+                year = int(blk.get("year"))
+                week = int(blk.get("week"))
+                rows = []
+                for cr in blk.get("competitor_rankings", []):
+                  comp = cr.get("competitor") or {}
+                  sr_text = comp.get("id")
+                  sr_num  = digits(sr_text)
+                  if not sr_num or not cr.get("rank"):
+                    continue
+                  rows.append({
+                    "asof_date": date.today().isoformat(),
+                    "sr_id_text": sr_text,
+                    "sr_id_num": sr_num,
+                    "rank": int(cr["rank"]),
+                    "points": cr.get("points"),
+                    "player_name": comp.get("name"),
+                    "country_code": comp.get("country_code"),
+                    "movement": cr.get("movement"),
+                    "competitions_played": cr.get("competitions_played"),
+                    "source": "sportradar",
+                  })
+                return rows, year, week
+            return [], None, None
+
+          def main():
+            supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            rows, year, week = fetch_atp_rankings()
+            if not rows:
+              print("No rankings found.")
+              return
+
+            # Asegura tabla si no existe (vía REST no podemos DDL; confía en step psql o crea manualmente)
+            # Upsert idempotente por (asof_date, sr_id_num)
+            # Nota: upsert requiere PK/unique en esos campos o 'on_conflict' explícito
+            res = supabase.table("rankings_snapshot_int").upsert(
+              rows,
+              on_conflict="asof_date,sr_id_num"
+            ).execute()
+
+            print(f"UPSERT OK - inserted/updated: {len(rows)}  (year={year}, week={week})")
+
+            # Mini resumen: Top 10 de hoy desde Supabase
+            top = supabase.table("rankings_snapshot_int") \
+                          .select("sr_id_num,rank,points,player_name") \
+                          .eq("asof_date", date.today().isoformat()) \
+                          .order("rank", desc=False) \
+                          .limit(10) \
+                          .execute()
+            print("Top10 hoy:", top.data)
+
+          if __name__ == "__main__":
+            main()
+          PY
+
+      - name: Run loader
+        run: python load_rankings_supabase.py
+
+      - name: Quick check (psql)
+        if: env.DATABASE_URL != ''
+        run: |
+          psql "$DATABASE_URL" -c "select count(*) as filas_hoy from public.rankings_snapshot_int where asof_date = current_date;"
+          psql "$DATABASE_URL" -c "select * from public.v_player_rank_now_int order by rank asc limit 10;"
