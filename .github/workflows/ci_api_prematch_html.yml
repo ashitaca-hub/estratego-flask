@@ -1,31 +1,53 @@
-name: CI – Prematch HTML (DB-only)
+name: CI – Prematch HTML (DB-only, parametrizable)
 
 on:
-  workflow_dispatch: {}
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      player_id:
+        description: "ID del jugador (int SR, mismo espacio que fs_matches_long)"
+        required: true
+        default: "225050"   # Sinner (ejemplo)
+      opponent_id:
+        description: "ID del oponente (int SR)"
+        required: true
+        default: "407573"   # Alcaraz (ejemplo)
+      tournament_name:
+        description: "Nombre del torneo (para UI y normalización)"
+        required: true
+        default: "Cincinnati"
+      month:
+        description: "Mes del torneo (1..12)"
+        required: true
+        default: "8"
+      years_back:
+        description: "Histórico a revisar (años)"
+        required: true
+        default: "4"
 
 jobs:
   prematch-ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     env:
       # 👉 SOLO Postgres (sin PostgREST)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
-      # Silenciar INFO de supabase_fs (esos “SUPABASE_URL / SUPABASE_KEY no configurados.”)
+      # Silenciar INFO de supabase_fs (oculta mensajes de PostgREST ausente)
       LOG_LEVEL: WARNING
 
-      # ⚠️ NO definimos SUPABASE_URL ni SUPABASE_KEY en Opción A
-      # SUPABASE_URL: (no set)
-      # SUPABASE_KEY: (no set)
-
-      # Si quieres fallback a Sportradar en tiempo real, añade tu API key:
+      # (Opcional) Fallback SR si falta dato en BD
       # SR_API_KEY: ${{ secrets.SR_API_KEY }}
 
       PYTHONUNBUFFERED: "1"
       FLASK_ENV: testing
+
+      # Inputs accesibles como envs
+      P_ID: ${{ inputs.player_id }}
+      O_ID: ${{ inputs.opponent_id }}
+      T_NAME: ${{ inputs.tournament_name }}
+      T_MONTH: ${{ inputs.month }}
+      YEARS_BACK: ${{ inputs.years_back }}
 
     steps:
       - name: Checkout
@@ -39,51 +61,69 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          # Dependencias típicas del proyecto (ajusta si usas otras)
+          # Ajusta si tu proyecto usa más deps
           pip install flask requests psycopg2-binary
 
-      # (Opcional) sanity DB: que existe y responde
       - name: DB sanity check
         run: |
           psql "$DATABASE_URL" -c "select now();"
-          # vistas/tablas necesarias para rank/YTD
-          psql "$DATABASE_URL" -c "select count(*) from public.rankings_snapshot_int limit 1;" || true
-          psql "$DATABASE_URL" -c "select * from public.v_player_rank_now_int order by rank asc limit 3;" || true
-          psql "$DATABASE_URL" -c "select * from public.v_player_ytd_now_int  limit 3;" || true
+          psql "$DATABASE_URL" -c "select * from public.v_player_rank_now_int  order by rank asc limit 3;" || true
+          psql "$DATABASE_URL" -c "select * from public.v_player_ytd_now_int   limit 3;" || true
 
-      - name: Run prematch smoke tests (JSON + HTML)
+      - name: Smoke tests + generar HTML y JSON
         run: |
           python - << 'PY'
-          import json
+          import os, json
           from main import app
+
+          p_id = int(os.environ["P_ID"])
+          o_id = int(os.environ["O_ID"])
+          t_name = os.environ["T_NAME"]
+          t_month = int(os.environ["T_MONTH"])
+          years_back = int(os.environ["YEARS_BACK"])
+
+          payload = {
+              "player_id": p_id,
+              "opponent_id": o_id,
+              "tournament": {"name": t_name, "month": t_month},
+              "years_back": years_back
+          }
 
           client = app.test_client()
 
-          # IDs de ejemplo (mismo espacio que fs_matches_long – ajusta si usas otros)
-          P_ID = 225050   # Sinner (ejemplo)
-          O_ID = 407573   # Alcaraz (ejemplo)
-
-          payload = {
-              "player_id": P_ID,
-              "opponent_id": O_ID,
-              "tournament": {"name": "Cincinnati", "month": 8},
-              "years_back": 4
-          }
-
-          # --- 1) JSON /matchup ---
-          r = client.post("/matchup", json=payload)
-          assert r.status_code == 200, r.data
-          data = r.get_json()
-          assert "extras" in data, "extras missing"
-          ex = data["extras"]
+          # 1) /matchup (JSON) — guardamos para inspección
+          r_json = client.post("/matchup", json=payload)
+          assert r_json.status_code == 200, r_json.data
+          data = r_json.get_json()
+          assert "extras" in data, "extras missing in /matchup"
           for k in ["rank_p","rank_o","ytd_wr_p","ytd_wr_o"]:
-              assert k in ex, f"{k} missing in extras"
-          print("[OK] /matchup extras:", {k: ex.get(k) for k in ["rank_p","rank_o","ytd_wr_p","ytd_wr_o"]})
+              assert k in data["extras"], f"{k} missing in extras"
+          with open("prematch.json", "w", encoding="utf-8") as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
 
-          # --- 2) HTML /matchup/prematch ---
-          r2 = client.post("/matchup/prematch", json=payload)
-          assert r2.status_code == 200, r2.data
-          html = r2.get_data(as_text=True)
+          # 2) /matchup/prematch (HTML) — render y guardado de archivo
+          r_html = client.post("/matchup/prematch", json=payload)
+          assert r_html.status_code == 200, r_html.data
+          html = r_html.get_data(as_text=True)
           assert "window.resp" in html, "window.resp not injected in prematch HTML"
-          print("[OK] /matchup/prematch HTML rendered with window.resp")
+          with open("prematch.html", "w", encoding="utf-8") as f:
+              f.write(html)
+
+          print("[OK] Generados prematch.html y prematch.json")
           PY
+
+      - name: Upload artifact (prematch.html)
+        uses: actions/upload-artifact@v4
+        with:
+          name: prematch_html
+          path: prematch.html
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload artifact (prematch.json)
+        uses: actions/upload-artifact@v4
+        with:
+          name: prematch_json
+          path: prematch.json
+          if-no-files-found: error
+          retention-days: 7
