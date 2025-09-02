@@ -70,6 +70,29 @@ jobs:
           psql "$DATABASE_URL" -c "select * from public.v_player_rank_now_int  order by rank asc limit 3;" || true
           psql "$DATABASE_URL" -c "select * from public.v_player_ytd_now_int   limit 3;" || true
 
+      - name: Echo inputs y chequeo DB de ranking
+        run: |
+          echo "Inputs:"
+          echo "  P_ID=${P_ID}"
+          echo "  O_ID=${O_ID}"
+          echo "  T_NAME=${T_NAME}"
+          echo "  T_MONTH=${T_MONTH}"
+          echo "  YEARS_BACK=${YEARS_BACK}"
+
+          echo "Ranking hoy para esos IDs:"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select snapshot_date, player_id, rank, points, player_name
+            from public.rankings_snapshot_int
+            where player_id in (${P_ID},${O_ID})
+            order by snapshot_date desc, player_id
+            limit 20;"
+
+          echo "Vista vigente (debería coger el último snapshot):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select player_id, rank, points
+            from public.v_player_rank_now_int
+            where player_id in (${P_ID},${O_ID})
+            order by player_id;"
+
+
       - name: Smoke tests + generar HTML y JSON
         run: |
           python - << 'PY'
