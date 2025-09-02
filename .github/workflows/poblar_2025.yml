@@ -59,7 +59,7 @@ jobs:
 
       - name: Ejecutar script de poblar 2025
         run: |
-          python /apps_script/poblar_2025_sportradar.py
+          python apps_script/poblar_2025_sportradar.py
 
       - name: Resumen
         run: |
