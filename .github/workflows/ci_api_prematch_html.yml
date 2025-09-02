@@ -78,19 +78,23 @@ jobs:
           echo "  T_NAME=${T_NAME}"
           echo "  T_MONTH=${T_MONTH}"
           echo "  YEARS_BACK=${YEARS_BACK}"
-
-          echo "Ranking hoy para esos IDs:"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select snapshot_date, player_id, rank, points, player_name
+      
+          echo "Describe tabla rankings_snapshot_int (para ver columnas reales):"
+          psql "$DATABASE_URL" -c "\d+ public.rankings_snapshot_int" || true
+      
+          echo "Ranking hoy para esos IDs (columnas seguras):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select snapshot_date, player_id, rank, points
             from public.rankings_snapshot_int
             where player_id in (${P_ID},${O_ID})
             order by snapshot_date desc, player_id
             limit 20;"
-
+      
           echo "Vista vigente (debería coger el último snapshot):"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select player_id, rank, points
             from public.v_player_rank_now_int
             where player_id in (${P_ID},${O_ID})
             order by player_id;"
+
 
 
       - name: Smoke tests + generar HTML y JSON
