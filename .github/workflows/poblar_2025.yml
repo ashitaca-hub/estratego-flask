@@ -1,0 +1,66 @@
+name: Poblar 2025 desde Sportradar
+
+on:
+  workflow_dispatch:
+    inputs:
+      season_ids:
+        description: "Lista separada por comas de sr:season:XXXX a cargar (opcional si usas COMPETITIONS)"
+        required: false
+        default: ""
+      competitions:
+        description: "Lista separada por comas de sr:competition:XXXX para descubrir la season 2025 (opcional)"
+        required: false
+        default: ""
+  schedule:
+    # opcional: cada día a las 03:10 (hora UTC)
+    - cron: "10 3 * * *"
+
+jobs:
+  poblar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Secrets: configúralos en Settings → Secrets and variables → Actions
+      SR_API_KEY: ${{ secrets.SR_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Entradas del workflow
+      SEASON_IDS_CSV: ${{ inputs.season_ids }}
+      COMPETITIONS_CSV: ${{ inputs.competitions }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests psycopg2-binary
+
+      - name: Escribir archivo de config dinámico (opcional)
+        run: |
+          python - << 'PY'
+          import os, json, pathlib
+          season_ids = [s.strip() for s in (os.getenv("SEASON_IDS_CSV") or "").split(",") if s.strip()]
+          competitions = [c.strip() for c in (os.getenv("COMPETITIONS_CSV") or "").split(",") if c.strip()]
+          cfg_path = pathlib.Path("poblar_config.json")
+          cfg = {
+            "SEASON_IDS": season_ids,        # prioriza esto si no está vacío
+            "COMPETITIONS": competitions     # si SEASON_IDS vacío, descubrirá seasons 2025 desde aquí
+          }
+          cfg_path.write_text(json.dumps(cfg))
+          print("CONFIG ESCRITA:", cfg)
+          PY
+
+      - name: Ejecutar script de poblar 2025
+        run: |
+          python poblar_2025_sportradar.py
+
+      - name: Resumen
+        run: |
+          echo "✅ Carga completada. Revisa la tabla public.matches_long_base y la vista public.fs_matches_long."
