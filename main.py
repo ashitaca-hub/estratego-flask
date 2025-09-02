@@ -796,6 +796,7 @@ def matchup():
 
     resp["extras"] = extras
     # ===== FIN ENRIQUECIMIENTO =====
+     
 
     return jsonify(resp), 200
 
@@ -842,53 +843,64 @@ def _render_prematch_with_template(resp_dict: dict) -> str | None:
     return tpl
 
 def enrich_resp_with_extras(resp: dict) -> dict:
-    extras = {}
+    """Completa resp['extras'] con rank/YTD (DB→SR) y recalcula localía si hay país de torneo."""
+    def _to_int_or_none(v):
+        try:
+            return int(v) if isinstance(v, (int, str)) and str(v).isdigit() else None
+        except:
+            return None
+
+    extras = resp.setdefault("extras", {})
     try:
         inp = resp.get("inputs", {}) or {}
 
-        p_int = _safe_int(inp.get("player_id"))
-        o_int = _safe_int(inp.get("opponent_id"))
+        p_int = _to_int_or_none(inp.get("player_id"))
+        o_int = _to_int_or_none(inp.get("opponent_id"))
 
-        p_sr  = inp.get("player_sr_id") or (inp.get("player_id") if isinstance(inp.get("player_id"), str) and inp.get("player_id","").startswith("sr:") else None)
-        o_sr  = inp.get("opponent_sr_id") or (inp.get("opponent_id") if isinstance(inp.get("opponent_id"), str) and inp.get("opponent_id","").startswith("sr:") else None)
+        p_sr  = inp.get("player_sr_id") if isinstance(inp.get("player_sr_id"), str) else None
+        o_sr  = inp.get("opponent_sr_id") if isinstance(inp.get("opponent_sr_id"), str) else None
 
         meta_p = FS.get_player_meta(pid_int=p_int, sr_id=p_sr)
         meta_o = FS.get_player_meta(pid_int=o_int, sr_id=o_sr)
 
         extras.update({
-            "display_p":   meta_p.get("name"),
-            "display_o":   meta_o.get("name"),
-            "country_p":   meta_p.get("country_code"),
-            "country_o":   meta_o.get("country_code"),
-            "ytd_wr_p":    meta_p.get("ytd_wr"),
-            "ytd_wr_o":    meta_o.get("ytd_wr"),
-            "rank_p":      meta_p.get("rank"),
-            "rank_o":      meta_o.get("rank"),
+            "display_p":     meta_p.get("name"),
+            "display_o":     meta_o.get("name"),
+            "country_p":     meta_p.get("country_code"),
+            "country_o":     meta_o.get("country_code"),
+            "ytd_wr_p":      meta_p.get("ytd_wr"),   # 0..1
+            "ytd_wr_o":      meta_o.get("ytd_wr"),
+            "rank_p":        meta_p.get("rank"),
+            "rank_o":        meta_o.get("rank"),
             "rank_source_p": meta_p.get("rank_source"),
             "rank_source_o": meta_o.get("rank_source"),
-            "def_points_p":meta_p.get("def_points"),
-            "def_points_o":meta_o.get("def_points"),
-            "def_title_p": meta_p.get("def_title"),
-            "def_title_o": meta_o.get("def_title"),
+            "def_points_p":  meta_p.get("def_points"),
+            "def_points_o":  meta_o.get("def_points"),
+            "def_title_p":   meta_p.get("def_title"),
+            "def_title_o":   meta_o.get("def_title"),
         })
 
-        # País del torneo (para flags Local)
+        # País del torneo (para chips de 'Local')
         tname = (inp.get("tournament") or {}).get("name")
-        t_country = FS.get_tourney_country(tname) if tname else None
+        try:
+            t_country = FS.get_tourney_country(tname) if tname else None
+        except Exception:
+            t_country = None
         extras["tourney_country"] = t_country
 
-        # Recalcula localía sólo si tenemos ambos datos
-        flags = resp.setdefault("flags", {})
+        # Recalcula flags de localía si hay info
+        flags = resp.setdefault("features", {}).setdefault("flags", {})
         if t_country and meta_p.get("country_code"):
             flags["is_local_p"] = 1 if meta_p["country_code"].upper() == t_country.upper() else 0
         if t_country and meta_o.get("country_code"):
             flags["is_local_o"] = 1 if meta_o["country_code"].upper() == t_country.upper() else 0
 
-    except Exception:
+    except Exception as e:
+        # No bloquear el render por un extra
         pass
 
-    resp["extras"] = extras
     return resp
+
 
 
 def _as_dict(x):
@@ -951,6 +963,7 @@ def matchup_prematch_html():
     """
     body = request.get_json(force=True, silent=True) or {}
     out = _compute_matchup_payload(body)
+    out = enrich_resp_with_extras(out)  # ← Añade esta línea
 
     html = _render_prematch_with_template(out)
     if not html:
@@ -974,5 +987,6 @@ document.getElementById('json').textContent = JSON.stringify(resp, null, 2);
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
