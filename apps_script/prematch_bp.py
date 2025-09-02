@@ -2,7 +2,7 @@
 from __future__ import annotations
 from flask import Blueprint, request, Response, render_template
 import os, json, re
-from import main  # o donde tengas la función que genera el payload
+
 
 def _json_for_js(obj: dict) -> str:
     s = json.dumps(obj, ensure_ascii=False)
@@ -50,15 +50,20 @@ def make_prematch_bp(compute_fn):
     compute_fn: función que recibe el payload (dict) y devuelve el MISMO dict
     que usas en /matchup (con prob_player, inputs, features, etc).
     """
-    bp = Blueprint("prematch", __name__, template_folder=".")  # 👈 usa la plantilla del mismo dir
+bp = Blueprint("prematch", __name__, template_folder=".")
 
-    @bp.route("/prematch", methods=["POST"])  # OJO: el prefix lo ponemos al registrar
+@bp.route("/prematch", methods=["POST"])
 def prematch():
     payload = request.get_json(force=True, silent=True) or {}
-    out = main._compute_matchup_payload(payload)
-    out = main.enrich_resp_with_extras(out)
+
+    # IMPORT TARDÍO para evitar import circular con main.py
+    from main import _compute_matchup_payload, enrich_resp_with_extras
+
+    out = _compute_matchup_payload(payload)
+    out = enrich_resp_with_extras(out)
+
     resp_json = json.dumps(out)
     return render_template("prematch_template.html", json_data=resp_json)
 
-# (opcional) alias legible
+# Alias por compatibilidad si en main.py importas 'prematch_bp'
 prematch_bp = bp
