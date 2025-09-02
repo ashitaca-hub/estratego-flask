@@ -1,30 +1,27 @@
 # services/supabase_fs.py
 from __future__ import annotations
-import os, json
+import os, json, re
 import logging
 import urllib.parse
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import requests
 from typing import Any, Dict, Optional
 
 try:
     import psycopg2
+    from psycopg2.extras import RealDictCursor
 except ImportError:
     psycopg2 = None
 
-try:
-    # Usa tus funciones ya existentes para “now”
-    from services.sportradar_now import get_current_rank, get_ytd_wr  # ajusta nombres si difieren
-except Exception:
-    get_current_rank = None
-    get_ytd_wr = None
-    
+import requests
+import datetime as _dt
+
+# ───────────────────────────────────────────────────────────────────
+# Configuración
+# ───────────────────────────────────────────────────────────────────
 log = logging.getLogger("supabase_fs")
+if not log.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-
-
-# === Config Supabase (service role recomendado para backend) ===
+# Supabase REST (si lo usas en otros helpers)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "20"))
@@ -35,48 +32,18 @@ HEADERS_SB = {
     "Content-Type": "application/json",
 }
 
-def norm_tourney_name(name: str, conn=None) -> str:
-    if not name: return None
-    # Usa tu función SQL si existe; si no, normaliza aquí
-    try:
-        pg, opened = _pg_conn_or_env(conn)
-        try:
-            with pg.cursor() as cur:
-                cur.execute("SELECT public.norm_tourney(%s)", (name,))
-                key, = cur.fetchone()
-                return key
-        finally:
-            if opened: pg.close()
-    except Exception:
-        # fallback mínimo
-        import re
-        return re.sub(r'[^a-z0-9]+', ' ', name.lower()).strip()
+# Sportradar fallbacks (si existen en tu proyecto)
+try:
+    # wrappers opcionales
+    from services.sportradar_now import get_current_rank, get_ytd_wr  # ajusta si difieren
+except Exception:
+    get_current_rank = None
+    get_ytd_wr = None
 
-def get_tourney_country(tourney_name: str, conn=None) -> str|None:
-    key = norm_tourney_name(tourney_name, conn=conn)
-    if not key: return None
-    pg, opened = _pg_conn_or_env(conn)
-    try:
-        with pg.cursor() as cur:
-            cur.execute("""
-                SELECT country_code
-                FROM public.tourney_country_map
-                WHERE tourney_key = public.norm_tourney(%s)
-                LIMIT 1
-            """, (tourney_name,))
-            r = cur.fetchone()
-            if r:
-                return r[0]
-    finally:
-        if opened: pg.close()
-    # fallback estático mínimo (por si no cargaste la tabla)
-    STATIC = {
-        "cincinnati": "USA",
-        "us open": "USA",
-        "paris masters": "FRA",
-        "indian wells": "USA",
-    }
-    return STATIC.get(key)
+
+# ───────────────────────────────────────────────────────────────────
+# Helpers REST a Supabase PostgREST
+# ───────────────────────────────────────────────────────────────────
 
 def _get(table: str, params: Dict[str, Any] | None = None, select: str = "*") -> list[dict]:
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -101,16 +68,32 @@ def _rpc(fn: str, payload: Dict[str, Any]) -> Any:
         r.raise_for_status()
     return r.json() if r.text else None
 
+
+# ───────────────────────────────────────────────────────────────────
+# Conexión PG
+# ───────────────────────────────────────────────────────────────────
+
+DISABLE_DB_CACHE = str(os.environ.get("DISABLE_DB_CACHE", "")).lower() in ("1","true","yes")
+
+def _pg_conn_or_env(conn=None):
+    if conn:
+        return conn, False
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 no disponible y no se pasó conn")
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
+    pg = psycopg2.connect(dsn)
+    return pg, True
+
+
+# ───────────────────────────────────────────────────────────────────
+# Normalización / torneo
+# ───────────────────────────────────────────────────────────────────
+
 def norm_tourney(txt: str | None) -> str | None:
-    """
-    Normaliza nombre de torneo vía RPC (si está expuesto por PostgREST).
-    Devuelve None si no está disponible.
-    """
     if not txt:
         return None
     try:
         res = _rpc("norm_tourney", {"txt": txt})
-        # PostgREST puede devolver list/dict/str según la config
         if isinstance(res, list) and res:
             res = res[0]
         if isinstance(res, dict) and "norm_tourney" in res:
@@ -119,35 +102,8 @@ def norm_tourney(txt: str | None) -> str | None:
             return res
     except Exception:
         pass
-    return None
-
-
-# -------------------------------------------------------------------
-# Torneo → surface / speed
-# -------------------------------------------------------------------
-
-
-log = logging.getLogger("estratego")
-if not log.handlers:
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-
-def get_sr_id_from_player_int(player_id: int) -> str | None:
-    """
-    Devuelve 'sr:competitor:<id>' a partir del player_id interno (INT).
-    Lee de public.players_lookup (ext_sportradar_id).
-    """
-    try:
-        rows = _get(  # <-- si tu helper es _rest_get, cámbialo aquí
-            "players_lookup",
-            {"player_id": f"eq.{int(player_id)}", "limit": 1},
-            select="ext_sportradar_id"
-        )
-        if rows and rows[0].get("ext_sportradar_id"):
-            return f"sr:competitor:{rows[0]['ext_sportradar_id']}"
-    except Exception as e:
-        log.info("get_sr_id_from_player_int(%s) fallo: %s", player_id, e)
-    return None
-
+    # fallback local
+    return re.sub(r'[^a-z0-9]+', ' ', txt.lower()).strip()
 
 def _speed_bucket_from_rank(rank):
     if rank is None:
@@ -157,13 +113,14 @@ def _speed_bucket_from_rank(rank):
 
 def get_tourney_meta(tournament_name: str) -> dict:
     """
-    Prioriza resolver (tourney_speed_resolved por clave normalizada).
-    Si no hay match, cae a court_speed_rankig_norm por ilike.
+    1º intenta tourney_speed_resolved por clave normalizada;
+    2º fallback a court_speed_rankig_norm por ILIKE;
+    devuelve surface/speed_rank/speed_bucket/category si hay.
     """
     if not tournament_name:
         return {}
-    # 1) Resolver por clave normalizada
     key = norm_tourney(tournament_name)
+    # 1) resolved
     if key:
         try:
             rows = _get(
@@ -183,7 +140,7 @@ def get_tourney_meta(tournament_name: str) -> dict:
                 return meta
         except Exception:
             pass
-    # 2) Fallback compat
+    # 2) compat
     try:
         rows = _get(
             "court_speed_rankig_norm",
@@ -206,13 +163,11 @@ def get_tourney_meta(tournament_name: str) -> dict:
     return meta
 
 
-# -------------------------------------------------------------------
-# Histórico (Feature Store)
-# -------------------------------------------------------------------
+# ───────────────────────────────────────────────────────────────────
+# Feature store – winrates (RPC o vistas precalculadas)
+# ───────────────────────────────────────────────────────────────────
+
 def _try_rpc_winrate_month(player_id: int, month: int, years_back: int) -> Optional[float]:
-    """
-    Intenta RPC fs_month_winrate(p_id int, p_month int, p_years int) → float (0..1)
-    """
     try:
         val = _rpc("fs_month_winrate", {"p_id": player_id, "p_month": month, "p_years": years_back})
         if isinstance(val, (int, float)):
@@ -222,9 +177,6 @@ def _try_rpc_winrate_month(player_id: int, month: int, years_back: int) -> Optio
     return None
 
 def _try_rpc_winrate_surface(player_id: int, surface: str, years_back: int) -> Optional[float]:
-    """
-    Intenta RPC fs_surface_winrate(p_id int, p_surface text, p_years int) → float (0..1)
-    """
     try:
         val = _rpc("fs_surface_winrate", {"p_id": player_id, "p_surface": surface, "p_years": years_back})
         if isinstance(val, (int, float)):
@@ -234,9 +186,6 @@ def _try_rpc_winrate_surface(player_id: int, surface: str, years_back: int) -> O
     return None
 
 def _try_rpc_winrate_speed(player_id: int, speed_bucket: str, years_back: int) -> Optional[float]:
-    """
-    Intenta RPC fs_speed_winrate(p_id int, p_speed text, p_years int) → float (0..1)
-    """
     try:
         val = _rpc("fs_speed_winrate", {"p_id": player_id, "p_speed": speed_bucket, "p_years": years_back})
         if isinstance(val, (int, float)):
@@ -246,10 +195,6 @@ def _try_rpc_winrate_speed(player_id: int, speed_bucket: str, years_back: int) -
     return None
 
 def _try_view_winrate_month(player_id: int, month: int, years_back: int) -> Optional[float]:
-    """
-    Plan B si no hay RPC: vista agregada p.ej. fs_player_month_winrate con columnas:
-      player_id int, month int, years_back int, winrate float
-    """
     try:
         rows = _get(
             "fs_player_month_winrate",
@@ -306,7 +251,10 @@ def _winrate_speed(player_id: int, speed_bucket: str, years_back: int) -> Option
         or _try_view_winrate_speed(player_id, speed_bucket, years_back)
     )
 
-import datetime as _dt  # al inicio del archivo si no lo tienes
+
+# ───────────────────────────────────────────────────────────────────
+# Matchup histórico (RPC con fallback a winrates)
+# ───────────────────────────────────────────────────────────────────
 
 def get_matchup_hist_vector(
     p_id: int,
@@ -315,11 +263,7 @@ def get_matchup_hist_vector(
     tname: str,
     month: int,
 ) -> dict:
-    """
-    Primero intenta el RPC 'get_matchup_hist_vector' (as-of, suavizado).
-    Si no está disponible, cae a la lógica actual con winrates.
-    """
-    # -------- intento RPC único --------
+    # 1) intento RPC único (si lo tienes)
     try:
         payload = {
             "p_player_id": int(p_id),
@@ -328,7 +272,6 @@ def get_matchup_hist_vector(
             "p_as_of": _dt.date.today().isoformat(),
             "p_tournament_name": tname,
             "p_month": int(month),
-            # Puedes pasar k si quieres: "p_k_month": 8, "p_k_surface": 8, "p_k_speed": 8
         }
         data = _rpc("get_matchup_hist_vector", payload)
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
@@ -344,19 +287,10 @@ def get_matchup_hist_vector(
     except Exception as e:
         log.info("RPC get_matchup_hist_vector no disponible, fallback winrates: %s", e)
 
-    # -------- FALLBACK: tu lógica actual con winrates --------
+    # 2) FALLBACK (vistas/RPC simples)
     meta = get_tourney_meta(tname) if tname else {}
     surface = (meta.get("surface") or "hard").lower()
     speed_bucket = meta.get("speed_bucket") or "Medium"
-
-    wr_p_month = _winrate_month(p_id, month, yrs)
-    wr_o_month = _winrate_month(o_id, month, yrs)
-
-    wr_p_surf = _winrate_surface(p_id, surface, yrs)
-    wr_o_surf = _winrate_surface(o_id, surface, yrs)
-
-    wr_p_speed = _winrate_speed(p_id, speed_bucket, yrs)
-    wr_o_speed = _winrate_speed(o_id, speed_bucket, yrs)
 
     def _delta(a, b) -> float:
         try:
@@ -367,6 +301,13 @@ def get_matchup_hist_vector(
             return a1 - b1
         except Exception:
             return 0.0
+
+    wr_p_month = _winrate_month(p_id, month, yrs)
+    wr_o_month = _winrate_month(o_id, month, yrs)
+    wr_p_surf  = _winrate_surface(p_id, surface, yrs)
+    wr_o_surf  = _winrate_surface(o_id, surface, yrs)
+    wr_p_speed = _winrate_speed(p_id, speed_bucket, yrs)
+    wr_o_speed = _winrate_speed(o_id, speed_bucket, yrs)
 
     out = {
         "surface": surface,
@@ -380,102 +321,237 @@ def get_matchup_hist_vector(
     return out
 
 
-# === Matchup cache helpers (Postgres) ===============================
-import os, json
-try:
-    import psycopg2  # opcional
-except Exception:
-    psycopg2 = None
+# ───────────────────────────────────────────────────────────────────
+# Player meta: Ranking + YTD (DB → SR fallback)
+# ───────────────────────────────────────────────────────────────────
 
-DISABLE_DB_CACHE = str(os.environ.get("DISABLE_DB_CACHE", "")).lower() in ("1","true","yes")
+def _digits_from_sr_id(sr_id: str | None) -> Optional[int]:
+    if not sr_id:
+        return None
+    d = re.sub(r"\D", "", sr_id)
+    return int(d) if d else None
 
-def _pg_conn_or_env(conn=None):
-    if conn:
-        return conn, False
-    dsn = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
-    pg = psycopg2.connect(dsn)
-    return pg, True
-
-def get_player_meta(pid_int=None, sr_id=None, conn=None):
+def _get_rank_from_db_view(player_id_int: int, conn=None) -> tuple[Optional[int], Optional[int]]:
     """
-    Devuelve dict con: name, country_code, rank, ytd_wr, def_points, def_title, ext_sportradar_id, rank_source.
-    Usa DB si hay; si falta rank/ytd, hace fallback a SportRadar si sr_id está presente.
+    Lee ranking/points desde la vista pública v_player_rank_now_int.
     """
-    meta = {
-        "name": None, "country_code": None,
-        "rank": None, "ytd_wr": None,
-        "def_points": None, "def_title": None,
-        "ext_sportradar_id": sr_id,
-        "rank_source": None,
-    }
-    pg, opened = _pg_conn_or_env(conn)
     try:
-        with pg.cursor(cursor_factory=RealDictCursor) as cur:
-            # Intenta sacar de players_lookup (ajusta esquema si lo tienes en otro)
-            if pid_int is not None:
+        pg, opened = _pg_conn_or_env(conn)
+        try:
+            with pg.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT name, country_code, ext_sportradar_id, rank, ytd_wr
-                    FROM public.players_lookup
-                    WHERE player_id = %s
-                    LIMIT 1
-                """, (pid_int,))
+                    select rank, points
+                    from public.v_player_rank_now_int
+                    where player_id = %s
+                    limit 1
+                """, (player_id_int,))
                 row = cur.fetchone()
                 if row:
-                    meta["name"] = row.get("name")
-                    meta["country_code"] = row.get("country_code")
-                    meta["ext_sportradar_id"] = meta["ext_sportradar_id"] or row.get("ext_sportradar_id")
-                    meta["rank"] = row.get("rank")
-                    meta["ytd_wr"] = row.get("ytd_wr")
-                    meta["rank_source"] = "db" if meta["rank"] else None
+                    return (row.get("rank"), row.get("points"))
+        finally:
+            if opened: pg.close()
+    except Exception as e:
+        log.info("_get_rank_from_db_view fallo: %s", e)
+    return (None, None)
 
-            # Si aún no tenemos sr_id, intenta mapearlo
-            if not meta["ext_sportradar_id"] and pid_int is not None:
+def _get_ytd_from_db_view(player_id_int: int, conn=None) -> Optional[float]:
+    """
+    Lee winrate YTD (0..1) desde v_player_ytd_now_int.
+    """
+    try:
+        pg, opened = _pg_conn_or_env(conn)
+        try:
+            with pg.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT ext_sportradar_id
-                    FROM public.players_ext
-                    WHERE player_id = %s
-                    LIMIT 1
-                """, (pid_int,))
-                m = cur.fetchone()
-                if m and m.get("ext_sportradar_id"):
-                    meta["ext_sportradar_id"] = m["ext_sportradar_id"]
+                    select winrate
+                    from public.v_player_ytd_now_int
+                    where player_id = %s
+                    limit 1
+                """, (player_id_int,))
+                row = cur.fetchone()
+                if row and row.get("winrate") is not None:
+                    return float(row["winrate"])
+        finally:
+            if opened: pg.close()
+    except Exception as e:
+        log.info("_get_ytd_from_db_view fallo: %s", e)
+    return None
 
-    finally:
-        if opened:
-            pg.close()
+def _rank_norm(rank: Optional[int]) -> Optional[float]:
+    if rank is None:
+        return None
+    r = min(max(int(rank), 1), 200)  # cap 200
+    return max(0.0, 1.0 - (r / 200.0))
 
-    # Fallbacks a SportRadar si faltan datos recientes
-    sr = meta["ext_sportradar_id"] or sr_id
-    if sr:
-        # Ranking
-        if (meta["rank"] is None or meta["rank"] <= 0 or meta["rank"] > 1000) and get_current_rank:
-            try:
-                r = get_current_rank(sr)
-                if isinstance(r, int) and r > 0:
-                    meta["rank"] = r
-                    meta["rank_source"] = "sr"
-            except Exception:
-                pass
+def _upsert_rank_snapshot_sr(player_id_int: int, rank: int,
+                             points: Optional[int] = None,
+                             year: Optional[int] = None,
+                             week: Optional[int] = None,
+                             name: Optional[str] = None,
+                             country_code: Optional[str] = None,
+                             conn=None):
+    """
+    Cachea el ranking de SR en rankings_snapshot_int para snapshot_date = hoy.
+    Si no tienes year/week, puedes pasar None (se guardarán NULL).
+    """
+    try:
+        pg, opened = _pg_conn_or_env(conn)
+        try:
+            with pg.cursor() as cur:
+                cur.execute("""
+                    insert into public.rankings_snapshot_int
+                      (snapshot_date, year, week, player_id, rank, points, player_name, country_code, source)
+                    values (current_date, %s, %s, %s, %s, %s, %s, %s, 'sportradar')
+                    on conflict (snapshot_date, player_id) do update set
+                      rank = excluded.rank,
+                      points = excluded.points,
+                      player_name = coalesce(excluded.player_name, rankings_snapshot_int.player_name),
+                      country_code = coalesce(excluded.country_code, rankings_snapshot_int.country_code),
+                      updated_at = now()
+                """, (year, week, int(player_id_int), int(rank), points, name, country_code))
+            if opened: pg.commit()
+        finally:
+            if opened: pg.close()
+    except Exception as e:
+        log.info("_upsert_rank_snapshot_sr fallo (no crítico): %s", e)
 
-        # YTD winrate
-        if (meta["ytd_wr"] is None or meta["ytd_wr"] < 0 or meta["ytd_wr"] > 1) and get_ytd_wr:
-            try:
-                y = get_ytd_wr(sr)
-                if y is not None and 0 <= y <= 1:
-                    meta["ytd_wr"] = y
-            except Exception:
-                pass
+def get_sr_id_from_player_int(player_id: int) -> str | None:
+    """
+    Devuelve 'sr:competitor:<id>' a partir del player_id interno (INT),
+    leyendo de public.players_lookup (ext_sportradar_id) o de players_ext.
+    """
+    # 1) players_lookup
+    try:
+        rows = _get(
+            "players_lookup",
+            {"player_id": f"eq.{int(player_id)}", "limit": 1},
+            select="ext_sportradar_id"
+        )
+        if rows and rows[0].get("ext_sportradar_id"):
+            ext = rows[0]["ext_sportradar_id"]
+            if ext.startswith("sr:"):
+                return ext
+            return f"sr:competitor:{ext}"
+    except Exception as e:
+        log.info("get_sr_id_from_player_int(%s) fallo players_lookup: %s", player_id, e)
+    # 2) players_ext
+    try:
+        rows = _get(
+            "players_ext",
+            {"player_id": f"eq.{int(player_id)}", "limit": 1},
+            select="ext_sportradar_id"
+        )
+        if rows and rows[0].get("ext_sportradar_id"):
+            ext = rows[0]["ext_sportradar_id"]
+            if ext.startswith("sr:"):
+                return ext
+            return f"sr:competitor:{ext}"
+    except Exception as e:
+        log.info("get_sr_id_from_player_int(%s) fallo players_ext: %s", player_id, e)
+    return None
+
+
+def get_player_meta(pid_int: Optional[int] = None,
+                    sr_id: Optional[str] = None,
+                    conn=None) -> Dict[str, Any]:
+    """
+    Devuelve dict con:
+      name, country_code, rank, rank_norm, rank_points, ytd_wr,
+      def_points, def_title, ext_sportradar_id, rank_source, ytd_source.
+    Estrategia: DB primero (vistas _now_int) → fallback Sportradar; si SR da rank,
+    lo cacheamos en rankings_snapshot_int (opcional) con snapshot_date=hoy.
+    """
+    meta: Dict[str, Any] = {
+        "name": None,
+        "country_code": None,
+        "rank": None,
+        "rank_norm": None,
+        "rank_points": None,
+        "ytd_wr": None,
+        "def_points": None,
+        "def_title": None,
+        "ext_sportradar_id": sr_id,
+        "rank_source": None,
+        "ytd_source": None,
+    }
+
+    # 1) Datos básicos (nombre/país) si están en players_lookup
+    if pid_int is not None:
+        try:
+            rows = _get(
+                "players_lookup",
+                {"player_id": f"eq.{int(pid_int)}", "limit": 1},
+                select="name,country_code,ext_sportradar_id"
+            )
+            if rows:
+                row = rows[0]
+                meta["name"] = row.get("name")
+                meta["country_code"] = row.get("country_code")
+                if not meta["ext_sportradar_id"] and row.get("ext_sportradar_id"):
+                    ext = row["ext_sportradar_id"]
+                    meta["ext_sportradar_id"] = ext if ext.startswith("sr:") else f"sr:competitor:{ext}"
+        except Exception as e:
+            log.info("players_lookup fetch fallo: %s", e)
+
+    # SR id si sigue faltando
+    if not meta["ext_sportradar_id"] and pid_int is not None:
+        meta["ext_sportradar_id"] = get_sr_id_from_player_int(pid_int)
+
+    # 2) RANK desde DB (vista)
+    if pid_int is not None:
+        db_rank, db_points = _get_rank_from_db_view(pid_int, conn=conn)
+        if db_rank is not None:
+            meta["rank"] = int(db_rank)
+            meta["rank_points"] = db_points
+            meta["rank_norm"] = _rank_norm(meta["rank"])
+            meta["rank_source"] = "db"
+
+    # 3) YTD desde DB (vista)
+    if pid_int is not None:
+        db_ytd = _get_ytd_from_db_view(pid_int, conn=conn)
+        if db_ytd is not None:
+            meta["ytd_wr"] = float(db_ytd)
+            meta["ytd_source"] = "db"
+
+    # 4) Fallback SR para Ranking (y cacheo opcional)
+    if meta["rank"] is None and get_current_rank and meta["ext_sportradar_id"]:
+        try:
+            sr_rank = get_current_rank(meta["ext_sportradar_id"])  # devuelve int o None
+            if isinstance(sr_rank, int) and sr_rank > 0:
+                meta["rank"] = sr_rank
+                meta["rank_norm"] = _rank_norm(sr_rank)
+                meta["rank_source"] = "sr"
+                # cachear (sin year/week si tu wrapper no lo devuelve)
+                pid_digits = pid_int if pid_int is not None else _digits_from_sr_id(meta["ext_sportradar_id"])
+                if pid_digits is not None:
+                    _upsert_rank_snapshot_sr(pid_digits, sr_rank,
+                                             points=None, year=None, week=None,
+                                             name=meta.get("name"), country_code=meta.get("country_code"),
+                                             conn=conn)
+        except Exception as e:
+            log.info("fallback SR rank fallo: %s", e)
+
+    # 5) Fallback SR para YTD (si tienes wrapper que lo calcule)
+    if meta["ytd_wr"] is None and get_ytd_wr and meta["ext_sportradar_id"]:
+        try:
+            sr_ytd = get_ytd_wr(meta["ext_sportradar_id"])  # debería devolver 0..1
+            if sr_ytd is not None and 0.0 <= float(sr_ytd) <= 1.0:
+                meta["ytd_wr"] = float(sr_ytd)
+                meta["ytd_source"] = "sr"
+        except Exception as e:
+            log.info("fallback SR ytd fallo: %s", e)
 
     return meta
 
+
+# ───────────────────────────────────────────────────────────────────
+# Matchup cache JSON (opcional si tienes funciones SQL)
+# ───────────────────────────────────────────────────────────────────
 
 def get_matchup_cache_json(player_id:int, opponent_id:int,
                            tournament_name:str, mon:int,
                            speed_bucket:str, years_back:int,
                            using_sr:bool, conn=None):
-    """
-    Devuelve (tourney_key, json|None). Si no hay psycopg2 o cache desactivada, devuelve (None, None).
-    """
     if DISABLE_DB_CACHE or psycopg2 is None:
         return None, None
     pg, opened = _pg_conn_or_env(conn)
@@ -499,9 +575,6 @@ def put_matchup_cache_json(player_id:int, opponent_id:int,
                            features:dict, flags:dict, weights_hist:dict|None,
                            sources:dict|None, ttl_seconds:int|None,
                            conn=None):
-    """
-    No-op si no hay psycopg2 o cache desactivada.
-    """
     if DISABLE_DB_CACHE or psycopg2 is None:
         return
     pg, opened = _pg_conn_or_env(conn)
@@ -527,7 +600,11 @@ def put_matchup_cache_json(player_id:int, opponent_id:int,
         if opened:
             pg.close()
 
-# === Bracket runs (opcional) ========================================
+
+# ───────────────────────────────────────────────────────────────────
+# Bracket runs (opcional)
+# ───────────────────────────────────────────────────────────────────
+
 def insert_bracket_run(
     tournament_name: str,
     tournament_month: int,
@@ -541,28 +618,18 @@ def insert_bracket_run(
     api_version: str | None = None,
     conn=None,
 ):
-    """
-    Inserta una corrida de bracket. Si psycopg2 no está presente, no hace nada (no rompe en CI).
-    Rellena columnas extra solo si se proporcionan.
-    """
-    if psycopg2 is None:  # fallback si no tienes psycopg2 instalado
+    if psycopg2 is None:
         return
-
     cols = ["tournament_name", "tournament_month", "years_back", "mode", "entrants", "result"]
     vals = [tournament_name, tournament_month, years_back, mode, json.dumps(entrants), json.dumps(result)]
-
     if champion_id is not None:
-        cols.append("champion_id")
-        vals.append(champion_id)
+        cols.append("champion_id"); vals.append(champion_id)
     if champion_name is not None:
-        cols.append("champion_name")
-        vals.append(champion_name)
+        cols.append("champion_name"); vals.append(champion_name)
     if used_sr is not None:
-        cols.append("used_sr")
-        vals.append(used_sr)
+        cols.append("used_sr"); vals.append(used_sr)
     if api_version is not None:
-        cols.append("api_version")
-        vals.append(api_version)
+        cols.append("api_version"); vals.append(api_version)
 
     placeholders = ", ".join(["%s"] * len(cols))
     collist = ", ".join(cols)
@@ -579,7 +646,3 @@ def insert_bracket_run(
     finally:
         if opened:
             pg.close()
-
-
-
-
