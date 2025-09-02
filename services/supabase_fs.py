@@ -4,6 +4,7 @@ import os, json
 import logging
 import urllib.parse
 import psycopg2
+from psycopg2.extras import RealDictCursor
 import requests
 from typing import Any, Dict, Optional
 
@@ -11,6 +12,13 @@ try:
     import psycopg2
 except ImportError:
     psycopg2 = None
+
+try:
+    # Usa tus funciones ya existentes para “now”
+    from services.sportradar_now import get_current_rank, get_ytd_wr  # ajusta nombres si difieren
+except Exception:
+    get_current_rank = None
+    get_ytd_wr = None
     
 log = logging.getLogger("supabase_fs")
 
@@ -338,71 +346,84 @@ except Exception:
 
 DISABLE_DB_CACHE = str(os.environ.get("DISABLE_DB_CACHE", "")).lower() in ("1","true","yes")
 
-def _pg_conn_or_env(existing=None):
-    if existing: return existing, False
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn or psycopg2 is None:
-        raise RuntimeError("DB no disponible (psycopg2 o DATABASE_URL)")
-    return psycopg2.connect(dsn), True
+def _pg_conn_or_env(conn=None):
+    if conn:
+        return conn, False
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
+    pg = psycopg2.connect(dsn)
+    return pg, True
 
 def get_player_meta(pid_int=None, sr_id=None, conn=None):
     """
-    Devuelve: {name, country_code, rank, ytd_wr, def_points, def_title}
-    - name / country_code: de public.players_lookup (por player_id interno o ext_sportradar_id).
-    - ytd_wr: winrate del año actual en fs_matches_long.
-    - rank/def_*: placeholders (rellénalos si tienes vistas/servicios).
+    Devuelve dict con: name, country_code, rank, ytd_wr, def_points, def_title, ext_sportradar_id, rank_source.
+    Usa DB si hay; si falta rank/ytd, hace fallback a SportRadar si sr_id está presente.
     """
+    meta = {
+        "name": None, "country_code": None,
+        "rank": None, "ytd_wr": None,
+        "def_points": None, "def_title": None,
+        "ext_sportradar_id": sr_id,
+        "rank_source": None,
+    }
     pg, opened = _pg_conn_or_env(conn)
-    out = {"name": None, "country_code": None, "rank": None, "ytd_wr": None,
-           "def_points": None, "def_title": None}
     try:
-        with pg.cursor() as cur:
-            # 1) Nombre y país desde players_lookup
+        with pg.cursor(cursor_factory=RealDictCursor) as cur:
+            # Intenta sacar de players_lookup (ajusta esquema si lo tienes en otro)
             if pid_int is not None:
                 cur.execute("""
-                    SELECT name, country_code
+                    SELECT name, country_code, ext_sportradar_id, rank, ytd_wr
                     FROM public.players_lookup
                     WHERE player_id = %s
                     LIMIT 1
                 """, (pid_int,))
-            elif sr_id:
-                # sr_id viene como 'sr:competitor:XXXX'
-                sr_num = sr_id.split(":")[-1] if ":" in sr_id else sr_id
+                row = cur.fetchone()
+                if row:
+                    meta["name"] = row.get("name")
+                    meta["country_code"] = row.get("country_code")
+                    meta["ext_sportradar_id"] = meta["ext_sportradar_id"] or row.get("ext_sportradar_id")
+                    meta["rank"] = row.get("rank")
+                    meta["ytd_wr"] = row.get("ytd_wr")
+                    meta["rank_source"] = "db" if meta["rank"] else None
+
+            # Si aún no tenemos sr_id, intenta mapearlo
+            if not meta["ext_sportradar_id"] and pid_int is not None:
                 cur.execute("""
-                    SELECT name, country_code
-                    FROM public.players_lookup
-                    WHERE ext_sportradar_id = %s
+                    SELECT ext_sportradar_id
+                    FROM public.players_ext
+                    WHERE player_id = %s
                     LIMIT 1
-                """, (sr_num,))
-            row = cur.fetchone()
-            if row:
-                out["name"], out["country_code"] = row[0], row[1]
-
-            # 2) YTD (año actual) en fs_matches_long
-            #    Ten en cuenta que player_id en fs_matches_long es entero interno
-            if pid_int is not None:
-                cur.execute("""
-                    WITH hist AS (
-                      SELECT
-                        CASE WHEN winner_id = player_id THEN 1 ELSE 0 END AS won
-                      FROM public.fs_matches_long
-                      WHERE player_id = %s
-                        AND match_date >= date_trunc('year', current_date)
-                        AND match_date <= current_date
-                    )
-                    SELECT AVG(won::float) FROM hist
                 """, (pid_int,))
-                ytd = cur.fetchone()[0]
-                out["ytd_wr"] = float(ytd) if ytd is not None else None
-
-            # TODO opcional:
-            # 3) Rank actual (si tienes una vista o API para rank en tiempo real)
-            # 4) Puntos a defender (si tienes vista con entradas del torneo actual)
+                m = cur.fetchone()
+                if m and m.get("ext_sportradar_id"):
+                    meta["ext_sportradar_id"] = m["ext_sportradar_id"]
 
     finally:
         if opened:
             pg.close()
-    return out
+
+    # Fallbacks a SportRadar si faltan datos recientes
+    sr = meta["ext_sportradar_id"] or sr_id
+    if sr:
+        # Ranking
+        if (meta["rank"] is None or meta["rank"] <= 0 or meta["rank"] > 1000) and get_current_rank:
+            try:
+                r = get_current_rank(sr)
+                if isinstance(r, int) and r > 0:
+                    meta["rank"] = r
+                    meta["rank_source"] = "sr"
+            except Exception:
+                pass
+
+        # YTD winrate
+        if (meta["ytd_wr"] is None or meta["ytd_wr"] < 0 or meta["ytd_wr"] > 1) and get_ytd_wr:
+            try:
+                y = get_ytd_wr(sr)
+                if y is not None and 0 <= y <= 1:
+                    meta["ytd_wr"] = y
+            except Exception:
+                pass
+
+    return meta
 
 
 def get_matchup_cache_json(player_id:int, opponent_id:int,
