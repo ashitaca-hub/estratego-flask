@@ -1,0 +1,180 @@
+name: Load Players from Sportradar → players_dim
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed_from_rankings:
+        description: "Sembrar players_dim con IDs vistos en rankings_snapshot_int"
+        required: true
+        default: "true"
+      seed_from_matches:
+        description: "Sembrar players_dim con IDs vistos en fs_matches_long"
+        required: true
+        default: "false"
+      limit:
+        description: "Límite de jugadores a perfilar en esta ejecución (0 = sin límite del script)"
+        required: true
+        default: "500"
+      dry_run:
+        description: "Dry-run (no aplica cambios, solo hace SELECTs)?"
+        required: true
+        default: "false"
+
+jobs:
+  load-players:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SR_API_KEY: ${{ secrets.SR_API_KEY }}
+      PYTHONUNBUFFERED: "1"
+
+      SEED_FROM_RANKINGS: ${{ inputs.seed_from_rankings }}
+      SEED_FROM_MATCHES: ${{ inputs.seed_from_matches }}
+      LIMIT_PLAYERS: ${{ inputs.limit }}
+      DRY_RUN: ${{ inputs.dry_run }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests psycopg2-binary
+
+      - name: DB — Create players_dim, trigger y vista players_lookup (idempotente)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          create table if not exists public.players_dim (
+            player_id           int primary key,
+            ext_sportradar_id   text unique,
+            name                text,
+            country             text,
+            country_code        text,
+            gender              text,
+            handedness          text,
+            date_of_birth       date,
+            height_cm           int,
+            weight_kg           int,
+            pro_year            int,
+            highest_rank        int,
+            highest_rank_date   text,
+            created_at          timestamptz default now(),
+            updated_at          timestamptz default now()
+          );
+
+          create or replace function public.touch_players_dim()
+          returns trigger language plpgsql as $$
+          begin
+            new.updated_at := now();
+            return new;
+          end $$;
+
+          drop trigger if exists trg_players_dim_touch on public.players_dim;
+          create trigger trg_players_dim_touch
+          before update on public.players_dim
+          for each row execute function public.touch_players_dim();
+
+          create or replace view public.players_lookup as
+          select player_id, name, country_code, ext_sportradar_id
+          from public.players_dim;
+          SQL
+
+      - name: DB — Sembrar IDs en players_dim (según inputs)
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: |
+          echo "SEED_FROM_RANKINGS=${SEED_FROM_RANKINGS}"
+          echo "SEED_FROM_MATCHES=${SEED_FROM_MATCHES}"
+
+          if [ "${SEED_FROM_RANKINGS}" = "true" ]; then
+            echo ">> Seeding desde rankings_snapshot_int"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+            insert into public.players_dim (player_id, ext_sportradar_id)
+            select distinct r.player_id, 'sr:competitor:' || r.player_id::text
+            from public.rankings_snapshot_int r
+            on conflict (player_id) do nothing;
+            SQL
+          fi
+
+          if [ "${SEED_FROM_MATCHES}" = "true" ]; then
+            echo ">> Seeding desde fs_matches_long"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+            insert into public.players_dim (player_id, ext_sportradar_id)
+            select distinct m.player_id, 'sr:competitor:' || m.player_id::text
+            from public.fs_matches_long m
+            left join public.players_dim d using (player_id)
+            where d.player_id is null;
+            SQL
+          fi
+
+      - name: Informe — Pendientes de perfilar antes del loader
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            select
+              count(*)                                  as total_dim,
+              count(*) filter (where name is null
+                               or country_code is null) as pendientes
+            from public.players_dim;
+          "
+
+      - name: DRY-RUN — Mostrar lista (limitada) de pendientes y salir
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            select player_id, ext_sportradar_id
+            from public.players_dim
+            where name is null or country_code is null
+            order by player_id
+            limit ${LIMIT_PLAYERS}::int;
+          "
+          echo "[DRY-RUN] No se llama al loader por DRY_RUN=true."
+          exit 0
+
+      - name: Python — Ejecutar loader (apps_script/load_players_from_sr.py)
+        run: |
+          python apps_script/load_players_from_sr.py
+
+      - name: Informe — Cobertura después del loader
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            with c as (
+              select
+                count(*)                                  as total_dim,
+                count(*) filter (where name is not null)  as con_nombre,
+                count(*) filter (where country_code is not null) as con_pais
+              from public.players_dim
+            )
+            select
+              total_dim,
+              con_nombre,
+              con_pais,
+              round(100.0*con_nombre/NULLIF(total_dim,0),2) as pct_nombre,
+              round(100.0*con_pais/NULLIF(total_dim,0),2)   as pct_pais
+            from c;
+          "
+
+      - name: (Opcional) Backfill rankings_snapshot_int (name/country) desde players_lookup
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          alter table public.rankings_snapshot_int
+            add column if not exists player_name  text,
+            add column if not exists country_code text,
+            add column if not exists movement int,
+            add column if not exists competitions_played int;
+
+          update public.rankings_snapshot_int r
+          set
+            player_name  = coalesce(r.player_name,  pl.name),
+            country_code = coalesce(r.country_code, pl.country_code)
+          from public.players_lookup pl
+          where pl.player_id = r.player_id
+            and (r.player_name is null or r.country_code is null);
+          SQL
