@@ -83,7 +83,7 @@ jobs:
           for each row execute function public.touch_players_dim();
 
           create or replace view public.players_lookup as
-          select player_id, name, country_code, ext_sportradar_id
+          select player_id, name, ext_sportradar_id, country_code
           from public.players_dim;
           SQL
 
