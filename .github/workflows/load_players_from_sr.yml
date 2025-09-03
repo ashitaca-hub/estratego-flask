@@ -87,32 +87,6 @@ jobs:
           from public.players_dim;
           SQL
 
-      - name: DB — Sembrar IDs en players_dim (según inputs)
-        if: ${{ env.DRY_RUN != 'true' }}
-        run: |
-          echo "SEED_FROM_RANKINGS=${SEED_FROM_RANKINGS}"
-          echo "SEED_FROM_MATCHES=${SEED_FROM_MATCHES}"
-
-          if [ "${SEED_FROM_RANKINGS}" = "true" ]; then
-            echo ">> Seeding desde rankings_snapshot_int"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
-            insert into public.players_dim (player_id, ext_sportradar_id)
-            select distinct r.player_id, 'sr:competitor:' || r.player_id::text
-            from public.rankings_snapshot_int r
-            on conflict (player_id) do nothing;
-            SQL
-          fi
-
-          if [ "${SEED_FROM_MATCHES}" = "true" ]; then
-            echo ">> Seeding desde fs_matches_long"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
-            insert into public.players_dim (player_id, ext_sportradar_id)
-            select distinct m.player_id, 'sr:competitor:' || m.player_id::text
-            from public.fs_matches_long m
-            left join public.players_dim d using (player_id)
-            where d.player_id is null;
-            SQL
-          fi
 
       - name: Informe — Pendientes de perfilar antes del loader
         run: |
