@@ -51,20 +51,20 @@ def make_prematch_bp(compute_fn):
     compute_fn: función que recibe el payload (dict) y devuelve el MISMO dict
     que usas en /matchup (con prob_player, inputs, features, etc).
     """
-prematch_bp = Blueprint(
-    "prematch",
-    __name__,
-    template_folder="apps_script"  # 👈 importante: carpeta donde vive la plantilla
-)
+bp = Blueprint("prematch", __name__, template_folder=".")  # plantilla en apps_script/
 
-@prematch_bp.route("/matchup/prematch", methods=["POST"])
-def matchup_prematch_html():
-    try:
-        data = request.get_json(force=True)
-        resp_json = get_matchup_payload(data)
+@bp.route("/prematch", methods=["POST"])
+def prematch():
+    payload = request.get_json(force=True, silent=True) or {}
 
-        # Ahora sí buscará en apps_script/prematch_template.html
-        return render_template("prematch_template.html", json_data=resp_json)
-    except Exception as e:
-        logging.exception("Error en prematch")
-        return jsonify({"error": "Internal server error"}), 500
+    # Import tardío para evitar import circular con main.py
+    from main import _compute_matchup_payload, enrich_resp_with_extras
+
+    out = _compute_matchup_payload(payload)
+    out = enrich_resp_with_extras(out)
+
+    resp_json = json.dumps(out)
+    return render_template("prematch_template.html", json_data=resp_json)
+
+# opcional alias
+prematch_bp = bp
