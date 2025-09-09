@@ -1,0 +1,253 @@
+name: DB – Setup YTD + FS mínimo + Tourney map
+
+on:
+  workflow_dispatch:
+    inputs:
+      tourney_name:
+        description: "Torneo a mapear (para chip Local)"
+        required: true
+        default: "Cincinnati"
+      tourney_country_code:
+        description: "País del torneo (ISO2, p.ej. US, ESP, IT)"
+        required: true
+        default: "US"
+      sample_defense_player_id:
+        description: "Opcional: player_id para ejemplo de defensa de puntos"
+        required: false
+        default: "0"
+      sample_defense_points:
+        description: "Opcional: puntos a defender (ejemplo)"
+        required: false
+        default: "0"
+      sample_defense_title_code:
+        description: "Opcional: 'champ' | 'runner' (ejemplo)"
+        required: false
+        default: ""
+
+jobs:
+  setup-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      T_NAME: ${{ inputs.tourney_name }}
+      T_CC:   ${{ inputs.tourney_country_code }}
+      DEF_PID: ${{ inputs.sample_defense_player_id }}
+      DEF_PTS: ${{ inputs.sample_defense_points }}
+      DEF_TIT: ${{ inputs.sample_defense_title_code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sanity – psql connectivity
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      # 1) Vista YTD (win rate año en curso)
+      - name: SQL – Create/Replace v_player_ytd_now_int
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE OR REPLACE VIEW public.v_player_ytd_now_int AS
+WITH base AS (
+  SELECT
+    m.match_date,
+    m.player_id           AS p_id,
+    (m.winner_id = m.player_id)::int AS w_as_p
+  FROM public.fs_matches_long m
+  WHERE EXTRACT(YEAR FROM m.match_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+),
+agg AS (
+  SELECT
+    p_id AS player_id,
+    COUNT(*)::int    AS n_matches,
+    SUM(w_as_p)::int AS n_wins
+  FROM base
+  GROUP BY 1
+)
+SELECT
+  player_id,
+  n_matches,
+  n_wins,
+  CASE WHEN n_matches>0 THEN n_wins::numeric/n_matches ELSE NULL END AS wr
+FROM agg;
+SQL
+
+      # 2) Helpers: normalizar nombre de torneo
+      - name: SQL – Helper norm_tourney
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE OR REPLACE FUNCTION public.norm_tourney(tname text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT regexp_replace(lower(coalesce(tname,'')), '\s+', ' ', 'g')
+$$;
+SQL
+
+      # 3) FS mínimo – Meta de torneo desde tablas existentes (si las tienes)
+      - name: SQL – Helper fs_tourney_meta
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE OR REPLACE FUNCTION public.fs_tourney_meta(tname text)
+RETURNS TABLE(surface text, speed_bucket text)
+LANGUAGE sql
+AS $$
+  WITH k AS (SELECT public.norm_tourney(tname) AS key)
+  SELECT
+    COALESCE(tsr.surface, csr.surface, 'hard')        AS surface,
+    COALESCE(tsr.speed_bucket, csr.speed_bucket, 'Medium') AS speed_bucket
+  FROM k
+  LEFT JOIN public.tourney_speed_resolved tsr ON tsr.tourney_key = k.key
+  LEFT JOIN public.court_speed_rankig_norm csr ON csr.tournament_name ILIKE '%' || tname || '%'
+  LIMIT 1
+$$;
+SQL
+
+      # 4) FS mínimo – Señales básicas (winrate por mes/surface/speed)
+      - name: SQL – fs_month_winrate / fs_surface_winrate / fs_speed_winrate
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE OR REPLACE FUNCTION public.fs_month_winrate(p_player int, p_month int, p_years int)
+RETURNS numeric
+LANGUAGE sql
+AS $$
+  WITH base AS (
+    SELECT
+      (EXTRACT(MONTH FROM match_date))::int AS m,
+      (winner_id = player_id)::int AS w
+    FROM public.fs_matches_long
+    WHERE player_id = p_player
+      AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
+  )
+  SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
+  FROM base
+  WHERE m = p_month;
+$$;
+
+-- Nota: si fs_matches_long no tiene 'surface' ni 'speed_bucket', elimina los filtros y deja la señal neutral.
+CREATE OR REPLACE FUNCTION public.fs_surface_winrate(p_player int, p_surface text, p_years int)
+RETURNS numeric
+LANGUAGE sql
+AS $$
+  WITH base AS (
+    SELECT
+      (winner_id = player_id)::int AS w
+    FROM public.fs_matches_long
+    WHERE player_id = p_player
+      AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
+      AND (surface IS NULL OR p_surface IS NULL OR lower(surface) = lower(p_surface))
+  )
+  SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
+  FROM base;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fs_speed_winrate(p_player int, p_speed text, p_years int)
+RETURNS numeric
+LANGUAGE sql
+AS $$
+  WITH base AS (
+    SELECT
+      (winner_id = player_id)::int AS w
+    FROM public.fs_matches_long
+    WHERE player_id = p_player
+      AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
+      AND (speed_bucket IS NULL OR p_speed IS NULL OR speed_bucket = p_speed)
+  )
+  SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
+  FROM base;
+$$;
+SQL
+
+      # 5) FS mínimo – Vector de matchup A vs B
+      - name: SQL – get_matchup_hist_vector
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE OR REPLACE FUNCTION public.get_matchup_hist_vector(
+  p_player  int,
+  p_opponent int,
+  p_years   int,
+  p_asof    date,
+  p_tourney text,
+  p_month   int
+) RETURNS TABLE(hist_month numeric, hist_surface numeric, hist_speed numeric)
+LANGUAGE sql
+AS $$
+  WITH meta AS (
+    SELECT * FROM public.fs_tourney_meta(p_tourney)
+  ),
+  a AS (
+    SELECT
+      public.fs_month_winrate(p_player,  p_month, p_years) AS m,
+      public.fs_surface_winrate(p_player, (SELECT surface FROM meta), p_years) AS s,
+      public.fs_speed_winrate  (p_player, (SELECT speed_bucket FROM meta), p_years) AS v
+  ),
+  b AS (
+    SELECT
+      public.fs_month_winrate(p_opponent, p_month, p_years) AS m,
+      public.fs_surface_winrate(p_opponent, (SELECT surface FROM meta), p_years) AS s,
+      public.fs_speed_winrate  (p_opponent, (SELECT speed_bucket FROM meta), p_years) AS v
+  )
+  SELECT
+    COALESCE(a.m,0)-COALESCE(b.m,0) AS hist_month,
+    COALESCE(a.s,0)-COALESCE(b.s,0) AS hist_surface,
+    COALESCE(a.v,0)-COALESCE(b.v,0) AS hist_speed;
+$$;
+SQL
+
+      # 6) Tourney → País (para chip Local)
+      - name: SQL – tourney_country_map (tabla + upsert del input)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE TABLE IF NOT EXISTS public.tourney_country_map(
+  tourney_key  text PRIMARY KEY,
+  country_code text
+);
+
+INSERT INTO public.tourney_country_map(tourney_key, country_code)
+VALUES (public.norm_tourney(:'T_NAME'), :'T_CC')
+ON CONFLICT (tourney_key) DO UPDATE
+SET country_code = EXCLUDED.country_code;
+SQL
+
+      # 7) (Opcional) Defensa puntos/título – tabla + ejemplo
+      - name: SQL – player_defense_prev_year (tabla + ejemplo opcional)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
+  tourney_key text NOT NULL,
+  player_id   int  NOT NULL,
+  points      int  NOT NULL,
+  title_code  text,
+  PRIMARY KEY (tourney_key, player_id)
+);
+
+DO $$
+BEGIN
+  IF :'DEF_PID' <> '0' AND :'DEF_PTS' <> '0' THEN
+    INSERT INTO public.player_defense_prev_year(tourney_key, player_id, points, title_code)
+    VALUES (public.norm_tourney(:'T_NAME'), (:'DEF_PID')::int, (:'DEF_PTS')::int, NULLIF(:'DEF_TIT',''))
+    ON CONFLICT (tourney_key, player_id) DO UPDATE
+      SET points = EXCLUDED.points,
+          title_code = EXCLUDED.title_code;
+  END IF;
+END $$;
+SQL
+
+      # 8) Verificaciones
+      - name: Verify – YTD view & FS & Tourney map
+        run: |
+          echo ">>> v_player_ytd_now_int (top 5):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.v_player_ytd_now_int ORDER BY n_matches DESC NULLS LAST LIMIT 5;"
+
+          echo ">>> fs_month_winrate sample (225050, month=8, years=4):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT public.fs_month_winrate(225050,8,4) AS wr;"
+
+          echo ">>> get_matchup_hist_vector sample (225050 vs 407573, years=4, 'Cincinnati', month=8):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.get_matchup_hist_vector(225050,407573,4,CURRENT_DATE,'Cincinnati',8);"
+
+          echo ">>> tourney_country_map entry:"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.tourney_country_map WHERE tourney_key = public.norm_tourney('${T_NAME}');"
+
+          echo ">>> player_defense_prev_year (si se incluyó ejemplo):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.player_defense_prev_year WHERE tourney_key = public.norm_tourney('${T_NAME}') LIMIT 5;"
