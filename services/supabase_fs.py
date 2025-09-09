@@ -84,6 +84,21 @@ def _pg_conn_or_env(conn=None):
     pg = psycopg2.connect(dsn)
     return pg, True
 
+# --- helpers PG-only ------------------------------------------------
+
+def _pg_fetch_one(sql: str, params: tuple = (), conn=None) -> dict | None:
+    try:
+        pg, opened = _pg_conn_or_env(conn)
+        try:
+            with pg.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, params)
+                return cur.fetchone()
+        finally:
+            if opened: pg.close()
+    except Exception as e:
+        log.info("_pg_fetch_one fallo: %s", e)
+    return None
+
 
 # ───────────────────────────────────────────────────────────────────
 # Normalización / torneo
@@ -442,131 +457,173 @@ def _upsert_rank_snapshot_sr(player_id_int: int, rank: int,
 
 def get_sr_id_from_player_int(player_id: int) -> str | None:
     """
-    Devuelve 'sr:competitor:<id>' a partir del player_id interno (INT),
-    leyendo de public.players_lookup (ext_sportradar_id) o de players_ext.
+    Devuelve 'sr:competitor:<id>' a partir del player_id INT.
+    1) BD: players_lookup.ext_sportradar_id
+    2) BD: players_ext.ext_sportradar_id
+    3) (opcional) REST _get como último recurso
     """
-    # 1) players_lookup
+    pid = int(player_id)
+
+    # 1) BD: players_lookup
+    row = _pg_fetch_one("""
+        select ext_sportradar_id
+        from public.players_lookup
+        where player_id = %s
+        limit 1
+    """, (pid,))
+    if row and row.get("ext_sportradar_id"):
+        ext = row["ext_sportradar_id"]
+        return ext if ext.startswith("sr:") else f"sr:competitor:{ext}"
+
+    # 2) BD: players_ext
+    row = _pg_fetch_one("""
+        select ext_sportradar_id
+        from public.players_ext
+        where player_id = %s
+        limit 1
+    """, (pid,))
+    if row and row.get("ext_sportradar_id"):
+        ext = row["ext_sportradar_id"]
+        return ext if ext.startswith("sr:") else f"sr:competitor:{ext}"
+
+    # 3) REST (solo si hay credenciales)
     try:
-        rows = _get(
-            "players_lookup",
-            {"player_id": f"eq.{int(player_id)}", "limit": 1},
-            select="ext_sportradar_id"
-        )
+        rows = _get("players_lookup", {"player_id": f"eq.{pid}", "limit": 1}, select="ext_sportradar_id")
         if rows and rows[0].get("ext_sportradar_id"):
             ext = rows[0]["ext_sportradar_id"]
-            if ext.startswith("sr:"):
-                return ext
-            return f"sr:competitor:{ext}"
+            return ext if ext.startswith("sr:") else f"sr:competitor:{ext}"
     except Exception as e:
-        log.info("get_sr_id_from_player_int(%s) fallo players_lookup: %s", player_id, e)
-    # 2) players_ext
-    try:
-        rows = _get(
-            "players_ext",
-            {"player_id": f"eq.{int(player_id)}", "limit": 1},
-            select="ext_sportradar_id"
-        )
-        if rows and rows[0].get("ext_sportradar_id"):
-            ext = rows[0]["ext_sportradar_id"]
-            if ext.startswith("sr:"):
-                return ext
-            return f"sr:competitor:{ext}"
-    except Exception as e:
-        log.info("get_sr_id_from_player_int(%s) fallo players_ext: %s", player_id, e)
+        log.info("get_sr_id_from_player_int REST fallback fallo: %s", e)
+
     return None
 
 
-def get_player_meta(pid_int: Optional[int] = None,
-                    sr_id: Optional[str] = None,
-                    conn=None) -> Dict[str, Any]:
+
+def get_player_meta(
+    pid_int: Optional[int] = None,
+    sr_id: Optional[str] = None,
+    asof_date: Optional[date] = None,
+    conn=None,
+) -> Dict[str, Any]:
     """
-    Devuelve dict con:
-      name, country_code, rank, rank_norm, rank_points, ytd_wr,
-      def_points, def_title, ext_sportradar_id, rank_source, ytd_source.
-    Estrategia: DB primero (vistas _now_int) → fallback Sportradar; si SR da rank,
-    lo cacheamos en rankings_snapshot_int (opcional) con snapshot_date=hoy.
+    Devuelve metadatos de jugador tirando **solo de BD**:
+      - players_lookup (name, country_code, ext_sportradar_id)
+      - v_player_rank_now_int (rank/points actuales)
+      - v_player_ytd_now_int (win-rate YTD)
+      - fallback a rankings_snapshot_int para name/country si faltan
     """
     meta: Dict[str, Any] = {
+        "player_id": pid_int,
+        "ext_sportradar_id": None,
         "name": None,
         "country_code": None,
         "rank": None,
-        "rank_norm": None,
         "rank_points": None,
-        "ytd_wr": None,
-        "def_points": None,
-        "def_title": None,
-        "ext_sportradar_id": sr_id,
-        "rank_source": None,
-        "ytd_source": None,
+        "rank_source": None,   # e.g., "db:rankings_snapshot_int"
+        "ytd_wr": None,        # 0..1
     }
 
-    # 1) Datos básicos (nombre/país) si están en players_lookup
-    if pid_int is not None:
+    # Si viene sr_id y no tenemos pid_int, intenta extraer los dígitos
+    if pid_int is None and sr_id:
         try:
-            rows = _get(
-                "players_lookup",
-                {"player_id": f"eq.{int(pid_int)}", "limit": 1},
-                select="name,country_code,ext_sportradar_id"
-            )
-            if rows:
-                row = rows[0]
-                meta["name"] = row.get("name")
-                meta["country_code"] = row.get("country_code")
-                if not meta["ext_sportradar_id"] and row.get("ext_sportradar_id"):
-                    ext = row["ext_sportradar_id"]
-                    meta["ext_sportradar_id"] = ext if ext.startswith("sr:") else f"sr:competitor:{ext}"
-        except Exception as e:
-            log.info("players_lookup fetch fallo: %s", e)
+            m = re.search(r"(\d+)$", sr_id)
+            if m:
+                pid_int = int(m.group(1))
+                meta["player_id"] = pid_int
+        except Exception:
+            pass
 
-    # SR id si sigue faltando
+    # --- 1) BD directo: players_lookup (name/country/sr_id)
+    if pid_int is not None:
+        row = _pg_fetch_one(
+            """
+            select name, country_code, ext_sportradar_id
+            from public.players_lookup
+            where player_id = %s
+            limit 1
+            """,
+            (int(pid_int),),
+            conn=conn,
+        )
+        if row:
+            if not meta["name"]:
+                meta["name"] = row.get("name")
+            if not meta["country_code"]:
+                meta["country_code"] = row.get("country_code")
+            if not meta["ext_sportradar_id"] and row.get("ext_sportradar_id"):
+                ext = row["ext_sportradar_id"]
+                meta["ext_sportradar_id"] = ext if isinstance(ext, str) and ext.startswith("sr:") else f"sr:competitor:{ext}"
+
+    # --- 2) SR id desde BD auxiliar si aún falta
     if not meta["ext_sportradar_id"] and pid_int is not None:
         meta["ext_sportradar_id"] = get_sr_id_from_player_int(pid_int)
 
-    # 2) RANK desde DB (vista)
+    # --- 3) Rank ahora (vista DB)
     if pid_int is not None:
-        db_rank, db_points = _get_rank_from_db_view(pid_int, conn=conn)
-        if db_rank is not None:
-            meta["rank"] = int(db_rank)
-            meta["rank_points"] = db_points
-            meta["rank_norm"] = _rank_norm(meta["rank"])
-            meta["rank_source"] = "db"
+        row = _pg_fetch_one(
+            """
+            select rank, points
+            from public.v_player_rank_now_int
+            where player_id = %s
+            limit 1
+            """,
+            (int(pid_int),),
+            conn=conn,
+        )
+        if row:
+            meta["rank"] = row.get("rank")
+            meta["rank_points"] = row.get("points")
+            meta["rank_source"] = "db:rankings_snapshot_int"
 
-    # 3) YTD desde DB (vista)
-    if pid_int is not None:
-        db_ytd = _get_ytd_from_db_view(pid_int, conn=conn)
-        if db_ytd is not None:
-            meta["ytd_wr"] = float(db_ytd)
-            meta["ytd_source"] = "db"
+    # --- 4) YTD ahora (vista DB)
+    if pid_int is not None and meta["ytd_wr"] is None:
+        # Asumimos que la vista expone 'wr' o 'ytd_wr'; probamos 'wr' primero
+        row = _pg_fetch_one(
+            """
+            select wr
+            from public.v_player_ytd_now_int
+            where player_id = %s
+            limit 1
+            """,
+            (int(pid_int),),
+            conn=conn,
+        )
+        if not row:
+            # fallback de nombre alternativo
+            row = _pg_fetch_one(
+                """
+                select ytd_wr as wr
+                from public.v_player_ytd_now_int
+                where player_id = %s
+                limit 1
+                """,
+                (int(pid_int),),
+                conn=conn,
+            )
+        if row and row.get("wr") is not None:
+            meta["ytd_wr"] = float(row["wr"])
 
-    # 4) Fallback SR para Ranking (y cacheo opcional)
-    if meta["rank"] is None and get_current_rank and meta["ext_sportradar_id"]:
-        try:
-            sr_rank = get_current_rank(meta["ext_sportradar_id"])  # devuelve int o None
-            if isinstance(sr_rank, int) and sr_rank > 0:
-                meta["rank"] = sr_rank
-                meta["rank_norm"] = _rank_norm(sr_rank)
-                meta["rank_source"] = "sr"
-                # cachear (sin year/week si tu wrapper no lo devuelve)
-                pid_digits = pid_int if pid_int is not None else _digits_from_sr_id(meta["ext_sportradar_id"])
-                if pid_digits is not None:
-                    _upsert_rank_snapshot_sr(pid_digits, sr_rank,
-                                             points=None, year=None, week=None,
-                                             name=meta.get("name"), country_code=meta.get("country_code"),
-                                             conn=conn)
-        except Exception as e:
-            log.info("fallback SR rank fallo: %s", e)
-
-    # 5) Fallback SR para YTD (si tienes wrapper que lo calcule)
-    if meta["ytd_wr"] is None and get_ytd_wr and meta["ext_sportradar_id"]:
-        try:
-            sr_ytd = get_ytd_wr(meta["ext_sportradar_id"])  # debería devolver 0..1
-            if sr_ytd is not None and 0.0 <= float(sr_ytd) <= 1.0:
-                meta["ytd_wr"] = float(sr_ytd)
-                meta["ytd_source"] = "sr"
-        except Exception as e:
-            log.info("fallback SR ytd fallo: %s", e)
+    # --- 5) Fallback final de nombre/país: último snapshot de rankings si siguen faltando
+    if pid_int is not None and (meta["name"] is None or meta["country_code"] is None):
+        row = _pg_fetch_one(
+            """
+            select player_name, country_code
+            from public.rankings_snapshot_int
+            where player_id = %s
+            order by snapshot_date desc
+            limit 1
+            """,
+            (int(pid_int),),
+            conn=conn,
+        )
+        if row:
+            if meta["name"] is None and row.get("player_name"):
+                meta["name"] = row["player_name"]
+            if meta["country_code"] is None and row.get("country_code"):
+                meta["country_code"] = row["country_code"]
 
     return meta
+
 
 
 # ───────────────────────────────────────────────────────────────────
