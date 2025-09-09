@@ -52,30 +52,30 @@ jobs:
         run: |
           set -euo pipefail
           cat >/tmp/v_player_ytd_now_int.sql <<'SQL'
-CREATE OR REPLACE VIEW public.v_player_ytd_now_int AS
-WITH base AS (
-  SELECT
-    m.match_date,
-    m.player_id           AS p_id,
-    (m.winner_id = m.player_id)::int AS w_as_p
-  FROM public.fs_matches_long m
-  WHERE EXTRACT(YEAR FROM m.match_date) = EXTRACT(YEAR FROM CURRENT_DATE)
-),
-agg AS (
-  SELECT
-    p_id AS player_id,
-    COUNT(*)::int    AS n_matches,
-    SUM(w_as_p)::int AS n_wins
-  FROM base
-  GROUP BY 1
-)
-SELECT
-  player_id,
-  n_matches,
-  n_wins,
-  CASE WHEN n_matches>0 THEN n_wins::numeric/n_matches ELSE NULL END AS wr
-FROM agg;
-SQL
+          CREATE OR REPLACE VIEW public.v_player_ytd_now_int AS
+          WITH base AS (
+            SELECT
+              m.match_date,
+              m.player_id           AS p_id,
+              (m.winner_id = m.player_id)::int AS w_as_p
+            FROM public.fs_matches_long m
+            WHERE EXTRACT(YEAR FROM m.match_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+          ),
+          agg AS (
+            SELECT
+              p_id AS player_id,
+              COUNT(*)::int    AS n_matches,
+              SUM(w_as_p)::int AS n_wins
+            FROM base
+            GROUP BY 1
+          )
+          SELECT
+            player_id,
+            n_matches,
+            n_wins,
+            CASE WHEN n_matches>0 THEN n_wins::numeric/n_matches ELSE NULL END AS wr
+          FROM agg;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/v_player_ytd_now_int.sql
 
       # 2) norm_tourney
@@ -84,14 +84,14 @@ SQL
         run: |
           set -euo pipefail
           cat >/tmp/norm_tourney.sql <<'SQL'
-CREATE OR REPLACE FUNCTION public.norm_tourney(tname text)
-RETURNS text
-LANGUAGE sql
-IMMUTABLE
-AS $$
-  SELECT regexp_replace(lower(coalesce(tname,'')), '\s+', ' ', 'g')
-$$;
-SQL
+          CREATE OR REPLACE FUNCTION public.norm_tourney(tname text)
+          RETURNS text
+          LANGUAGE sql
+          IMMUTABLE
+          AS $$
+            SELECT regexp_replace(lower(coalesce(tname,'')), '\s+', ' ', 'g')
+          $$;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/norm_tourney.sql
 
       # 3) fs_tourney_meta (lee de tus tablas si existen)
@@ -100,20 +100,20 @@ SQL
         run: |
           set -euo pipefail
           cat >/tmp/fs_tourney_meta.sql <<'SQL'
-CREATE OR REPLACE FUNCTION public.fs_tourney_meta(tname text)
-RETURNS TABLE(surface text, speed_bucket text)
-LANGUAGE sql
-AS $$
-  WITH k AS (SELECT public.norm_tourney(tname) AS key)
-  SELECT
-    COALESCE(tsr.surface, csr.surface, 'hard')               AS surface,
-    COALESCE(tsr.speed_bucket, csr.speed_bucket, 'Medium')  AS speed_bucket
-  FROM k
-  LEFT JOIN public.tourney_speed_resolved tsr ON tsr.tourney_key = k.key
-  LEFT JOIN public.court_speed_rankig_norm csr ON csr.tournament_name ILIKE '%' || tname || '%'
-  LIMIT 1
-$$;
-SQL
+          CREATE OR REPLACE FUNCTION public.fs_tourney_meta(tname text)
+          RETURNS TABLE(surface text, speed_bucket text)
+          LANGUAGE sql
+          AS $$
+            WITH k AS (SELECT public.norm_tourney(tname) AS key)
+            SELECT
+              COALESCE(tsr.surface, csr.surface, 'hard')               AS surface,
+              COALESCE(tsr.speed_bucket, csr.speed_bucket, 'Medium')  AS speed_bucket
+            FROM k
+            LEFT JOIN public.tourney_speed_resolved tsr ON tsr.tourney_key = k.key
+            LEFT JOIN public.court_speed_rankig_norm csr ON csr.tournament_name ILIKE '%' || tname || '%'
+            LIMIT 1
+          $$;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/fs_tourney_meta.sql
 
       # 4) Señales FS mínimas
@@ -122,55 +122,55 @@ SQL
         run: |
           set -euo pipefail
           cat >/tmp/fs_winrates.sql <<'SQL'
-CREATE OR REPLACE FUNCTION public.fs_month_winrate(p_player int, p_month int, p_years int)
-RETURNS numeric
-LANGUAGE sql
-AS $$
-  WITH base AS (
-    SELECT
-      (EXTRACT(MONTH FROM match_date))::int AS m,
-      (winner_id = player_id)::int AS w
-    FROM public.fs_matches_long
-    WHERE player_id = p_player
-      AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
-  )
-  SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
-  FROM base
-  WHERE m = p_month;
-$$;
+          CREATE OR REPLACE FUNCTION public.fs_month_winrate(p_player int, p_month int, p_years int)
+          RETURNS numeric
+          LANGUAGE sql
+          AS $$
+            WITH base AS (
+              SELECT
+                (EXTRACT(MONTH FROM match_date))::int AS m,
+                (winner_id = player_id)::int AS w
+              FROM public.fs_matches_long
+              WHERE player_id = p_player
+                AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
+            )
+            SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
+            FROM base
+            WHERE m = p_month;
+          $$;
 
-CREATE OR REPLACE FUNCTION public.fs_surface_winrate(p_player int, p_surface text, p_years int)
-RETURNS numeric
-LANGUAGE sql
-AS $$
-  WITH base AS (
-    SELECT
-      (winner_id = player_id)::int AS w
-    FROM public.fs_matches_long
-    WHERE player_id = p_player
-      AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
-      AND (surface IS NULL OR p_surface IS NULL OR lower(surface) = lower(p_surface))
-  )
-  SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
-  FROM base;
-$$;
+          CREATE OR REPLACE FUNCTION public.fs_surface_winrate(p_player int, p_surface text, p_years int)
+          RETURNS numeric
+          LANGUAGE sql
+          AS $$
+            WITH base AS (
+              SELECT
+                (winner_id = player_id)::int AS w
+              FROM public.fs_matches_long
+              WHERE player_id = p_player
+                AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
+                AND (surface IS NULL OR p_surface IS NULL OR lower(surface) = lower(p_surface))
+            )
+            SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
+            FROM base;
+          $$;
 
-CREATE OR REPLACE FUNCTION public.fs_speed_winrate(p_player int, p_speed text, p_years int)
-RETURNS numeric
-LANGUAGE sql
-AS $$
-  WITH base AS (
-    SELECT
-      (winner_id = player_id)::int AS w
-    FROM public.fs_matches_long
-    WHERE player_id = p_player
-      AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
-      AND (speed_bucket IS NULL OR p_speed IS NULL OR speed_bucket = p_speed)
-  )
-  SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
-  FROM base;
-$$;
-SQL
+          CREATE OR REPLACE FUNCTION public.fs_speed_winrate(p_player int, p_speed text, p_years int)
+          RETURNS numeric
+          LANGUAGE sql
+          AS $$
+            WITH base AS (
+              SELECT
+                (winner_id = player_id)::int AS w
+              FROM public.fs_matches_long
+              WHERE player_id = p_player
+                AND match_date >= (CURRENT_DATE - (p_years||' years')::interval)
+                AND (speed_bucket IS NULL OR p_speed IS NULL OR speed_bucket = p_speed)
+            )
+            SELECT CASE WHEN COUNT(*)>0 THEN AVG(w)::numeric ELSE NULL END
+            FROM base;
+          $$;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/fs_winrates.sql
 
       # 5) Vector de matchup
@@ -179,37 +179,37 @@ SQL
         run: |
           set -euo pipefail
           cat >/tmp/get_matchup_hist_vector.sql <<'SQL'
-CREATE OR REPLACE FUNCTION public.get_matchup_hist_vector(
-  p_player  int,
-  p_opponent int,
-  p_years   int,
-  p_asof    date,
-  p_tourney text,
-  p_month   int
-) RETURNS TABLE(hist_month numeric, hist_surface numeric, hist_speed numeric)
-LANGUAGE sql
-AS $$
-  WITH meta AS (
-    SELECT * FROM public.fs_tourney_meta(p_tourney)
-  ),
-  a AS (
-    SELECT
-      public.fs_month_winrate(p_player,  p_month, p_years) AS m,
-      public.fs_surface_winrate(p_player, (SELECT surface FROM meta), p_years) AS s,
-      public.fs_speed_winrate  (p_player, (SELECT speed_bucket FROM meta), p_years) AS v
-  ),
-  b AS (
-    SELECT
-      public.fs_month_winrate(p_opponent, p_month, p_years) AS m,
-      public.fs_surface_winrate(p_opponent, (SELECT surface FROM meta), p_years) AS s,
-      public.fs_speed_winrate  (p_opponent, (SELECT speed_bucket FROM meta), p_years) AS v
-  )
-  SELECT
-    COALESCE(a.m,0)-COALESCE(b.m,0) AS hist_month,
-    COALESCE(a.s,0)-COALESCE(b.s,0) AS hist_surface,
-    COALESCE(a.v,0)-COALESCE(b.v,0) AS hist_speed;
-$$;
-SQL
+          CREATE OR REPLACE FUNCTION public.get_matchup_hist_vector(
+          p_player  int,
+          p_opponent int,
+          p_years   int,
+          p_asof    date,
+          p_tourney text,
+          p_month   int
+          ) RETURNS TABLE(hist_month numeric, hist_surface numeric, hist_speed numeric)
+          LANGUAGE sql
+          AS $$
+          WITH meta AS (
+            SELECT * FROM public.fs_tourney_meta(p_tourney)
+          ),
+          a AS (
+            SELECT
+              public.fs_month_winrate(p_player,  p_month, p_years) AS m,
+              public.fs_surface_winrate(p_player, (SELECT surface FROM meta), p_years) AS s,
+              public.fs_speed_winrate  (p_player, (SELECT speed_bucket FROM meta), p_years) AS v
+          ),
+          b AS (
+            SELECT
+              public.fs_month_winrate(p_opponent, p_month, p_years) AS m,
+              public.fs_surface_winrate(p_opponent, (SELECT surface FROM meta), p_years) AS s,
+              public.fs_speed_winrate  (p_opponent, (SELECT speed_bucket FROM meta), p_years) AS v
+          )
+          SELECT
+            COALESCE(a.m,0)-COALESCE(b.m,0) AS hist_month,
+            COALESCE(a.s,0)-COALESCE(b.s,0) AS hist_surface,
+            COALESCE(a.v,0)-COALESCE(b.v,0) AS hist_speed;
+          $$;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/get_matchup_hist_vector.sql
 
       # 6) Tourney → País (chip Local)
@@ -218,16 +218,16 @@ SQL
         run: |
           set -euo pipefail
           cat >/tmp/tourney_country_map.sql <<'SQL'
-CREATE TABLE IF NOT EXISTS public.tourney_country_map(
-  tourney_key  text PRIMARY KEY,
-  country_code text
-);
-
-INSERT INTO public.tourney_country_map(tourney_key, country_code)
-VALUES (public.norm_tourney(:'T_NAME'), :'T_CC')
-ON CONFLICT (tourney_key) DO UPDATE
-SET country_code = EXCLUDED.country_code;
-SQL
+          CREATE TABLE IF NOT EXISTS public.tourney_country_map(
+            tourney_key  text PRIMARY KEY,
+            country_code text
+          );
+          
+          INSERT INTO public.tourney_country_map(tourney_key, country_code)
+          VALUES (public.norm_tourney(:'T_NAME'), :'T_CC')
+          ON CONFLICT (tourney_key) DO UPDATE
+          SET country_code = EXCLUDED.country_code;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/tourney_country_map.sql
 
       # 7) Defensa (opcional)
@@ -236,25 +236,25 @@ SQL
         run: |
           set -euo pipefail
           cat >/tmp/player_defense_prev_year.sql <<'SQL'
-CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
-  tourney_key text NOT NULL,
-  player_id   int  NOT NULL,
-  points      int  NOT NULL,
-  title_code  text,
-  PRIMARY KEY (tourney_key, player_id)
-);
-
-DO $$
-BEGIN
-  IF :'DEF_PID' <> '0' AND :'DEF_PTS' <> '0' THEN
-    INSERT INTO public.player_defense_prev_year(tourney_key, player_id, points, title_code)
-    VALUES (public.norm_tourney(:'T_NAME'), (:'DEF_PID')::int, (:'DEF_PTS')::int, NULLIF(:'DEF_TIT',''))
-    ON CONFLICT (tourney_key, player_id) DO UPDATE
-      SET points = EXCLUDED.points,
-          title_code = EXCLUDED.title_code;
-  END IF;
-END $$;
-SQL
+          CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
+          tourney_key text NOT NULL,
+          player_id   int  NOT NULL,
+          points      int  NOT NULL,
+          title_code  text,
+          PRIMARY KEY (tourney_key, player_id)
+          );
+        
+          DO $$
+          BEGIN
+            IF :'DEF_PID' <> '0' AND :'DEF_PTS' <> '0' THEN
+              INSERT INTO public.player_defense_prev_year(tourney_key, player_id, points, title_code)
+              VALUES (public.norm_tourney(:'T_NAME'), (:'DEF_PID')::int, (:'DEF_PTS')::int, NULLIF(:'DEF_TIT',''))
+              ON CONFLICT (tourney_key, player_id) DO UPDATE
+                SET points = EXCLUDED.points,
+                    title_code = EXCLUDED.title_code;
+            END IF;
+          END $$;
+          SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/player_defense_prev_year.sql
 
       # 8) Verificación rápida
