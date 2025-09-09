@@ -1,0 +1,147 @@
+name: DB – Minimal setup (YTD + norm_tourney + indexes + tourney map)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tourney_name:
+        description: "Torneo para mapear (p.ej. Cincinnati)"
+        required: true
+        default: "Cincinnati"
+      tourney_country_code:
+        description: "País del torneo (ISO2: US, ESP, IT, ...)"
+        required: true
+        default: "US"
+
+jobs:
+  setup-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      T_NAME: ${{ inputs.tourney_name }}
+      T_CC:   ${{ inputs.tourney_country_code }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sanity – psql connectivity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Setup Python (to write SQL files safely)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate SQL files
+        run: |
+          python - << 'PY'
+          import pathlib, textwrap
+          base = pathlib.Path("/tmp")
+
+          # A) Drop+Create norm_tourney (evita error de cambio de nombre de parámetro)
+          (base/"norm_tourney.sql").write_text(textwrap.dedent(r"""
+            DROP FUNCTION IF EXISTS public.norm_tourney(text);
+
+            CREATE FUNCTION public.norm_tourney(tname text)
+            RETURNS text
+            LANGUAGE sql
+            IMMUTABLE
+            AS $$
+              SELECT regexp_replace(lower(coalesce(tname,'')), '\s+', ' ', 'g')
+            $$;
+          """).strip()+"\n", encoding="utf-8")
+
+          # B) Drop view + Create YTD view (año en curso)
+          (base/"v_player_ytd_now_int.sql").write_text(textwrap.dedent(r"""
+            DROP VIEW IF EXISTS public.v_player_ytd_now_int CASCADE;
+
+            CREATE VIEW public.v_player_ytd_now_int AS
+            WITH base AS (
+              SELECT
+                m.match_date,
+                m.player_id           AS p_id,
+                (m.winner_id = m.player_id)::int AS w_as_p
+              FROM public.fs_matches_long m
+              WHERE EXTRACT(YEAR FROM m.match_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+            ),
+            agg AS (
+              SELECT
+                p_id AS player_id,
+                COUNT(*)::int    AS n_matches,
+                SUM(w_as_p)::int AS n_wins
+              FROM base
+              GROUP BY 1
+            )
+            SELECT
+              player_id,
+              n_matches,
+              n_wins,
+              CASE WHEN n_matches>0 THEN n_wins::numeric/n_matches ELSE NULL END AS wr
+            FROM agg;
+          """).strip()+"\n", encoding="utf-8")
+
+          # C) Indexes para acelerar consultas típicas
+          (base/"fs_matches_long_indexes.sql").write_text(textwrap.dedent(r"""
+            -- Indices idempotentes (si ya existen, no pasa nada)
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE c.relkind='i' AND c.relname='fs_matches_long_player_date_idx'
+              ) THEN
+                EXECUTE 'CREATE INDEX fs_matches_long_player_date_idx ON public.fs_matches_long (player_id, match_date)';
+              END IF;
+
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE c.relkind='i' AND c.relname='fs_matches_long_winner_date_idx'
+              ) THEN
+                EXECUTE 'CREATE INDEX fs_matches_long_winner_date_idx ON public.fs_matches_long (winner_id, match_date)';
+              END IF;
+
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE c.relkind='i' AND c.relname='fs_matches_long_match_date_idx'
+              ) THEN
+                EXECUTE 'CREATE INDEX fs_matches_long_match_date_idx ON public.fs_matches_long (match_date)';
+              END IF;
+            END $$;
+          """).strip()+"\n", encoding="utf-8")
+
+          # D) tourney_country_map + upsert del torneo input
+          (base/"tourney_country_map.sql").write_text(textwrap.dedent(r"""
+            CREATE TABLE IF NOT EXISTS public.tourney_country_map(
+              tourney_key  text PRIMARY KEY,
+              country_code text
+            );
+
+            INSERT INTO public.tourney_country_map(tourney_key, country_code)
+            VALUES (public.norm_tourney(:'T_NAME'), :'T_CC')
+            ON CONFLICT (tourney_key) DO UPDATE
+            SET country_code = EXCLUDED.country_code;
+          """).strip()+"\n", encoding="utf-8")
+          PY
+
+      - name: Apply SQL – norm_tourney (drop+create)
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/norm_tourney.sql
+
+      - name: Apply SQL – v_player_ytd_now_int (drop+create)
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/v_player_ytd_now_int.sql
+
+      - name: Apply SQL – indexes in fs_matches_long
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/fs_matches_long_indexes.sql
+
+      - name: Apply SQL – tourney_country_map upsert
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/tourney_country_map.sql
+
+      - name: Verify
+        run: |
+          echo ">>> v_player_ytd_now_int sample:"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.v_player_ytd_now_int ORDER BY n_matches DESC NULLS LAST LIMIT 5;"
+
+          echo ">>> tourney_country_map entry for '${T_NAME}':"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.tourney_country_map WHERE tourney_key = public.norm_tourney('${T_NAME}');"
+
+          echo ">>> fs_matches_long indexes (grep):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\d public.fs_matches_long" | sed -n '/Indexes:/,$p'
