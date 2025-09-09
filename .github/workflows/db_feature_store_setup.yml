@@ -46,6 +46,10 @@ jobs:
           set -euo pipefail
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
 
+      - name: Drop view v_player_ytd_now_int (if exists, cascade)
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS public.v_player_ytd_now_int CASCADE;"
+
+
       # 1) v_player_ytd_now_int
       - name: SQL – Create/Replace v_player_ytd_now_int
         shell: bash
