@@ -177,7 +177,11 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/fs_matches_long_indexes.sql
 
       - name: Apply SQL – tourney_country_map upsert
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/tourney_country_map.sql
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+          -v T_NAME="${T_NAME}" \
+          -v T_CC="${T_CC}" \
+          -f /tmp/tourney_country_map.sql
 
       - name: Verify
         run: |
