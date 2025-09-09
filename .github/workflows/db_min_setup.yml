@@ -1,4 +1,4 @@
-name: DB – Minimal setup (YTD + norm_tourney + indexes + tourney map)
+name: DB – Minimal setup (YTD + norm_tourney + MV/indexes + tourney map)
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
 jobs:
   setup-db:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       T_NAME: ${{ inputs.tourney_name }}
@@ -34,9 +34,7 @@ jobs:
           python-version: "3.11"
 
       - name: Generate SQL files
-        shell: bash
         run: |
-          set -euo pipefail
           python - << 'PY'
           import pathlib, textwrap
           base = pathlib.Path("/tmp")
@@ -81,29 +79,73 @@ jobs:
             FROM agg;
           """).strip()+"\n", encoding="utf-8")
 
-          # C) Índices útiles en fs_matches_long
+          # C1) Materializar fs_matches_long si es vista (o refrescar si ya es MV)
+          (base/"fs_matches_long_materialize.sql").write_text(textwrap.dedent(r"""
+            DO $$
+            DECLARE
+              relkind_char char;
+            BEGIN
+              SELECT c.relkind INTO relkind_char
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relname = 'fs_matches_long';
+
+              IF relkind_char IS NULL THEN
+                RAISE EXCEPTION 'public.fs_matches_long no existe (vista o tabla esperada)';
+              END IF;
+
+              IF relkind_char = 'v' THEN
+                IF NOT EXISTS (
+                  SELECT 1 FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid=c2.relnamespace
+                  WHERE n2.nspname='public' AND c2.relname='fs_matches_long_mv' AND c2.relkind='m'
+                ) THEN
+                  EXECUTE 'CREATE MATERIALIZED VIEW public.fs_matches_long_mv AS
+                           SELECT * FROM public.fs_matches_long WITH NO DATA';
+                END IF;
+                EXECUTE 'REFRESH MATERIALIZED VIEW public.fs_matches_long_mv';
+              ELSIF relkind_char = 'm' THEN
+                EXECUTE 'REFRESH MATERIALIZED VIEW public.fs_matches_long';
+              END IF;
+            END $$;
+          """).strip()+"\n", encoding="utf-8")
+
+          # C2) Índices sobre MV/tabla (no sobre la vista normal)
           (base/"fs_matches_long_indexes.sql").write_text(textwrap.dedent(r"""
             DO $$
+            DECLARE
+              target_name text;
+              relkind_char char;
             BEGIN
-              IF NOT EXISTS (
-                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                WHERE c.relkind='i' AND c.relname='fs_matches_long_player_date_idx'
-              ) THEN
-                EXECUTE 'CREATE INDEX fs_matches_long_player_date_idx ON public.fs_matches_long (player_id, match_date)';
+              SELECT c.relkind INTO relkind_char
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname='public' AND c.relname='fs_matches_long';
+
+              IF relkind_char = 'v' THEN
+                target_name := 'public.fs_matches_long_mv';
+              ELSE
+                target_name := 'public.fs_matches_long';  -- 'r' tabla o 'm' MV
               END IF;
 
               IF NOT EXISTS (
                 SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                WHERE c.relkind='i' AND c.relname='fs_matches_long_winner_date_idx'
+                WHERE c.relkind='i' AND c.relname='fsml_player_date_idx'
               ) THEN
-                EXECUTE 'CREATE INDEX fs_matches_long_winner_date_idx ON public.fs_matches_long (winner_id, match_date)';
+                EXECUTE format('CREATE INDEX fsml_player_date_idx ON %s (player_id, match_date)', target_name);
               END IF;
 
               IF NOT EXISTS (
                 SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                WHERE c.relkind='i' AND c.relname='fs_matches_long_match_date_idx'
+                WHERE c.relkind='i' AND c.relname='fsml_winner_date_idx'
               ) THEN
-                EXECUTE 'CREATE INDEX fs_matches_long_match_date_idx ON public.fs_matches_long (match_date)';
+                EXECUTE format('CREATE INDEX fsml_winner_date_idx ON %s (winner_id, match_date)', target_name);
+              END IF;
+
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE c.relkind='i' AND c.relname='fsml_match_date_idx'
+              ) THEN
+                EXECUTE format('CREATE INDEX fsml_match_date_idx ON %s (match_date)', target_name);
               END IF;
             END $$;
           """).strip()+"\n", encoding="utf-8")
@@ -128,7 +170,10 @@ jobs:
       - name: Apply SQL – v_player_ytd_now_int (drop+create)
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/v_player_ytd_now_int.sql
 
-      - name: Apply SQL – indexes in fs_matches_long
+      - name: Apply SQL – materialize/refresh fs_matches_long*
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/fs_matches_long_materialize.sql
+
+      - name: Apply SQL – indexes on fs_matches_long* (MV/tabla)
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/fs_matches_long_indexes.sql
 
       - name: Apply SQL – tourney_country_map upsert
@@ -139,8 +184,14 @@ jobs:
           echo ">>> v_player_ytd_now_int sample:"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.v_player_ytd_now_int ORDER BY n_matches DESC NULLS LAST LIMIT 5;"
 
+          echo ">>> storage for fs_matches_long:"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('fs_matches_long','fs_matches_long_mv');"
+
+          echo ">>> describe fs_matches_long (view or table):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\d+ public.fs_matches_long" || true
+
+          echo ">>> describe fs_matches_long_mv (if created):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\d+ public.fs_matches_long_mv" || true
+
           echo ">>> tourney_country_map entry for '${T_NAME}':"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.tourney_country_map WHERE tourney_key = public.norm_tourney('${T_NAME}');"
-
-          echo ">>> fs_matches_long indexes (grep):"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\d public.fs_matches_long" | sed -n '/Indexes:/,$p'
