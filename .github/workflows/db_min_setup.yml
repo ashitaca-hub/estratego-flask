@@ -34,25 +34,25 @@ jobs:
           python-version: "3.11"
 
       - name: Generate SQL files
+        shell: bash
         run: |
+          set -euo pipefail
           python - << 'PY'
           import pathlib, textwrap
           base = pathlib.Path("/tmp")
 
-          # A) Drop+Create norm_tourney (evita error de cambio de nombre de parámetro)
+          # A) norm_tourney: CREATE OR REPLACE (sin DROP) para no romper dependencias
           (base/"norm_tourney.sql").write_text(textwrap.dedent(r"""
-            DROP FUNCTION IF EXISTS public.norm_tourney(text);
-
-            CREATE FUNCTION public.norm_tourney(tname text)
+            CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
             RETURNS text
             LANGUAGE sql
             IMMUTABLE
             AS $$
-              SELECT regexp_replace(lower(coalesce(tname,'')), '\s+', ' ', 'g')
+              SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
             $$;
           """).strip()+"\n", encoding="utf-8")
 
-          # B) Drop view + Create YTD view (año en curso)
+          # B) v_player_ytd_now_int: DROP VIEW CASCADE + CREATE
           (base/"v_player_ytd_now_int.sql").write_text(textwrap.dedent(r"""
             DROP VIEW IF EXISTS public.v_player_ytd_now_int CASCADE;
 
@@ -81,9 +81,8 @@ jobs:
             FROM agg;
           """).strip()+"\n", encoding="utf-8")
 
-          # C) Indexes para acelerar consultas típicas
+          # C) Índices útiles en fs_matches_long
           (base/"fs_matches_long_indexes.sql").write_text(textwrap.dedent(r"""
-            -- Indices idempotentes (si ya existen, no pasa nada)
             DO $$
             BEGIN
               IF NOT EXISTS (
@@ -109,7 +108,7 @@ jobs:
             END $$;
           """).strip()+"\n", encoding="utf-8")
 
-          # D) tourney_country_map + upsert del torneo input
+          # D) tourney_country_map + upsert del torneo de inputs
           (base/"tourney_country_map.sql").write_text(textwrap.dedent(r"""
             CREATE TABLE IF NOT EXISTS public.tourney_country_map(
               tourney_key  text PRIMARY KEY,
@@ -123,7 +122,7 @@ jobs:
           """).strip()+"\n", encoding="utf-8")
           PY
 
-      - name: Apply SQL – norm_tourney (drop+create)
+      - name: Apply SQL – norm_tourney (CREATE OR REPLACE)
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/norm_tourney.sql
 
       - name: Apply SQL – v_player_ytd_now_int (drop+create)
