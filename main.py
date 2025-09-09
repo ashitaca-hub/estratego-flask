@@ -845,64 +845,46 @@ def _render_prematch_with_template(resp_dict: dict) -> str | None:
             tpl = tpl + f"\n<script>{js}</script>\n"
     return tpl
 
-def enrich_resp_with_extras(resp: dict) -> dict:
-    """Completa resp['extras'] con rank/YTD (DB→SR) y recalcula localía si hay país de torneo."""
-    def _to_int_or_none(v):
-        try:
-            return int(v) if isinstance(v, (int, str)) and str(v).isdigit() else None
-        except:
-            return None
+def enrich_resp_with_extras(resp: dict, conn=None) -> dict:
+    inp = resp.get("inputs", {})
+    p_id = inp.get("player_id")
+    o_id = inp.get("opponent_id")
+
+    meta_p = FS.get_player_meta(p_id, conn=conn) if p_id else {}
+    meta_o = FS.get_player_meta(o_id, conn=conn) if o_id else {}
 
     extras = resp.setdefault("extras", {})
-    try:
-        inp = resp.get("inputs", {}) or {}
+    extras.update({
+        "display_p":     meta_p.get("name"),
+        "display_o":     meta_o.get("name"),
+        "country_p":     meta_p.get("country_code"),
+        "country_o":     meta_o.get("country_code"),
+        "rank_p":        meta_p.get("rank"),
+        "rank_o":        meta_o.get("rank"),
+        "rank_source_p": meta_p.get("rank_source"),
+        "rank_source_o": meta_o.get("rank_source"),
+        "ytd_wr_p":      meta_p.get("ytd_wr"),
+        "ytd_wr_o":      meta_o.get("ytd_wr"),
+        "sr_id_p":       meta_p.get("ext_sportradar_id"),
+        "sr_id_o":       meta_o.get("ext_sportradar_id"),
+    })
 
-        p_int = _to_int_or_none(inp.get("player_id"))
-        o_int = _to_int_or_none(inp.get("opponent_id"))
-
-        p_sr  = inp.get("player_sr_id") if isinstance(inp.get("player_sr_id"), str) else None
-        o_sr  = inp.get("opponent_sr_id") if isinstance(inp.get("opponent_sr_id"), str) else None
-
-        meta_p = FS.get_player_meta(pid_int=p_int, sr_id=p_sr)
-        meta_o = FS.get_player_meta(pid_int=o_int, sr_id=o_sr)
-
-        extras.update({
-            "display_p":     meta_p.get("name"),
-            "display_o":     meta_o.get("name"),
-            "country_p":     meta_p.get("country_code"),
-            "country_o":     meta_o.get("country_code"),
-            "ytd_wr_p":      meta_p.get("ytd_wr"),   # 0..1
-            "ytd_wr_o":      meta_o.get("ytd_wr"),
-            "rank_p":        meta_p.get("rank"),
-            "rank_o":        meta_o.get("rank"),
-            "rank_source_p": meta_p.get("rank_source"),
-            "rank_source_o": meta_o.get("rank_source"),
-            "def_points_p":  meta_p.get("def_points"),
-            "def_points_o":  meta_o.get("def_points"),
-            "def_title_p":   meta_p.get("def_title"),
-            "def_title_o":   meta_o.get("def_title"),
-        })
-
-        # País del torneo (para chips de 'Local')
-        tname = (inp.get("tournament") or {}).get("name")
-        try:
-            t_country = FS.get_tourney_country(tname) if tname else None
-        except Exception:
-            t_country = None
+    # País del torneo (solo BD). Si ya tienes helpers, usa FS.get_tourney_country(...)
+    tname = (inp.get("tournament") or {}).get("name")
+    t_country = FS.get_tourney_country(tname) if tname else None
+    if t_country:
         extras["tourney_country"] = t_country
 
-        # Recalcula flags de localía si hay info
-        flags = resp.setdefault("features", {}).setdefault("flags", {})
-        if t_country and meta_p.get("country_code"):
-            flags["is_local_p"] = 1 if meta_p["country_code"].upper() == t_country.upper() else 0
-        if t_country and meta_o.get("country_code"):
-            flags["is_local_o"] = 1 if meta_o["country_code"].upper() == t_country.upper() else 0
-
-    except Exception as e:
-        # No bloquear el render por un extra
-        pass
+    # Flags de "Local"
+    flags = resp.setdefault("features", {}).setdefault("flags", {})
+    cp = (meta_p.get("country_code") or "").upper() if meta_p else ""
+    co = (meta_o.get("country_code") or "").upper() if meta_o else ""
+    tc = (extras.get("tourney_country") or "").upper()
+    flags["is_local_p"] = 1 if cp and tc and cp == tc else 0
+    flags["is_local_o"] = 1 if co and tc and co == tc else 0
 
     return resp
+
 
 
 
@@ -979,6 +961,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
