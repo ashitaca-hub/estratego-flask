@@ -45,6 +45,38 @@ except Exception:
 # Helpers REST a Supabase PostgREST
 # ───────────────────────────────────────────────────────────────────
 
+def norm_tourney_py(name: str) -> str:
+    return " ".join((name or "").lower().split())
+
+def get_defense_prev_year(tourney_name: str, player_ids, conn=None):
+    """
+    Devuelve dict {player_id: {points:int, title_code:'champ'|'runner'}} para ese torneo.
+    """
+    if not tourney_name or not player_ids:
+        return {}
+    tkey = norm_tourney_py(tourney_name)
+    sql = """
+    SELECT player_id, points, title_code
+    FROM public.player_defense_prev_year
+    WHERE tourney_key = public.norm_tourney(%s)
+      AND player_id = ANY(%s)
+    """
+    close_conn = False
+    if conn is None:
+        conn = psycopg.connect(os.environ["DATABASE_URL"])
+        close_conn = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (tkey, player_ids))
+            rows = cur.fetchall()
+        out = {}
+        for pid, pts, code in rows:
+            out[pid] = {"points": pts, "title_code": code}
+        return out
+    finally:
+        if close_conn:
+            conn.close()
+
 def _get(table: str, params: Dict[str, Any] | None = None, select: str = "*") -> list[dict]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL / SUPABASE_KEY no configurados.")
