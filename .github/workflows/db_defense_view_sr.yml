@@ -106,7 +106,7 @@ jobs:
             EXECUTE create_sql;
           END $$;
 
-          -- Index útil para joins por SR
+          -- Índice útil
           DO $$
           BEGIN
             PERFORM 1
@@ -122,13 +122,13 @@ jobs:
 
       - name: Smoke: counts + sample by tournament and SR IDs
         run: |
-          # Conteo total
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-            SELECT 'total_rows' AS label, COUNT(*) AS n
-            FROM public.v_player_defense_prev_year_sr;
-          "
+          cat > /tmp/smoke.sh <<'BASH'
+          set -euo pipefail
 
-          # Muestra por torneo normalizado
+          echo "== Count total rows =="
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 'total_rows' AS label, COUNT(*) AS n FROM public.v_player_defense_prev_year_sr;"
+
+          echo "== Sample by tournament key =="
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -c "
             SELECT tourney_key, player_id_int, sr_competitor_id, points, title_code
             FROM public.v_player_defense_prev_year_sr
@@ -137,7 +137,7 @@ jobs:
             LIMIT 20;
           "
 
-          # Muestra por SR IDs (entrada coma → array int)
+          echo "== Sample by SR IDs =="
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -c "
             WITH ids AS (
               SELECT string_to_array(:'IDS', ',')::int[] AS arr
@@ -148,12 +148,14 @@ jobs:
             ORDER BY v.points DESC, v.sr_competitor_id
             LIMIT 50;
           "
+          BASH
+          bash /tmp/smoke.sh
 
-      - name: Export CSV artifact (by tournament)
+      - name: Export CSV artifact (by tournament and by SR IDs)
         run: |
           mkdir -p /tmp/defense_view_sr
-          # Export de muestra por torneo
-          cat > /tmp/_export_by_tourney.sql <<'SQL'
+
+          cat > /tmp/export_tourney.sql <<'SQL'
           \COPY (
             SELECT
               tourney_key,
@@ -167,10 +169,9 @@ jobs:
           ) TO STDOUT WITH CSV HEADER;
           SQL
 
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -f /tmp/_export_by_tourney.sql > /tmp/defense_view_sr/defense_by_tourney.csv || true
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -f /tmp/export_tourney.sql > /tmp/defense_view_sr/defense_by_tourney.csv || true
 
-          # Export por SR IDs
-          cat > /tmp/_export_by_srids.sql <<'SQL'
+          cat > /tmp/export_srids.sql <<'SQL'
           \COPY (
             WITH ids AS (
               SELECT string_to_array(:'IDS', ',')::int[] AS arr
@@ -186,10 +187,10 @@ jobs:
           ) TO STDOUT WITH CSV HEADER;
           SQL
 
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -f /tmp/_export_by_srids.sql > /tmp/defense_view_sr/defense_by_srids.csv || true
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -f /tmp/export_srids.sql > /tmp/defense_view_sr/defense_by_srids.csv || true
 
           echo "Lines by_tourney:"; wc -l /tmp/defense_view_sr/defense_by_tourney.csv || true
-          echo "Lines by_srids:";  wc -l /tmp/defense_view_sr/defense_by_srids.csv || true
+          echo "Lines by_srids:";  wc -l /tmp/defense_view_sr/defense_by_srids.csv  || true
           head -n 10 /tmp/defense_view_sr/defense_by_tourney.csv || true
           head -n 10 /tmp/defense_view_sr/defense_by_srids.csv  || true
 
