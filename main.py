@@ -784,7 +784,7 @@ def matchup():
                 "country_o": meta_o.get("country_code"),
                 "ytd_wr_p": meta_p.get("ytd_wr"),  # 0..1
                 "ytd_wr_o": meta_o.get("ytd_wr"),
-                "rank_p": meta_p.get("rank"),  # si está disponible
+                "rank_p": meta_p.get("rank"),      # si está disponible
                 "rank_o": meta_o.get("rank"),
                 # Señales de puntos a defender (opcional, si tienes esa vista)
                 "def_points_p": meta_p.get("def_points"),
@@ -793,15 +793,55 @@ def matchup():
                 "def_title_o": meta_o.get("def_title"),
             }
         )
-    except Exception as e:
+    except Exception:
         # No rompas el endpoint si falta algo
         pass
 
     resp["extras"] = extras
     # ===== FIN ENRIQUECIMIENTO =====
-     
+
+    # ===== FALLBACK DE PROBABILIDAD (rank + YTD) SI LAS SEÑALES ESTÁN NEUTRAS =====
+    try:
+        d = resp.setdefault("features", {}).setdefault("deltas", {})
+        # Consideramos "neutro" si todo está a 0 o None (HIST + NOW principales)
+        all_zero = all(
+            (d.get(k) is None or abs(float(d.get(k))) < 1e-9)
+            for k in ("hist_month", "hist_surface", "hist_speed",
+                      "rank_norm", "ytd", "last10", "h2h")
+        )
+
+        if all_zero:
+            rp = extras.get("rank_p")
+            ro = extras.get("rank_o")
+            yp = extras.get("ytd_wr_p")
+            yo = extras.get("ytd_wr_o")
+
+            def rnorm(r):
+                # rank #1≈1.0 … #100≈0.01 (cap a [0.05, 1.0])
+                try:
+                    r = int(r)
+                except:
+                    return None
+                if r <= 0:
+                    return None
+                return max(0.05, min(1.0, 1.0 - (r - 1) / 99.0))
+
+            parts = []
+            rn_p, rn_o = rnorm(rp), rnorm(ro)
+            if rn_p and rn_o:
+                parts.append(0.7 * (rn_p / (rn_p + rn_o)))
+            if isinstance(yp, (int, float)) and isinstance(yo, (int, float)) and (yp + yo) > 0:
+                parts.append(0.3 * (yp / (yp + yo)))
+
+            if parts:
+                resp["prob_player"] = float(sum(parts))
+    except Exception:
+        # si algo falla en el fallback, mantenemos la prob original
+        pass
+    # ===== FIN FALLBACK =====
 
     return jsonify(resp), 200
+
 
 @app.post("/matchup/features")
 def matchup_features():
@@ -961,6 +1001,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
