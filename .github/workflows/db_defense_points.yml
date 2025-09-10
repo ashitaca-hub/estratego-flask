@@ -34,15 +34,14 @@ jobs:
           import os, pathlib, textwrap
           year = int(os.environ.get("SEASON_YEAR","2024"))
           outdir = pathlib.Path("/tmp")
-          # 1) Helper function and destination table
+
+          # 1) Helper + tabla destino
           (outdir/"defense_setup.sql").write_text(textwrap.dedent(f"""
-            -- Asegura norm_tourney (no DROP para no romper dependencias)
             CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
             RETURNS text LANGUAGE sql IMMUTABLE AS $$
               SELECT regexp_replace(lower(coalesce(txt,'')), '\\s+', ' ', 'g')
             $$;
 
-            -- Tabla destino (si no existe)
             CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
               tourney_key text NOT NULL,
               player_id   int  NOT NULL,
@@ -52,47 +51,67 @@ jobs:
             );
           """).strip()+"\n", encoding="utf-8")
 
-          # 2) View for given year (champ + runner with points)
+          # 2) VIEW usando norm_tourney(tournament_name) como clave
           (outdir/"defense_view.sql").write_text(textwrap.dedent(f"""
             DROP VIEW IF EXISTS public.v_defense_points_prev_year CASCADE;
 
             CREATE VIEW public.v_defense_points_prev_year AS
-            WITH
+            WITH base AS (
+              SELECT
+                public.norm_tourney(m.tournament_name) AS tourney_key,
+                m.match_date,
+                m.player_id,
+                m.opponent_id,
+                m.winner_id
+              FROM public.fs_matches_long m
+              WHERE EXTRACT(YEAR FROM m.match_date) = {year}
+            ),
+            tourney_cat_raw AS (
+              SELECT
+                b.tourney_key,
+                COALESCE(tsr.category, csr.category) AS raw_category
+              FROM (SELECT DISTINCT tourney_key FROM base) b
+              LEFT JOIN public.tourney_speed_resolved tsr
+                ON tsr.tourney_key = b.tourney_key
+              LEFT JOIN public.court_speed_rankig_norm csr
+                ON public.norm_tourney(csr.tournament_name) = b.tourney_key
+            ),
             tourney_cat AS (
               SELECT
-                COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) AS tourney_key,
-                COALESCE(tsr.category, csr.category, 'ATP250') AS category
-              FROM public.fs_matches_long m
-              LEFT JOIN public.tourney_speed_resolved tsr ON tsr.tourney_key = m.tourney_key
-              LEFT JOIN public.court_speed_rankig_norm csr ON csr.tournament_name ILIKE '%' || m.tournament_name || '%'
-              WHERE EXTRACT(YEAR FROM m.match_date) = {year}
-              GROUP BY 1,2
+                tourney_key,
+                CASE
+                  WHEN raw_category ILIKE '%grand%'   THEN 'Grand Slam'
+                  WHEN raw_category ILIKE '%master%'  THEN 'Masters'
+                  WHEN raw_category ILIKE '%1000%'    THEN 'Masters'
+                  WHEN raw_category ILIKE '%500%'     THEN 'ATP500'
+                  WHEN raw_category ILIKE '%250%'     THEN 'ATP250'
+                  ELSE 'ATP250'
+                END AS category
+              FROM tourney_cat_raw
             ),
             finals AS (
               SELECT
-                COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) AS tourney_key,
-                MAX(m.match_date) AS final_date
-              FROM public.fs_matches_long m
-              WHERE EXTRACT(YEAR FROM m.match_date) = {year}
+                tourney_key,
+                MAX(match_date) AS final_date
+              FROM base
               GROUP BY 1
             ),
             final_match AS (
               SELECT DISTINCT ON (f.tourney_key)
                 f.tourney_key,
-                m.match_date,
-                m.winner_id,
+                b.match_date,
+                b.winner_id,
                 CASE
-                  WHEN m.player_id = m.winner_id THEN m.opponent_id
-                  ELSE m.player_id
+                  WHEN b.player_id = b.winner_id THEN b.opponent_id
+                  ELSE b.player_id
                 END AS runner_id
               FROM finals f
-              JOIN public.fs_matches_long m
-                ON (COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) = f.tourney_key
-                    AND m.match_date = f.final_date)
-              ORDER BY f.tourney_key, m.match_date DESC
+              JOIN base b
+                ON b.tourney_key = f.tourney_key
+               AND b.match_date = f.final_date
+              ORDER BY f.tourney_key, b.match_date DESC
             ),
             points AS (
-              -- Ajusta etiquetas si tus categorías reales difieren
               SELECT 'Grand Slam'::text AS category, 2000 AS champ, 1200 AS runner UNION ALL
               SELECT 'Masters'::text,                 1000,  600  UNION ALL
               SELECT 'ATP500'::text,                   500,  300  UNION ALL
@@ -123,7 +142,7 @@ jobs:
             SELECT * FROM runners;
           """).strip()+"\n", encoding="utf-8")
 
-          # 3) Upsert from view to table
+          # 3) Upsert desde la vista
           (outdir/"defense_upsert.sql").write_text(textwrap.dedent("""
             INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
             SELECT tourney_key, player_id, points, title_code
@@ -133,7 +152,7 @@ jobs:
                 title_code = EXCLUDED.title_code;
           """).strip()+"\n", encoding="utf-8")
 
-          # 4) Export CSV of the view
+          # 4) Export CSV
           (outdir/"defense_export.sql").write_text(textwrap.dedent("""
             COPY (
               SELECT *
