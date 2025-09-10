@@ -47,17 +47,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
+      
           HAS_EXT=$(psql "$DATABASE_URL" -At -c "select exists (select 1 from information_schema.columns where table_schema='public' and table_name='players_ext' and column_name='ext_sportradar_id');")
           HAS_LOOKUP=$(psql "$DATABASE_URL" -At -c "select exists (select 1 from information_schema.columns where table_schema='public' and table_name='players_lookup' and column_name='ext_sportradar_id');")
-
+      
           echo "HAS_EXT=$HAS_EXT  HAS_LOOKUP=$HAS_LOOKUP  USE_MATVIEW=$USE_MATVIEW"
-
+      
           if [[ "$HAS_EXT" != "t" && "$HAS_LOOKUP" != "t" ]]; then
             echo "ERROR: No existe players_ext ni players_lookup con ext_sportradar_id"
             exit 1
           fi
-
+      
           # Construimos el SELECT según fuentes disponibles
           if [[ "$HAS_EXT" == "t" && "$HAS_LOOKUP" == "t" ]]; then
             SELECT_BODY="
@@ -97,31 +97,33 @@ jobs:
               JOIN public.players_lookup pl ON pl.player_id = pd.player_id
             "
           fi
-
+      
           if [[ "$USE_MATVIEW" == "true" ]]; then
-            cat > /tmp/build_mv.sql <<SQL
-            DROP VIEW IF EXISTS public.v_player_defense_prev_year_sr;
-            DROP MATERIALIZED VIEW IF EXISTS public.mv_player_defense_prev_year_sr;
-
-            CREATE MATERIALIZED VIEW public.mv_player_defense_prev_year_sr AS
-            ${SELECT_BODY};
-
-            CREATE INDEX IF NOT EXISTS mv_defense_sr_idx ON public.mv_player_defense_prev_year_sr (sr_competitor_id);
-            CREATE INDEX IF NOT EXISTS mv_defense_tourney_idx ON public.mv_player_defense_prev_year_sr (tourney_key);
-
-            CREATE VIEW public.v_player_defense_prev_year_sr AS
-              SELECT * FROM public.mv_player_defense_prev_year_sr;
-            SQL
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/build_mv.sql
+            # Genera SQL de la MV sin heredoc
+            SQL_FILE=/tmp/build_mv.sql
+            : > "$SQL_FILE"
+            printf "DROP VIEW IF EXISTS public.v_player_defense_prev_year_sr;\n" >> "$SQL_FILE"
+            printf "DROP MATERIALIZED VIEW IF EXISTS public.mv_player_defense_prev_year_sr;\n\n" >> "$SQL_FILE"
+            printf "CREATE MATERIALIZED VIEW public.mv_player_defense_prev_year_sr AS\n" >> "$SQL_FILE"
+            printf "%s\n" "$SELECT_BODY" >> "$SQL_FILE"
+            printf ";\n\n" >> "$SQL_FILE"
+            printf "CREATE INDEX IF NOT EXISTS mv_defense_sr_idx ON public.mv_player_defense_prev_year_sr (sr_competitor_id);\n" >> "$SQL_FILE"
+            printf "CREATE INDEX IF NOT EXISTS mv_defense_tourney_idx ON public.mv_player_defense_prev_year_sr (tourney_key);\n\n" >> "$SQL_FILE"
+            printf "CREATE VIEW public.v_player_defense_prev_year_sr AS SELECT * FROM public.mv_player_defense_prev_year_sr;\n" >> "$SQL_FILE"
+      
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$SQL_FILE"
           else
-            cat > /tmp/build_view.sql <<SQL
-            DROP MATERIALIZED VIEW IF EXISTS public.mv_player_defense_prev_year_sr;
-
-            CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
-            ${SELECT_BODY};
-            SQL
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/build_view.sql
+            # Genera SQL de la VIEW sin heredoc
+            SQL_FILE=/tmp/build_view.sql
+            : > "$SQL_FILE"
+            printf "DROP MATERIALIZED VIEW IF EXISTS public.mv_player_defense_prev_year_sr;\n\n" >> "$SQL_FILE"
+            printf "CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS\n" >> "$SQL_FILE"
+            printf "%s\n" "$SELECT_BODY" >> "$SQL_FILE"
+            printf ";\n" >> "$SQL_FILE"
+      
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$SQL_FILE"
           fi
+
 
       - name: Smoke counts and samples
         run: |
