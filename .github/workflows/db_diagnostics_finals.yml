@@ -1,0 +1,195 @@
+name: DB – Diagnostics Finals (estratego_v1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      season_year:
+        description: "Año a inspeccionar (ej. 2024)"
+        required: true
+        default: "2024"
+
+jobs:
+  finals-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SEASON_YEAR: ${{ inputs.season_year }}
+
+    steps:
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Sanity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Prepare out dir
+        run: mkdir -p /tmp/finals_diag
+
+      - name: Detect date column in estratego_v1.matches
+        id: detect_datecol
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATECOL=$(psql "$DATABASE_URL" -At -c "
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema='estratego_v1'
+              AND table_name='matches'
+              AND column_name IN ('match_date','dt','date','start_time','start_dt','played_at')
+            ORDER BY CASE column_name
+              WHEN 'match_date' THEN 1
+              WHEN 'dt'         THEN 2
+              WHEN 'date'       THEN 3
+              WHEN 'start_time' THEN 4
+              WHEN 'start_dt'   THEN 5
+              WHEN 'played_at'  THEN 6
+              ELSE 100
+            END
+            LIMIT 1;
+          ")
+          echo "DATECOL=$DATECOL" | tee -a $GITHUB_ENV
+          if [ -n "$DATECOL" ]; then
+            echo "Found DATECOL=$DATECOL"
+          else
+            echo "No date column found; will create 'latest finals' CSV by match_id."
+          fi
+
+      - name: Write SQL (year + loser_id)
+        run: |
+          cat > /tmp/finals_year_loser.sql <<'SQL'
+          COPY (
+            SELECT
+              t.tourney_id,
+              t.name         AS tournament_name,
+              t.level        AS tournament_level,
+              m.round,
+              m.winner_id,
+              m.loser_id     AS runner_id,
+              m.{{DATECOL}}  AS match_dt
+            FROM estratego_v1.matches m
+            JOIN estratego_v1.tournaments t USING (tourney_id)
+            WHERE m.round='F'
+              AND EXTRACT(YEAR FROM m.{{DATECOL}}) = :season_year
+            ORDER BY t.name, m.{{DATECOL}} DESC
+          ) TO STDOUT WITH CSV HEADER;
+          SQL
+
+      - name: Write SQL (year + opponent_id)
+        run: |
+          cat > /tmp/finals_year_opponent.sql <<'SQL'
+          COPY (
+            SELECT
+              t.tourney_id,
+              t.name         AS tournament_name,
+              t.level        AS tournament_level,
+              m.round,
+              m.winner_id,
+              CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id,
+              m.{{DATECOL}}  AS match_dt
+            FROM estratego_v1.matches m
+            JOIN estratego_v1.tournaments t USING (tourney_id)
+            WHERE m.round='F'
+              AND EXTRACT(YEAR FROM m.{{DATECOL}}) = :season_year
+            ORDER BY t.name, m.{{DATECOL}} DESC
+          ) TO STDOUT WITH CSV HEADER;
+          SQL
+
+      - name: Write SQL (latest finals by match_id + loser_id)
+        run: |
+          cat > /tmp/finals_latest_loser.sql <<'SQL'
+          COPY (
+            WITH finals AS (
+              SELECT tourney_id, MAX(match_id) AS final_match_id
+              FROM estratego_v1.matches
+              WHERE round='F'
+              GROUP BY 1
+            )
+            SELECT
+              t.tourney_id,
+              t.name AS tournament_name,
+              t.level AS tournament_level,
+              m.round,
+              m.winner_id,
+              m.loser_id AS runner_id,
+              m.match_id AS final_match_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.match_id   = f.final_match_id
+            JOIN estratego_v1.tournaments t USING (tourney_id)
+            ORDER BY t.name, m.match_id DESC
+          ) TO STDOUT WITH CSV HEADER;
+          SQL
+
+      - name: Write SQL (latest finals by match_id + opponent_id)
+        run: |
+          cat > /tmp/finals_latest_opponent.sql <<'SQL'
+          COPY (
+            WITH finals AS (
+              SELECT tourney_id, MAX(match_id) AS final_match_id
+              FROM estratego_v1.matches
+              WHERE round='F'
+              GROUP BY 1
+            )
+            SELECT
+              t.tourney_id,
+              t.name AS tournament_name,
+              t.level AS tournament_level,
+              m.round,
+              m.winner_id,
+              CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id,
+              m.match_id AS final_match_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.match_id   = f.final_match_id
+            JOIN estratego_v1.tournaments t USING (tourney_id)
+            ORDER BY t.name, m.match_id DESC
+          ) TO STDOUT WITH CSV HEADER;
+          SQL
+
+      - name: Generate CSVs
+        shell: bash
+        env:
+          season_year: ${{ inputs.season_year }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/finals_diag
+
+          if [ -n "${DATECOL:-}" ]; then
+            # Sustituye marcador {{DATECOL}} en SQLs de "year"
+            sed "s/{{DATECOL}}/${DATECOL}/g" /tmp/finals_year_loser.sql    > /tmp/_year_loser.sql
+            sed "s/{{DATECOL}}/${DATECOL}/g" /tmp/finals_year_opponent.sql > /tmp/_year_opponent.sql
+
+            echo "[Try] Finals YEAR (loser_id): $SEASON_YEAR"
+            if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v season_year=${season_year} -f /tmp/_year_loser.sql > /tmp/finals_diag/finals_${season_year}.csv; then
+              echo "OK with loser_id"
+            else
+              echo "[Fallback] Finals YEAR (opponent_id): $SEASON_YEAR"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v season_year=${season_year} -f /tmp/_year_opponent.sql > /tmp/finals_diag/finals_${season_year}.csv
+            fi
+          else
+            echo "No DATECOL; skipping finals_${season_year}.csv generation."
+            echo "tourney_id,tournament_name,tournament_level,round,winner_id,runner_id,final_match_id" > /tmp/finals_diag/finals_${season_year}.csv
+          fi
+
+          echo "[Try] Finals LATEST (loser_id)"
+          if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/finals_latest_loser.sql > /tmp/finals_diag/finals_latest.csv; then
+            echo "OK latest with loser_id"
+          else
+            echo "[Fallback] Finals LATEST (opponent_id)"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/finals_latest_opponent.sql > /tmp/finals_diag/finals_latest.csv
+          fi
+
+          echo "CSV lines (year):"; wc -l /tmp/finals_diag/finals_${season_year}.csv || true
+          echo "CSV lines (latest):"; wc -l /tmp/finals_diag/finals_latest.csv || true
+          head -n 5 /tmp/finals_diag/finals_${season_year}.csv || true
+          head -n 5 /tmp/finals_diag/finals_latest.csv || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: finals_diagnostics
+          path: /tmp/finals_diag/
+          retention-days: 7
