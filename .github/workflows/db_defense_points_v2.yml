@@ -1,0 +1,231 @@
+name: DB – Defense Points v2 (from estratego_v1 finals)
+
+on:
+  workflow_dispatch:
+    inputs:
+      season_year:
+        description: "Año previo a poblar (ej. 2024)"
+        required: true
+        default: "2024"
+
+jobs:
+  defense-points:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SEASON_YEAR: ${{ inputs.season_year }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Sanity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Write setup.sql (helper + table)
+        run: |
+          cat > /tmp/defense_setup.sql <<'SQL'
+          -- Helper para clave de torneo
+          CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
+          RETURNS text LANGUAGE sql IMMUTABLE AS $$
+            SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
+          $$;
+
+          -- Tabla destino
+          CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
+            tourney_key text NOT NULL,
+            player_id   int  NOT NULL,
+            points      int  NOT NULL,
+            title_code  text,
+            PRIMARY KEY (tourney_key, player_id)
+          );
+          SQL
+
+      - name: Apply setup
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_setup.sql
+
+      - name: Write backfill.sql (champ + runner with schema detection)
+        run: |
+          cat > /tmp/defense_backfill.sql <<'SQL'
+          -- Parámetro: :season_year (inyectado vía env SEASON_YEAR)
+          -- 1) Campeón (no depende de columnas de oponente/loser)
+          WITH finals AS (
+            SELECT m.tourney_id, MAX(m.match_date) AS final_date
+            FROM estratego_v1.matches m
+            WHERE m.round = 'F'
+              AND EXTRACT(YEAR FROM m.match_date) = :season_year
+            GROUP BY 1
+          ),
+          final_rows AS (
+            SELECT m.tourney_id, m.match_date, m.winner_id
+            FROM estratego_v1.matches m
+            JOIN finals f USING (tourney_id)
+            WHERE m.round='F' AND m.match_date = f.final_date
+          ),
+          tmap AS (
+            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+            FROM estratego_v1.tournaments t
+          ),
+          points AS (
+            SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+            SELECT 'M',             1000,          600         UNION ALL
+            SELECT 'A',              500,          300
+          )
+          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+          SELECT tm.tourney_key, fr.winner_id, p.champ, 'champ'
+          FROM final_rows fr
+          JOIN tmap tm USING (tourney_id)
+          JOIN points p ON p.level = tm.level
+          ON CONFLICT (tourney_key, player_id) DO UPDATE
+          SET points = EXCLUDED.points,
+              title_code = EXCLUDED.title_code;
+          SQL
+
+      - name: Backfill champs
+        env:
+          season_year: ${{ inputs.season_year }}
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v season_year=${season_year} -f /tmp/defense_backfill.sql
+
+      - name: Write runner-up block (dynamic by schema)
+        run: |
+          cat > /tmp/defense_runner.sql <<'SQL'
+          DO $$
+          DECLARE
+            has_loser boolean := EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='estratego_v1'
+                AND table_name='matches'
+                AND column_name='loser_id'
+            );
+            has_opponent boolean := EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='estratego_v1'
+                AND table_name='matches'
+                AND column_name='opponent_id'
+            );
+            sql_text text;
+          BEGIN
+            IF has_loser THEN
+              sql_text := $q$
+                WITH finals AS (
+                  SELECT m.tourney_id, MAX(m.match_date) AS final_date
+                  FROM estratego_v1.matches m
+                  WHERE m.round='F' AND EXTRACT(YEAR FROM m.match_date) = :season_year
+                  GROUP BY 1
+                ),
+                final_rows AS (
+                  SELECT m.tourney_id, m.match_date, m.winner_id, m.loser_id AS runner_id
+                  FROM estratego_v1.matches m
+                  JOIN finals f USING (tourney_id)
+                  WHERE m.round='F' AND m.match_date = f.final_date
+                ),
+                tmap AS (
+                  SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                  FROM estratego_v1.tournaments t
+                ),
+                points AS (
+                  SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                  SELECT 'M',             1000,          600         UNION ALL
+                  SELECT 'A',              500,          300
+                )
+                INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
+                FROM final_rows fr
+                JOIN tmap tm USING (tourney_id)
+                JOIN points p ON p.level = tm.level
+                ON CONFLICT (tourney_key, player_id) DO UPDATE
+                SET points = EXCLUDED.points,
+                    title_code = EXCLUDED.title_code;
+              $q$;
+            ELSIF has_opponent THEN
+              sql_text := $q$
+                WITH finals AS (
+                  SELECT m.tourney_id, MAX(m.match_date) AS final_date
+                  FROM estratego_v1.matches m
+                  WHERE m.round='F' AND EXTRACT(YEAR FROM m.match_date) = :season_year
+                  GROUP BY 1
+                ),
+                final_rows AS (
+                  SELECT m.tourney_id, m.match_date, m.winner_id,
+                         CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
+                  FROM estratego_v1.matches m
+                  JOIN finals f USING (tourney_id)
+                  WHERE m.round='F' AND m.match_date = f.final_date
+                ),
+                tmap AS (
+                  SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                  FROM estratego_v1.tournaments t
+                ),
+                points AS (
+                  SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                  SELECT 'M',             1000,          600         UNION ALL
+                  SELECT 'A',              500,          300
+                )
+                INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
+                FROM final_rows fr
+                JOIN tmap tm USING (tourney_id)
+                JOIN points p ON p.level = tm.level
+                ON CONFLICT (tourney_key, player_id) DO UPDATE
+                SET points = EXCLUDED.points,
+                    title_code = EXCLUDED.title_code;
+              $q$;
+            ELSE
+              RAISE NOTICE 'No hay columnas loser_id ni opponent_id en estratego_v1.matches. Se omite runner-up.';
+              RETURN;
+            END IF;
+
+            -- Sustituir el parámetro manualmente (:season_year -> valor)
+            sql_text := replace(sql_text, ':season_year', quote_literal(current_setting('my.season_year', true)));
+            EXECUTE sql_text;
+          END $$;
+          SQL
+
+      - name: Run runner-up insert (if schema supports it)
+        env:
+          season_year: ${{ inputs.season_year }}
+        run: |
+          # Pasamos el parámetro season_year a través de un GUC temporal
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET my.season_year TO '${season_year}';" -f /tmp/defense_runner.sql
+
+      - name: Export CSV artifact (joined with tournament name/level)
+        run: |
+          mkdir -p /tmp/defense_artifacts
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL' > /tmp/defense_artifacts/defense_points_prev_year.csv
+          COPY (
+            SELECT
+              pd.tourney_key,
+              t.name AS tournament_name,
+              t.level,
+              pd.player_id,
+              pd.points,
+              pd.title_code
+            FROM public.player_defense_prev_year pd
+            LEFT JOIN estratego_v1.tournaments t
+              ON public.norm_tourney(t.name) = pd.tourney_key
+            ORDER BY pd.tourney_key, pd.points DESC, pd.player_id
+          ) TO STDOUT WITH CSV HEADER;
+          SQL
+          echo "CSV rows:"; wc -l /tmp/defense_artifacts/defense_points_prev_year.csv || true
+          head -n 10 /tmp/defense_artifacts/defense_points_prev_year.csv || true
+
+      - name: Verify sample view
+        run: |
+          echo ">>> Sample (20):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT *
+            FROM public.player_defense_prev_year
+            ORDER BY tourney_key, points DESC, player_id
+            LIMIT 20;
+          "
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: defense_points_prev_year_v2
+          path: /tmp/defense_artifacts/defense_points_prev_year.csv
+          retention-days: 7
