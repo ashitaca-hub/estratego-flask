@@ -1,0 +1,183 @@
+name: DB – Inventory & Joinability (Prematch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      years_back:
+        description: "Años hacia atrás para conteos (fs_matches_long)"
+        required: true
+        default: "5"
+      sample_limit:
+        description: "Filas de muestra por consulta/muestreo"
+        required: true
+        default: "50"
+      tournament_search:
+        description: "Búsqueda opcional en nombres de torneo (ej. 'Zagreb')"
+        required: false
+        default: "Zagreb"
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      YEARS_BACK: ${{ inputs.years_back }}
+      SAMPLE_LIMIT: ${{ inputs.sample_limit }}
+      T_SEARCH: ${{ inputs.tournament_search }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Sanity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Ensure helper norm_tourney(txt)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
+          RETURNS text LANGUAGE sql IMMUTABLE AS $$
+            SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
+          $$;
+          SQL
+
+      - name: Prepare out dir
+        run: mkdir -p /tmp/db_inv
+
+      # --- Schema overview ---
+      - name: Schema columns (public, estratego_v1)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
+            FROM information_schema.columns
+            WHERE table_schema IN ('public','estratego_v1')
+            ORDER BY table_schema, table_name, ordinal_position
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/schema_columns.csv
+
+      - name: Tables row counts (public, estratego_v1)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            WITH t AS (
+              SELECT table_schema, table_name
+              FROM information_schema.tables
+              WHERE table_schema IN ('public','estratego_v1') AND table_type='BASE TABLE'
+            )
+            SELECT t.table_schema, t.table_name,
+                   (SELECT count(*) FROM pg_catalog.pg_class c
+                     JOIN pg_namespace n ON n.oid=c.relnamespace
+                     WHERE n.nspname=t.table_schema AND c.relname=t.table_name AND c.relkind='r') AS is_table,
+                   (SELECT count(*) FROM pg_catalog.pg_stat_user_tables s
+                     WHERE s.schemaname=t.table_schema AND s.relname=t.table_name) AS in_stats,
+                   (SELECT reltuples::bigint FROM pg_class c
+                     JOIN pg_namespace n ON n.oid=c.relnamespace
+                     WHERE n.nspname=t.table_schema AND c.relname=t.table_name) AS approx_rows
+            FROM t
+            ORDER BY 1,2
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/table_row_counts.csv
+
+      # --- fs_matches_long focus ---
+      - name: fs_matches_long – columns presence (surface/speed_bucket/ext_event_id)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT
+              'fs_matches_long' AS table_name,
+              MAX((column_name='surface')::int)       AS has_surface,
+              MAX((column_name='speed_bucket')::int)  AS has_speed_bucket,
+              MAX((column_name='ext_event_id')::int)  AS has_ext_event_id
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='fs_matches_long'
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/fs_columns_presence.csv
+
+      - name: fs_matches_long – counts by year
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT extract(year from match_date)::int AS year, COUNT(*) AS n
+            FROM public.fs_matches_long
+            WHERE match_date >= (current_date - interval '${YEARS_BACK} years')
+            GROUP BY 1 ORDER BY 1
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/fs_counts_by_year.csv
+
+      - name: fs_matches_long – sample rows
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT *
+            FROM public.fs_matches_long
+            ORDER BY match_date DESC NULLS LAST
+            LIMIT ${SAMPLE_LIMIT}
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/fs_sample.csv
+
+      - name: fs_matches_long – distinct tournaments (top N)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT public.norm_tourney(tournament_name) AS key,
+                   tournament_name,
+                   COUNT(*) AS n
+            FROM public.fs_matches_long
+            GROUP BY 1,2
+            ORDER BY n DESC NULLS LAST
+            LIMIT ${SAMPLE_LIMIT}
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/fs_tournaments_top.csv
+
+      # --- estratego_v1 overview ---
+      - name: estratego_v1.tournaments – top by dup key
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            SELECT public.norm_tourney(name) AS key,
+                   name,
+                   level,
+                   COUNT(*) OVER (PARTITION BY public.norm_tourney(name)) AS dup_key_ct
+            FROM estratego_v1.tournaments
+            ORDER BY dup_key_ct DESC NULLS LAST
+            LIMIT ${SAMPLE_LIMIT}
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/et_tournaments_top.csv
+
+      - name: Join map fs ↔ estratego_v1 by normalized name
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            WITH fs AS (
+              SELECT public.norm_tourney(tournament_name) AS key,
+                     tournament_name,
+                     COUNT(*) AS fs_n
+              FROM public.fs_matches_long
+              GROUP BY 1,2
+            ),
+            et AS (
+              SELECT public.norm_tourney(name) AS key,
+                     name AS et_name,
+                     level,
+                     tourney_id
+              FROM estratego_v1.tournaments
+            )
+            SELECT fs.key, fs.tournament_name, et.et_name, et.level, et.tourney_id, fs.fs_n
+            FROM fs LEFT JOIN et USING (key)
+            ORDER BY fs.fs_n DESC NULLS LAST, fs.key
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/join_fs_et_by_key.csv
+
+      # --- Search helper ---
+      - name: Lookup term in both sources (ILIKE)
+        run: |
+          SEARCH_ESC=$(printf "%s" "$T_SEARCH" | sed "s/'/''/g")
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "COPY (
+            SELECT DISTINCT tournament_name
+            FROM public.fs_matches_long
+            WHERE tournament_name ILIKE '%' || '$SEARCH_ESC' || '%'
+            ORDER BY 1
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/fs_lookup_term.csv
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "COPY (
+            SELECT tourney_id, name, level
+            FROM estratego_v1.tournaments
+            WHERE name ILIKE '%' || '$SEARCH_ESC' || '%'
+            ORDER BY name
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_inv/et_lookup_term.csv
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: db_inventory_outputs
+          path: /tmp/db_inv
+          retention-days: 7
