@@ -136,24 +136,28 @@ jobs:
             ORDER BY fs.fs_n DESC NULLS LAST, fs.key
           ) TO STDOUT WITH CSV HEADER" > /tmp/db_explore/join_fs_et_by_key.csv
 
-      # ---------- 4) LOOKUP SEARCH TERM (FIX: usar -v SEARCH y :'SEARCH') ----------
+      # ---------- 4) LOOKUP SEARCH TERM (sin variables psql; escapando en bash) ----------
       - name: Lookup term in fs_matches_long (ILIKE) → CSV
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v SEARCH="${T_SEARCH}" -c "\copy (
+          SEARCH_ESC=$(printf "%s" "$T_SEARCH" | sed "s/'/''/g")
+          SQL="COPY (
             SELECT DISTINCT tournament_name
             FROM public.fs_matches_long
-            WHERE tournament_name ILIKE '%' || :'SEARCH' || '%'
+            WHERE tournament_name ILIKE '%' || '$SEARCH_ESC' || '%'
             ORDER BY 1
-          ) TO STDOUT WITH CSV HEADER" > /tmp/db_explore/fs_lookup_term.csv
+          ) TO STDOUT WITH CSV HEADER"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "$SQL" > /tmp/db_explore/fs_lookup_term.csv
 
       - name: Lookup term in estratego_v1.tournaments (ILIKE) → CSV
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v SEARCH="${T_SEARCH}" -c "\copy (
+          SEARCH_ESC=$(printf "%s" "$T_SEARCH" | sed "s/'/''/g")
+          SQL="COPY (
             SELECT tourney_id, name, level
             FROM estratego_v1.tournaments
-            WHERE name ILIKE '%' || :'SEARCH' || '%'
+            WHERE name ILIKE '%' || '$SEARCH_ESC' || '%'
             ORDER BY name
-          ) TO STDOUT WITH CSV HEADER" > /tmp/db_explore/et_lookup_term.csv
+          ) TO STDOUT WITH CSV HEADER"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "$SQL" > /tmp/db_explore/et_lookup_term.csv
 
       # ---------- 5) UPLOAD ARTIFACT ----------
       - name: Upload CSV artifact
