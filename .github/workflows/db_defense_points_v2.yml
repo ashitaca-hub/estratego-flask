@@ -78,7 +78,7 @@ jobs:
             LIMIT 1;
 
             IF v_date_col IS NULL THEN
-              RAISE NOTICE 'No se encontró columna de fecha en estratego_v1.matches; usando match_id como proxy de final.';
+              RAISE NOTICE 'No se encontró columna de fecha en estratego_v1.matches; usando match_id como proxy de final (sin filtro por año).';
             END IF;
 
             SELECT EXISTS (
@@ -103,8 +103,10 @@ jobs:
                 final_rows AS (
                   SELECT m.tourney_id, m.%1$I AS match_dt, m.winner_id
                   FROM estratego_v1.matches m
-                  JOIN finals f USING (tourney_id)
-                  WHERE m.round='F' AND m.%1$I = f.final_date
+                  JOIN finals f
+                    ON m.tourney_id = f.tourney_id
+                   AND m.%1$I      = f.final_date
+                  WHERE m.round='F'
                 ),
                 tmap AS (
                   SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
@@ -124,7 +126,7 @@ jobs:
                 SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
               $q$, v_date_col, v_year);
             ELSE
-              v_sql := format($q$
+              v_sql := $q$
                 WITH finals AS (
                   SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
                   FROM estratego_v1.matches m
@@ -134,7 +136,9 @@ jobs:
                 final_rows AS (
                   SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id
                   FROM estratego_v1.matches m
-                  JOIN finals f USING (tourney_id, final_match_id)
+                  JOIN finals f
+                    ON m.tourney_id = f.tourney_id
+                   AND m.match_id   = f.final_match_id
                   WHERE m.round='F'
                 ),
                 tmap AS (
@@ -153,7 +157,7 @@ jobs:
                 JOIN points p ON p.level = tm.level
                 ON CONFLICT (tourney_key, player_id) DO UPDATE
                 SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
-              $q$);
+              $q$;
             END IF;
             EXECUTE v_sql;
 
@@ -170,8 +174,10 @@ jobs:
                   final_rows AS (
                     SELECT m.tourney_id, m.%1$I AS match_dt, m.winner_id, m.loser_id AS runner_id
                     FROM estratego_v1.matches m
-                    JOIN finals f USING (tourney_id)
-                    WHERE m.round='F' AND m.%1$I = f.final_date
+                    JOIN finals f
+                      ON m.tourney_id = f.tourney_id
+                     AND m.%1$I      = f.final_date
+                    WHERE m.round='F'
                   ),
                   tmap AS (
                     SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
@@ -201,7 +207,9 @@ jobs:
                   final_rows AS (
                     SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id, m.loser_id AS runner_id
                     FROM estratego_v1.matches m
-                    JOIN finals f USING (tourney_id, final_match_id)
+                    JOIN finals f
+                      ON m.tourney_id = f.tourney_id
+                     AND m.match_id   = f.final_match_id
                     WHERE m.round='F'
                   ),
                   tmap AS (
@@ -238,8 +246,10 @@ jobs:
                     SELECT m.tourney_id, m.%1$I AS match_dt, m.winner_id,
                            CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
                     FROM estratego_v1.matches m
-                    JOIN finals f USING (tourney_id)
-                    WHERE m.round='F' AND m.%1$I = f.final_date
+                    JOIN finals f
+                      ON m.tourney_id = f.tourney_id
+                     AND m.%1$I      = f.final_date
+                    WHERE m.round='F'
                   ),
                   tmap AS (
                     SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
@@ -270,7 +280,9 @@ jobs:
                     SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id,
                            CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
                     FROM estratego_v1.matches m
-                    JOIN finals f USING (tourney_id, final_match_id)
+                    JOIN finals f
+                      ON m.tourney_id = f.tourney_id
+                     AND m.match_id   = f.final_match_id
                     WHERE m.round='F'
                   ),
                   tmap AS (
