@@ -57,23 +57,29 @@ jobs:
                 ('estratego_v1','tournaments','tourney_id','tourney id'),
                 ('estratego_v1','tournaments','name','nombre torneo'),
                 ('estratego_v1','tournaments','level','nivel/categoría')
-            )
-            SELECT
-              r.table_schema,
-              r.table_name,
-              r.column_name,
-              r.note,
-              CASE
-                WHEN EXISTS (
+            ),
+            checks AS (
+              SELECT
+                r.table_schema,
+                r.table_name,
+                r.column_name,
+                r.note,
+                EXISTS (
                   SELECT 1 FROM cols c
                   WHERE c.table_schema = r.table_schema
                     AND c.table_name   = r.table_name
                     AND c.column_name  = r.column_name
-                )
-                THEN 'PASS' ELSE 'FAIL'
-              END AS status
-            FROM req r
-            ORDER BY (status = 'FAIL') DESC, r.table_schema, r.table_name, r.column_name
+                ) AS has_col
+              FROM req r
+            )
+            SELECT
+              table_schema,
+              table_name,
+              column_name,
+              note,
+              CASE WHEN has_col THEN 'PASS' ELSE 'FAIL' END AS status
+            FROM checks
+            ORDER BY (NOT has_col) DESC, table_schema, table_name, column_name
           ) TO STDOUT WITH CSV HEADER;
           SQL
           echo "CSV rows:"; wc -l /tmp/db_validate/prematch_checks.csv || true
