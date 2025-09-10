@@ -886,10 +886,28 @@ def _render_prematch_with_template(resp_dict: dict) -> str | None:
     return tpl
 
 def enrich_resp_with_extras(resp: dict, conn=None) -> dict:
+    # Helpers locales
+    ISO3_TO_2 = {
+        "USA":"US","GBR":"GB","GER":"DE","FRA":"FR","ESP":"ES","ITA":"IT","POR":"PT","NED":"NL","BEL":"BE",
+        "SWE":"SE","NOR":"NO","DEN":"DK","FIN":"FI","SUI":"CH","AUT":"AT","CZE":"CZ","SVK":"SK","SLO":"SI",
+        "CRO":"HR","BIH":"BA","SRB":"RS","MNE":"ME","MKD":"MK","GRC":"GR","TUR":"TR","ROU":"RO","BGR":"BG",
+        "POL":"PL","HUN":"HU","IRL":"IE","ISL":"IS","EST":"EE","LVA":"LV","LTU":"LT","UKR":"UA",
+        "RUS":"RU","BLR":"BY","GEO":"GE","KAZ":"KZ","CHN":"CN","JPN":"JP","KOR":"KR","IND":"IN",
+        "AUS":"AU","NZL":"NZ","CAN":"CA","MEX":"MX","ARG":"AR","BRA":"BR","CHI":"CL","URY":"UY","COL":"CO",
+        "PER":"PE","ECU":"EC","BOL":"BO","VEN":"VE","MAR":"MA","TUN":"TN","EGY":"EG","RSA":"ZA","ZAF":"ZA"
+    }
+    def to_iso2(cc: str | None) -> str | None:
+        if not cc: return None
+        cc = cc.strip().upper()
+        if len(cc) == 2: return cc
+        return ISO3_TO_2.get(cc)
+
+    # ---- inputs
     inp = resp.get("inputs", {})
     p_id = inp.get("player_id")
     o_id = inp.get("opponent_id")
 
+    # ---- meta por jugador (solo BD; tu FS.get_player_meta ya lo hace)
     meta_p = FS.get_player_meta(p_id, conn=conn) if p_id else {}
     meta_o = FS.get_player_meta(o_id, conn=conn) if o_id else {}
 
@@ -909,21 +927,50 @@ def enrich_resp_with_extras(resp: dict, conn=None) -> dict:
         "sr_id_o":       meta_o.get("ext_sportradar_id"),
     })
 
-    # País del torneo (solo BD). Si ya tienes helpers, usa FS.get_tourney_country(...)
+    # ---- país del torneo (para chip Local)
     tname = (inp.get("tournament") or {}).get("name")
     t_country = FS.get_tourney_country(tname) if tname else None
     if t_country:
         extras["tourney_country"] = t_country
 
-    # Flags de "Local"
+    # ---- flags Local (normalizando ISO3->ISO2)
     flags = resp.setdefault("features", {}).setdefault("flags", {})
-    cp = (meta_p.get("country_code") or "").upper() if meta_p else ""
-    co = (meta_o.get("country_code") or "").upper() if meta_o else ""
-    tc = (extras.get("tourney_country") or "").upper()
-    flags["is_local_p"] = 1 if cp and tc and cp == tc else 0
-    flags["is_local_o"] = 1 if co and tc and co == tc else 0
+    cp2 = to_iso2(extras.get("country_p"))
+    co2 = to_iso2(extras.get("country_o"))
+    tc2 = to_iso2(extras.get("tourney_country"))
+    flags["is_local_p"] = 1 if cp2 and tc2 and cp2 == tc2 else 0
+    flags["is_local_o"] = 1 if co2 and tc2 and co2 == tc2 else 0
+
+    # ---- defensa puntos / título (año anterior del mismo torneo)
+    try:
+        key = FS.norm_tourney(tname) if tname else None
+    except Exception:
+        key = tname.lower().strip() if tname else None
+
+    if key and p_id:
+        row = FS._pg_fetch_one("""
+            select points, title_code
+            from public.player_defense_prev_year
+            where tourney_key = %s and player_id = %s
+            limit 1
+        """, (key, p_id), conn=conn)
+        if row:
+            extras["def_points_p"] = row.get("points")
+            extras["def_title_p"]  = row.get("title_code")
+
+    if key and o_id:
+        row = FS._pg_fetch_one("""
+            select points, title_code
+            from public.player_defense_prev_year
+            where tourney_key = %s and player_id = %s
+            limit 1
+        """, (key, o_id), conn=conn)
+        if row:
+            extras["def_points_o"] = row.get("points")
+            extras["def_title_o"]  = row.get("title_code")
 
     return resp
+
 
 
 
@@ -1001,6 +1048,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
