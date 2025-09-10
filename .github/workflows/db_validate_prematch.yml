@@ -20,10 +20,10 @@ jobs:
       - name: Prepare out dir
         run: mkdir -p /tmp/db_validate
 
-      - name: Write SQL file (prematch_checks.sql)
+      - name: Run validation and export CSV (here-doc + COPY TO STDOUT)
         run: |
-          cat > /tmp/prematch_checks.sql <<'SQL'
-          \copy (
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL' > /tmp/db_validate/prematch_checks.csv
+          COPY (
             WITH cols AS (
               SELECT table_schema, table_name, column_name
               FROM information_schema.columns
@@ -74,12 +74,8 @@ jobs:
               END AS status
             FROM req r
             ORDER BY (status = 'FAIL') DESC, r.table_schema, r.table_name, r.column_name
-          ) TO STDOUT WITH CSV HEADER
+          ) TO STDOUT WITH CSV HEADER;
           SQL
-
-      - name: Run validation and export CSV
-        run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/prematch_checks.sql > /tmp/db_validate/prematch_checks.csv
           echo "CSV rows:"; wc -l /tmp/db_validate/prematch_checks.csv || true
           head -n 5 /tmp/db_validate/prematch_checks.csv || true
 
