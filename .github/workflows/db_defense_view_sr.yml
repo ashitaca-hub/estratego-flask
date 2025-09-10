@@ -1,10 +1,10 @@
-name: DB – Defense view SR mapping + smoke tests
+name: DB – Defense view SR mapping + smoke tests (safe heredocs)
 
 on:
   workflow_dispatch:
     inputs:
       T_NAME:
-        description: "Nombre del torneo como en Prematch (ej: US Open)"
+        description: "Nombre del torneo (ej: US Open)"
         required: true
         default: "US Open"
       SR_IDS:
@@ -33,197 +33,92 @@ jobs:
       - name: Sanity DB
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
 
-      - name: Create helper and (materialized) view
+      - name: Create helper function norm_tourney
         run: |
-          cat > /tmp/defense_view_sr.sql <<'SQL'
-          -- Helper de normalización (idempotente)
+          cat > /tmp/helper.sql <<'SQL'
           CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
           RETURNS text LANGUAGE sql IMMUTABLE AS $$
             SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
           $$;
-
-          -- Detectamos si existen las tablas de mapping
-          DO $$
-          DECLARE
-            has_ext boolean;
-            has_lookup boolean;
-          BEGIN
-            SELECT EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_schema='public' AND table_name='players_ext'
-                AND column_name='ext_sportradar_id'
-            ) INTO has_ext;
-
-            SELECT EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_schema='public' AND table_name='players_lookup'
-                AND column_name='ext_sportradar_id'
-            ) INTO has_lookup;
-
-            IF NOT (has_ext OR has_lookup) THEN
-              RAISE EXCEPTION 'No existe players_ext ni players_lookup con ext_sportradar_id';
-            END IF;
-          END $$;
           SQL
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_view_sr.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/helper.sql
 
-          # Según flag, generamos la definición como VIEW o MATERIALIZED VIEW
-          if [ "$USE_MATVIEW" = "true" ]; then
-            cat > /tmp/build_mv.sql <<'SQL'
-            DO $$
-            DECLARE
-              has_ext boolean;
-              has_lookup boolean;
-              ddl text;
-            BEGIN
-              -- Detect mapping sources
-              SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='players_ext'
-                  AND column_name='ext_sportradar_id'
-              ) INTO has_ext;
+      - name: Build (materialized) view from mapping availability
+        shell: bash
+        run: |
+          set -euo pipefail
 
-              SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='players_lookup'
-                  AND column_name='ext_sportradar_id'
-              ) INTO has_lookup;
+          HAS_EXT=$(psql "$DATABASE_URL" -At -c "select exists (select 1 from information_schema.columns where table_schema='public' and table_name='players_ext' and column_name='ext_sportradar_id');")
+          HAS_LOOKUP=$(psql "$DATABASE_URL" -At -c "select exists (select 1 from information_schema.columns where table_schema='public' and table_name='players_lookup' and column_name='ext_sportradar_id');")
 
-              -- Drop compat view if exists
-              IF EXISTS (SELECT 1 FROM information_schema.views WHERE table_schema='public' AND table_name='v_player_defense_prev_year_sr') THEN
-                EXECUTE 'DROP VIEW public.v_player_defense_prev_year_sr';
-              END IF;
+          echo "HAS_EXT=$HAS_EXT  HAS_LOOKUP=$HAS_LOOKUP  USE_MATVIEW=$USE_MATVIEW"
 
-              -- Drop/recreate MV
-              IF EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='mv_player_defense_prev_year_sr') THEN
-                EXECUTE 'DROP MATERIALIZED VIEW public.mv_player_defense_prev_year_sr';
-              END IF;
+          if [[ "$HAS_EXT" != "t" && "$HAS_LOOKUP" != "t" ]]; then
+            echo "ERROR: No existe players_ext ni players_lookup con ext_sportradar_id"
+            exit 1
+          fi
 
-              IF has_ext AND has_lookup THEN
-                ddl := $v$
-                  CREATE MATERIALIZED VIEW public.mv_player_defense_prev_year_sr AS
-                  SELECT
-                    pd.tourney_key,
-                    pd.player_id AS player_id_int,
-                    pd.points,
-                    pd.title_code,
-                    COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id) AS ext_sportradar_id,
-                    NULLIF(regexp_replace(COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id), '\D','','g'),'')::int AS sr_competitor_id
-                  FROM public.player_defense_prev_year pd
-                  LEFT JOIN public.players_ext    pe ON pe.player_id = pd.player_id
-                  LEFT JOIN public.players_lookup pl ON pl.player_id = pd.player_id
-                $v$;
-              ELSIF has_ext THEN
-                ddl := $v$
-                  CREATE MATERIALIZED VIEW public.mv_player_defense_prev_year_sr AS
-                  SELECT
-                    pd.tourney_key,
-                    pd.player_id AS player_id_int,
-                    pd.points,
-                    pd.title_code,
-                    pe.ext_sportradar_id,
-                    NULLIF(regexp_replace(pe.ext_sportradar_id, '\D','','g'),'')::int AS sr_competitor_id
-                  FROM public.player_defense_prev_year pd
-                  JOIN public.players_ext pe ON pe.player_id = pd.player_id
-                $v$;
-              ELSE
-                ddl := $v$
-                  CREATE MATERIALIZED VIEW public.mv_player_defense_prev_year_sr AS
-                  SELECT
-                    pd.tourney_key,
-                    pd.player_id AS player_id_int,
-                    pd.points,
-                    pd.title_code,
-                    pl.ext_sportradar_id,
-                    NULLIF(regexp_replace(pl.ext_sportradar_id, '\D','','g'),'')::int AS sr_competitor_id
-                  FROM public.player_defense_prev_year pd
-                  JOIN public.players_lookup pl ON pl.player_id = pd.player_id
-                $v$;
-              END IF;
+          # Construimos el SELECT según fuentes disponibles
+          if [[ "$HAS_EXT" == "t" && "$HAS_LOOKUP" == "t" ]]; then
+            SELECT_BODY="
+              SELECT
+                pd.tourney_key,
+                pd.player_id AS player_id_int,
+                pd.points,
+                pd.title_code,
+                COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id) AS ext_sportradar_id,
+                NULLIF(regexp_replace(COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id), '\\D','','g'),'')::int AS sr_competitor_id
+              FROM public.player_defense_prev_year pd
+              LEFT JOIN public.players_ext    pe ON pe.player_id = pd.player_id
+              LEFT JOIN public.players_lookup pl ON pl.player_id = pd.player_id
+            "
+          elif [[ "$HAS_EXT" == "t" ]]; then
+            SELECT_BODY="
+              SELECT
+                pd.tourney_key,
+                pd.player_id AS player_id_int,
+                pd.points,
+                pd.title_code,
+                pe.ext_sportradar_id,
+                NULLIF(regexp_replace(pe.ext_sportradar_id, '\\D','','g'),'')::int AS sr_competitor_id
+              FROM public.player_defense_prev_year pd
+              JOIN public.players_ext pe ON pe.player_id = pd.player_id
+            "
+          else
+            SELECT_BODY="
+              SELECT
+                pd.tourney_key,
+                pd.player_id AS player_id_int,
+                pd.points,
+                pd.title_code,
+                pl.ext_sportradar_id,
+                NULLIF(regexp_replace(pl.ext_sportradar_id, '\\D','','g'),'')::int AS sr_competitor_id
+              FROM public.player_defense_prev_year pd
+              JOIN public.players_lookup pl ON pl.player_id = pd.player_id
+            "
+          fi
 
-              EXECUTE ddl;
+          if [[ "$USE_MATVIEW" == "true" ]]; then
+            cat > /tmp/build_mv.sql <<SQL
+            DROP VIEW IF EXISTS public.v_player_defense_prev_year_sr;
+            DROP MATERIALIZED VIEW IF EXISTS public.mv_player_defense_prev_year_sr;
 
-              -- Índices sobre la MV
-              EXECUTE 'CREATE INDEX mv_defense_sr_idx ON public.mv_player_defense_prev_year_sr (sr_competitor_id)';
-              EXECUTE 'CREATE INDEX mv_defense_tourney_idx ON public.mv_player_defense_prev_year_sr (tourney_key)';
+            CREATE MATERIALIZED VIEW public.mv_player_defense_prev_year_sr AS
+            ${SELECT_BODY};
 
-              -- View de compatibilidad
-              EXECUTE 'CREATE VIEW public.v_player_defense_prev_year_sr AS SELECT * FROM public.mv_player_defense_prev_year_sr';
-            END $$;
+            CREATE INDEX IF NOT EXISTS mv_defense_sr_idx ON public.mv_player_defense_prev_year_sr (sr_competitor_id);
+            CREATE INDEX IF NOT EXISTS mv_defense_tourney_idx ON public.mv_player_defense_prev_year_sr (tourney_key);
+
+            CREATE VIEW public.v_player_defense_prev_year_sr AS
+              SELECT * FROM public.mv_player_defense_prev_year_sr;
             SQL
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/build_mv.sql
           else
-            # Solo VIEW (sin índice)
-            cat > /tmp/build_view.sql <<'SQL'
-            DO $$
-            DECLARE
-              has_ext boolean;
-              has_lookup boolean;
-              ddl text;
-            BEGIN
-              -- Drop MV compat si existiera
-              IF EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='mv_player_defense_prev_year_sr') THEN
-                EXECUTE 'DROP MATERIALIZED VIEW public.mv_player_defense_prev_year_sr';
-              END IF;
+            cat > /tmp/build_view.sql <<SQL
+            DROP MATERIALIZED VIEW IF EXISTS public.mv_player_defense_prev_year_sr;
 
-              -- Detect mapping sources
-              SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='players_ext'
-                  AND column_name='ext_sportradar_id'
-              ) INTO has_ext;
-
-              SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='players_lookup'
-                  AND column_name='ext_sportradar_id'
-              ) INTO has_lookup;
-
-              -- Recreate VIEW
-              IF has_ext AND has_lookup THEN
-                ddl := $v$
-                  CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
-                  SELECT
-                    pd.tourney_key,
-                    pd.player_id AS player_id_int,
-                    pd.points,
-                    pd.title_code,
-                    COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id) AS ext_sportradar_id,
-                    NULLIF(regexp_replace(COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id), '\D','','g'),'')::int AS sr_competitor_id
-                  FROM public.player_defense_prev_year pd
-                  LEFT JOIN public.players_ext    pe ON pe.player_id = pd.player_id
-                  LEFT JOIN public.players_lookup pl ON pl.player_id = pd.player_id;
-                $v$;
-              ELSIF has_ext THEN
-                ddl := $v$
-                  CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
-                  SELECT
-                    pd.tourney_key,
-                    pd.player_id AS player_id_int,
-                    pd.points,
-                    pd.title_code,
-                    pe.ext_sportradar_id,
-                    NULLIF(regexp_replace(pe.ext_sportradar_id, '\D','','g'),'')::int AS sr_competitor_id
-                  FROM public.player_defense_prev_year pd
-                  JOIN public.players_ext pe ON pe.player_id = pd.player_id;
-                $v$;
-              ELSE
-                ddl := $v$
-                  CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
-                  SELECT
-                    pd.tourney_key,
-                    pd.player_id AS player_id_int,
-                    pd.points,
-                    pd.title_code,
-                    pl.ext_sportradar_id,
-                    NULLIF(regexp_replace(pl.ext_sportradar_id, '\D','','g'),'')::int AS sr_competitor_id
-                  FROM public.player_defense_prev_year pd
-                  JOIN public.players_lookup pl ON pl.player_id = pd.player_id;
-                $v$;
-              END IF;
-
-              EXECUTE ddl;
-            END $$;
+            CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
+            ${SELECT_BODY};
             SQL
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/build_view.sql
           fi
@@ -235,7 +130,6 @@ jobs:
           SELECT 'total_rows' AS label, COUNT(*) AS n
           FROM public.v_player_defense_prev_year_sr;
 
-          -- sample by tournament key
           \echo === sample by tournament key ===
           SELECT tourney_key, player_id_int, sr_competitor_id, points, title_code
           FROM public.v_player_defense_prev_year_sr
@@ -243,18 +137,14 @@ jobs:
           ORDER BY points DESC, player_id_int
           LIMIT 20;
 
-          -- sample by SR IDs
           \echo === sample by SR IDs ===
-          WITH ids AS (
-            SELECT string_to_array(:'IDS', ',')::int[] AS arr
-          )
+          WITH ids AS (SELECT string_to_array(:'IDS', ',')::int[] AS arr)
           SELECT v.tourney_key, v.sr_competitor_id, v.points, v.title_code
           FROM public.v_player_defense_prev_year_sr v, ids
           WHERE v.sr_competitor_id = ANY(ids.arr)
           ORDER BY v.points DESC, v.sr_competitor_id
           LIMIT 50;
           SQL
-
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -v IDS="$SR_IDS" -f /tmp/smoke.sql
 
       - name: Export CSV artifacts
@@ -278,9 +168,7 @@ jobs:
 
           cat > /tmp/export_by_srids.sql <<'SQL'
           \COPY (
-            WITH ids AS (
-              SELECT string_to_array(:'IDS', ',')::int[] AS arr
-            )
+            WITH ids AS (SELECT string_to_array(:'IDS', ',')::int[] AS arr)
             SELECT
               tourney_key,
               sr_competitor_id,
