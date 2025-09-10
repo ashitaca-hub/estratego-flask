@@ -1,0 +1,132 @@
+name: DB – Backfill defensa puntos/título (2024)
+
+on:
+  workflow_dispatch:
+    inputs:
+      season_year:
+        description: "Año de referencia (default 2024)"
+        required: true
+        default: "2024"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SEASON_YEAR: ${{ inputs.season_year }}
+
+    steps:
+      - name: Sanity – psql connectivity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Generate SQL (Python)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Write backfill SQL
+        run: |
+          python - << 'PY'
+          import pathlib, textwrap, os
+          year = os.environ.get("SEASON_YEAR","2024")
+          p = pathlib.Path("/tmp/backfill_defense_yr.sql")
+          p.write_text(textwrap.dedent(f"""
+            -- Asegurar funcion norm_tourney (no alteramos firma para no romper deps)
+            CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
+            RETURNS text LANGUAGE sql IMMUTABLE AS $$
+              SELECT regexp_replace(lower(coalesce(txt,'')), '\\s+', ' ', 'g')
+            $$;
+
+            -- 1) Categoría por torneo (si ya tienes otra fuente, cambia este bloque)
+            WITH tourney_cat AS (
+              SELECT
+                COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) AS tourney_key,
+                COALESCE(tsr.category, csr.category, 'ATP250') AS category
+              FROM public.fs_matches_long m
+              LEFT JOIN public.tourney_speed_resolved tsr ON tsr.tourney_key = m.tourney_key
+              LEFT JOIN public.court_speed_rankig_norm csr ON csr.tournament_name ILIKE '%' || m.tournament_name || '%'
+              WHERE EXTRACT(YEAR FROM m.match_date) = {year}
+              GROUP BY 1,2
+            ),
+            -- 2) Última fecha (asumimos final) por torneo
+            finals AS (
+              SELECT
+                COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) AS tourney_key,
+                MAX(m.match_date) AS final_date
+              FROM public.fs_matches_long m
+              WHERE EXTRACT(YEAR FROM m.match_date) = {year}
+              GROUP BY 1
+            ),
+            -- 3) Partido "final" por torneo (si hay más de 1 en la fecha, tomamos el último arbitrario)
+            final_match AS (
+              SELECT DISTINCT ON (f.tourney_key)
+                f.tourney_key,
+                m.match_date,
+                m.winner_id,
+                CASE
+                  WHEN m.player_id = m.winner_id THEN m.opponent_id
+                  ELSE m.player_id
+                END AS runner_id
+              FROM finals f
+              JOIN public.fs_matches_long m
+                ON (COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) = f.tourney_key
+                    AND m.match_date = f.final_date)
+              ORDER BY f.tourney_key, m.match_date DESC
+            ),
+            -- 4) Puntos por categoría (ajusta si tus etiquetas difieren)
+            points AS (
+              SELECT 'Grand Slam'::text AS category, 2000 AS champ, 1200 AS runner UNION ALL
+              SELECT 'Masters'::text,                 1000,  600 UNION ALL
+              SELECT 'ATP500'::text,                   500,  300 UNION ALL
+              SELECT 'ATP250'::text,                   250,  150
+            )
+            -- 5) Crear tabla si no existe
+            ;
+            CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
+              tourney_key text NOT NULL,
+              player_id   int  NOT NULL,
+              points      int  NOT NULL,
+              title_code  text,
+              PRIMARY KEY (tourney_key, player_id)
+            );
+
+            -- 6) UPSERT campeón
+            INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+            SELECT
+              fm.tourney_key,
+              fm.winner_id   AS player_id,
+              p.champ        AS points,
+              'champ'        AS title_code
+            FROM final_match fm
+            JOIN tourney_cat tc USING (tourney_key)
+            JOIN points p ON p.category = tc.category
+            ON CONFLICT (tourney_key, player_id) DO UPDATE
+            SET points = EXCLUDED.points,
+                title_code = EXCLUDED.title_code;
+
+            -- 7) UPSERT finalista
+            INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+            SELECT
+              fm.tourney_key,
+              fm.runner_id   AS player_id,
+              p.runner       AS points,
+              'runner'       AS title_code
+            FROM final_match fm
+            JOIN tourney_cat tc USING (tourney_key)
+            JOIN points p ON p.category = tc.category
+            ON CONFLICT (tourney_key, player_id) DO UPDATE
+            SET points = EXCLUDED.points,
+                title_code = EXCLUDED.title_code;
+          """).strip()+"\n", encoding="utf-8")
+          print("Wrote /tmp/backfill_defense_yr.sql")
+          PY
+
+      - name: Apply backfill
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/backfill_defense_yr.sql
+
+      - name: Verify sample
+        run: |
+          echo ">>> Muestra (10 filas):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "SELECT * FROM public.player_defense_prev_year ORDER BY tourney_key, points DESC LIMIT 10;"
