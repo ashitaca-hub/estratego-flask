@@ -107,6 +107,32 @@ function ytdTier(p){
 function pctText(p){ return p==null ? '—' : (p*100).toFixed(1)+'%'; }
 function odds(x){ return (x>0 && x<1) ? (1/x).toFixed(2) : '—'; }
 
+  <script>
+// Mapa ISO3 -> ISO2 (añade más si necesitas)
+const ISO3_TO_2 = {
+  USA:'US', GBR:'GB', GER:'DE', FRA:'FR', ESP:'ES', ITA:'IT', POR:'PT', NED:'NL', BEL:'BE',
+  SWE:'SE', NOR:'NO', DEN:'DK', FIN:'FI', SUI:'CH', AUT:'AT', CZE:'CZ', SVK:'SK', SLO:'SI',
+  CRO:'HR', BIH:'BA', SRB:'RS', MNE:'ME', MKD:'MK', GRC:'GR', TUR:'TR', ROU:'RO', BGR:'BG',
+  POL:'PL', HUN:'HU', IRL:'IE', ISL:'IS', EST:'EE', LVA:'LV', LTU:'LT', UKR:'UA',
+  RUS:'RU', BLR:'BY', GEO:'GE', KAZ:'KZ', CHN:'CN', JPN:'JP', KOR:'KR', IND:'IN',
+  AUS:'AU', NZL:'NZ', CAN:'CA', MEX:'MX', ARG:'AR', BRA:'BR', CHI:'CL', URU:'UY', COL:'CO',
+  PER:'PE', ECU:'EC', BOL:'BO', VEN:'VE', MAR:'MA', TUN:'TN', EGY:'EG', RSA:'ZA', ZAF:'ZA'
+};
+function isoTo2(cc){
+  if(!cc) return null;
+  cc = cc.trim().toUpperCase();
+  if (cc.length===2) return cc;
+  return ISO3_TO_2[cc] || null;
+}
+function flagEmoji(cc){
+  const iso2 = isoTo2(cc);
+  if(!iso2 || iso2.length!==2) return '🏁';
+  const A = 0x1F1E6, up = iso2.toUpperCase();
+  return String.fromCodePoint(A + up.charCodeAt(0)-65, A + up.charCodeAt(1)-65);
+}
+</script>
+
+
 // bandera emoji desde country code ISO2
 function flagEmoji(cc){
   if(!cc || cc.length!==2) return '🏁';
