@@ -136,22 +136,22 @@ jobs:
             ORDER BY fs.fs_n DESC NULLS LAST, fs.key
           ) TO STDOUT WITH CSV HEADER" > /tmp/db_explore/join_fs_et_by_key.csv
 
-      # ---------- 4) LOOKUP SEARCH TERM ----------
+      # ---------- 4) LOOKUP SEARCH TERM (FIX: usar -v SEARCH y :'SEARCH') ----------
       - name: Lookup term in fs_matches_long (ILIKE) → CSV
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v SEARCH="${T_SEARCH}" -c "\copy (
             SELECT DISTINCT tournament_name
             FROM public.fs_matches_long
-            WHERE tournament_name ILIKE ${'$'}$${T_SEARCH}${'$'}$
+            WHERE tournament_name ILIKE '%' || :'SEARCH' || '%'
             ORDER BY 1
           ) TO STDOUT WITH CSV HEADER" > /tmp/db_explore/fs_lookup_term.csv
 
       - name: Lookup term in estratego_v1.tournaments (ILIKE) → CSV
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v SEARCH="${T_SEARCH}" -c "\copy (
             SELECT tourney_id, name, level
             FROM estratego_v1.tournaments
-            WHERE name ILIKE ${'$'}$${T_SEARCH}${'$'}$
+            WHERE name ILIKE '%' || :'SEARCH' || '%'
             ORDER BY name
           ) TO STDOUT WITH CSV HEADER" > /tmp/db_explore/et_lookup_term.csv
 
