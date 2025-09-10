@@ -1,0 +1,172 @@
+name: DB – Test Defense Badges (HTML)
+
+on:
+  workflow_dispatch:
+    inputs:
+      T_NAME:
+        description: "Nombre del torneo (como en UI), p.ej. US Open"
+        required: true
+        default: "US Open"
+      P_ID:
+        description: "Player ID (int) del jugador P"
+        required: true
+        default: "225050"
+      O_ID:
+        description: "Player ID (int) del rival O"
+        required: true
+        default: "407573"
+
+jobs:
+  test-defense:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql & Python deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          python3 -m pip install --upgrade pip
+          python3 -m pip install psycopg[binary]==3.2.1
+
+      - name: Sanity DB
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Build HTML fragment (defense badges)
+        env:
+          T_NAME: ${{ inputs.T_NAME }}
+          P_ID:   ${{ inputs.P_ID }}
+          O_ID:   ${{ inputs.O_ID }}
+        run: |
+          python3 - <<'PY'
+          import os, json
+          import psycopg
+          from html import escape
+
+          DB=os.environ["DATABASE_URL"]
+          T_NAME=os.environ["T_NAME"]
+          P_ID=int(os.environ["P_ID"])
+          O_ID=int(os.environ["O_ID"])
+
+          def q1(conn, sql, args=()):
+            with conn.cursor() as cur:
+              cur.execute(sql, args)
+              cols=[d[0] for d in cur.description]
+              return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+          def has_table(conn, schema, table):
+            sql="""select 1 from information_schema.tables
+                   where table_schema=%s and table_name=%s"""
+            return len(q1(conn, sql, (schema, table)))>0
+
+          def get_names(conn, ids):
+            ids=list(set(ids))
+            names={i: None for i in ids}
+            # prefer players_dim if exists
+            if has_table(conn,"public","players_dim"):
+              rows=q1(conn, "select player_id, name from public.players_dim where player_id = any(%s)", (ids,))
+              for r in rows: names[r["player_id"]]=r["name"]
+            # fallback players_lookup if still missing
+            missing=[i for i,n in names.items() if not n]
+            if missing and has_table(conn,"public","players_lookup"):
+              rows=q1(conn, "select player_id, name from public.players_lookup where player_id = any(%s)", (missing,))
+              for r in rows: names[r["player_id"]]=r["name"]
+            return names
+
+          def get_tname_canonical(conn, tname):
+            # intenta devolver el nombre de tournaments que matchea norm_tourney
+            sql = """
+              with k as (select public.norm_tourney(%s) as k)
+              select t.name, t.level
+              from estratego_v1.tournaments t, k
+              where public.norm_tourney(t.name)=k.k
+              limit 1
+            """
+            rows=q1(conn, sql, (tname,))
+            return rows[0] if rows else {"name": tname, "level": None}
+
+          def get_defense(conn, tname, pids):
+            sql = """
+              select player_id, points, title_code
+              from public.player_defense_prev_year
+              where tourney_key = public.norm_tourney(%s)
+                and player_id = any(%s)
+            """
+            rows=q1(conn, sql, (tname, pids))
+            out={r["player_id"]: {"points": r["points"], "title_code": r["title_code"]} for r in rows}
+            return out
+
+          with psycopg.connect(DB) as conn:
+            players=[P_ID,O_ID]
+            names=get_names(conn, players)
+            tmeta=get_tname_canonical(conn, T_NAME)
+            dmap=get_defense(conn, T_NAME, players)
+
+          def badge(code):
+            if code=="champ": return "🏆 Campeón defensor"
+            if code=="runner": return "🥈 Finalista defensor"
+            return "—"
+
+          def pts(x):
+            return f'{x:,}'.replace(',','.') if isinstance(x,int) else "—"
+
+          p_d=dmap.get(P_ID, {})
+          o_d=dmap.get(O_ID, {})
+
+          # JSON debug
+          dbg = {
+            "inputs":{"tournament":T_NAME,"P_ID":P_ID,"O_ID":O_ID},
+            "tournament_resolved": tmeta,
+            "names": names,
+            "defense_map": dmap
+          }
+          os.makedirs("/tmp/defense_artifacts", exist_ok=True)
+          with open("/tmp/defense_artifacts/defense_debug.json","w") as f:
+            json.dump(dbg,f,indent=2,ensure_ascii=False)
+
+          # HTML simple
+          html=f"""<!doctype html>
+          <html><head><meta charset="utf-8">
+          <title>Defense Badges — {escape(T_NAME)}</title>
+          <style>
+            body{{font-family:system-ui,-apple-system,Segoe UI,Roboto; padding:16px;}}
+            .wrap{{max-width:720px; margin:auto;}}
+            .title{{font-size:20px; margin-bottom:12px;}}
+            .row{{display:flex; gap:12px; align-items:center; margin:8px 0;}}
+            .card{{flex:1; border:1px solid #e6e6e6; border-radius:12px; padding:12px;}}
+            .name{{font-weight:600; font-size:16px;}}
+            .meta{{color:#555; font-size:13px; margin-top:4px;}}
+            .badge{{display:inline-block; padding:4px 8px; border-radius:999px; background:#f5f5f5; margin-top:8px;}}
+          </style>
+          </head><body><div class="wrap">
+            <div class="title">🏟 {escape(tmeta.get('name') or T_NAME)} {f"· nivel {tmeta.get('level')}" if tmeta.get('level') else ""}</div>
+            <div class="row">
+              <div class="card">
+                <div class="name">{escape(names.get(P_ID) or str(P_ID))}</div>
+                <div class="meta">Puntos a defender: <b>{pts(p_d.get('points'))}</b></div>
+                <div class="badge">{badge(p_d.get('title_code'))}</div>
+              </div>
+              <div class="card">
+                <div class="name">{escape(names.get(O_ID) or str(O_ID))}</div>
+                <div class="meta">Puntos a defender: <b>{pts(o_d.get('points'))}</b></div>
+                <div class="badge">{badge(o_d.get('title_code'))}</div>
+              </div>
+            </div>
+          </div></body></html>
+          """
+          with open("/tmp/defense_artifacts/defense_badges.html","w", encoding="utf-8") as f:
+            f.write(html)
+
+          print("OK: written /tmp/defense_artifacts/defense_badges.html and defense_debug.json")
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: defense_badges_preview
+          path: /tmp/defense_artifacts/
+          retention-days: 7
