@@ -8,7 +8,7 @@ on:
         required: true
         default: "US Open"
       SR_IDS:
-        description: "Lista de SR IDs separados por coma (ej: 225050,407573)"
+        description: "SR IDs separados por coma (ej: 225050,407573)"
         required: true
         default: "225050,407573"
 
@@ -28,7 +28,7 @@ jobs:
       - name: Sanity DB
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
 
-      - name: Create helper + view (prefer players_ext, fallback players_lookup)
+      - name: Create helper and view
         run: |
           cat > /tmp/defense_view_sr.sql <<'SQL'
           -- Helper de normalización
@@ -37,7 +37,7 @@ jobs:
             SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
           $$;
 
-          -- Creamos/recreamos la vista usando players_ext si existe; si no, players_lookup.
+          -- Vista preferente con players_ext; fallback a players_lookup
           DO $$
           DECLARE
             has_ext boolean;
@@ -120,42 +120,40 @@ jobs:
 
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_view_sr.sql
 
-      - name: Smoke: counts + sample by tournament and SR IDs
+      - name: Smoke counts and samples
         run: |
-          cat > /tmp/smoke.sh <<'BASH'
-          set -euo pipefail
+          cat > /tmp/smoke.sql <<'SQL'
+          -- total rows
+          SELECT 'total_rows' AS label, COUNT(*) AS n
+          FROM public.v_player_defense_prev_year_sr;
 
-          echo "== Count total rows =="
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 'total_rows' AS label, COUNT(*) AS n FROM public.v_player_defense_prev_year_sr;"
+          -- sample by tournament key
+          \echo === sample by tournament key ===
+          SELECT tourney_key, player_id_int, sr_competitor_id, points, title_code
+          FROM public.v_player_defense_prev_year_sr
+          WHERE tourney_key = public.norm_tourney(:'TNAME')
+          ORDER BY points DESC, player_id_int
+          LIMIT 20;
 
-          echo "== Sample by tournament key =="
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -c "
-            SELECT tourney_key, player_id_int, sr_competitor_id, points, title_code
-            FROM public.v_player_defense_prev_year_sr
-            WHERE tourney_key = public.norm_tourney(:'TNAME')
-            ORDER BY points DESC, player_id_int
-            LIMIT 20;
-          "
+          -- sample by SR IDs
+          \echo === sample by SR IDs ===
+          WITH ids AS (
+            SELECT string_to_array(:'IDS', ',')::int[] AS arr
+          )
+          SELECT v.tourney_key, v.sr_competitor_id, v.points, v.title_code
+          FROM public.v_player_defense_prev_year_sr v, ids
+          WHERE v.sr_competitor_id = ANY(ids.arr)
+          ORDER BY v.points DESC, v.sr_competitor_id
+          LIMIT 50;
+          SQL
 
-          echo "== Sample by SR IDs =="
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -c "
-            WITH ids AS (
-              SELECT string_to_array(:'IDS', ',')::int[] AS arr
-            )
-            SELECT v.tourney_key, v.sr_competitor_id, v.points, v.title_code
-            FROM public.v_player_defense_prev_year_sr v, ids
-            WHERE v.sr_competitor_id = ANY(ids.arr)
-            ORDER BY v.points DESC, v.sr_competitor_id
-            LIMIT 50;
-          "
-          BASH
-          bash /tmp/smoke.sh
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -v IDS="$SR_IDS" -f /tmp/smoke.sql
 
-      - name: Export CSV artifact (by tournament and by SR IDs)
+      - name: Export CSV artifacts
         run: |
           mkdir -p /tmp/defense_view_sr
 
-          cat > /tmp/export_tourney.sql <<'SQL'
+          cat > /tmp/export_by_tourney.sql <<'SQL'
           \COPY (
             SELECT
               tourney_key,
@@ -168,10 +166,9 @@ jobs:
             ORDER BY points DESC, player_id_int
           ) TO STDOUT WITH CSV HEADER;
           SQL
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -f /tmp/export_by_tourney.sql > /tmp/defense_view_sr/defense_by_tourney.csv || true
 
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -f /tmp/export_tourney.sql > /tmp/defense_view_sr/defense_by_tourney.csv || true
-
-          cat > /tmp/export_srids.sql <<'SQL'
+          cat > /tmp/export_by_srids.sql <<'SQL'
           \COPY (
             WITH ids AS (
               SELECT string_to_array(:'IDS', ',')::int[] AS arr
@@ -186,8 +183,7 @@ jobs:
             ORDER BY tourney_key, points DESC, sr_competitor_id
           ) TO STDOUT WITH CSV HEADER;
           SQL
-
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -f /tmp/export_srids.sql > /tmp/defense_view_sr/defense_by_srids.csv || true
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -f /tmp/export_by_srids.sql > /tmp/defense_view_sr/defense_by_srids.csv || true
 
           echo "Lines by_tourney:"; wc -l /tmp/defense_view_sr/defense_by_tourney.csv || true
           echo "Lines by_srids:";  wc -l /tmp/defense_view_sr/defense_by_srids.csv  || true
