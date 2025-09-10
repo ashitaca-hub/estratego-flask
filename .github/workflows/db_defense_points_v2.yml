@@ -1,4 +1,4 @@
-name: DB – Defense Points v2 (from estratego_v1 finals)
+name: DB – Defense Points v2 (from estratego_v1 finals, dynamic schema)
 
 on:
   workflow_dispatch:
@@ -29,13 +29,13 @@ jobs:
       - name: Write setup.sql (helper + table)
         run: |
           cat > /tmp/defense_setup.sql <<'SQL'
-          -- Helper para clave de torneo
+          -- Helper para clave normalizada de torneo
           CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
           RETURNS text LANGUAGE sql IMMUTABLE AS $$
             SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
           $$;
 
-          -- Tabla destino
+          -- Tabla destino (si no existe)
           CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
             tourney_key text NOT NULL,
             player_id   int  NOT NULL,
@@ -48,149 +48,264 @@ jobs:
       - name: Apply setup
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_setup.sql
 
-      - name: Write backfill.sql (champ + runner with schema detection)
+      - name: Write dynamic backfill.sql (detect date & runner columns)
         run: |
-          cat > /tmp/defense_backfill.sql <<'SQL'
-          -- Parámetro: :season_year (inyectado vía env SEASON_YEAR)
-          -- 1) Campeón (no depende de columnas de oponente/loser)
-          WITH finals AS (
-            SELECT m.tourney_id, MAX(m.match_date) AS final_date
-            FROM estratego_v1.matches m
-            WHERE m.round = 'F'
-              AND EXTRACT(YEAR FROM m.match_date) = :season_year
-            GROUP BY 1
-          ),
-          final_rows AS (
-            SELECT m.tourney_id, m.match_date, m.winner_id
-            FROM estratego_v1.matches m
-            JOIN finals f USING (tourney_id)
-            WHERE m.round='F' AND m.match_date = f.final_date
-          ),
-          tmap AS (
-            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
-            FROM estratego_v1.tournaments t
-          ),
-          points AS (
-            SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
-            SELECT 'M',             1000,          600         UNION ALL
-            SELECT 'A',              500,          300
-          )
-          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-          SELECT tm.tourney_key, fr.winner_id, p.champ, 'champ'
-          FROM final_rows fr
-          JOIN tmap tm USING (tourney_id)
-          JOIN points p ON p.level = tm.level
-          ON CONFLICT (tourney_key, player_id) DO UPDATE
-          SET points = EXCLUDED.points,
-              title_code = EXCLUDED.title_code;
-          SQL
-
-      - name: Backfill champs
-        env:
-          season_year: ${{ inputs.season_year }}
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v season_year=${season_year} -f /tmp/defense_backfill.sql
-
-      - name: Write runner-up block (dynamic by schema)
-        run: |
-          cat > /tmp/defense_runner.sql <<'SQL'
+          cat > /tmp/defense_backfill_dynamic.sql <<'SQL'
           DO $$
           DECLARE
-            has_loser boolean := EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_schema='estratego_v1'
-                AND table_name='matches'
-                AND column_name='loser_id'
-            );
-            has_opponent boolean := EXISTS (
-              SELECT 1 FROM information_schema.columns
-              WHERE table_schema='estratego_v1'
-                AND table_name='matches'
-                AND column_name='opponent_id'
-            );
-            sql_text text;
+            v_year int := current_setting('my.season_year', true)::int;
+            -- Detectar nombre de columna fecha en estratego_v1.matches
+            v_date_col text;
+            v_has_loser boolean;
+            v_has_opponent boolean;
+            v_sql text;
           BEGIN
-            IF has_loser THEN
-              sql_text := $q$
-                WITH finals AS (
-                  SELECT m.tourney_id, MAX(m.match_date) AS final_date
-                  FROM estratego_v1.matches m
-                  WHERE m.round='F' AND EXTRACT(YEAR FROM m.match_date) = :season_year
-                  GROUP BY 1
-                ),
-                final_rows AS (
-                  SELECT m.tourney_id, m.match_date, m.winner_id, m.loser_id AS runner_id
-                  FROM estratego_v1.matches m
-                  JOIN finals f USING (tourney_id)
-                  WHERE m.round='F' AND m.match_date = f.final_date
-                ),
-                tmap AS (
-                  SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
-                  FROM estratego_v1.tournaments t
-                ),
-                points AS (
-                  SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
-                  SELECT 'M',             1000,          600         UNION ALL
-                  SELECT 'A',              500,          300
-                )
-                INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
-                FROM final_rows fr
-                JOIN tmap tm USING (tourney_id)
-                JOIN points p ON p.level = tm.level
-                ON CONFLICT (tourney_key, player_id) DO UPDATE
-                SET points = EXCLUDED.points,
-                    title_code = EXCLUDED.title_code;
-              $q$;
-            ELSIF has_opponent THEN
-              sql_text := $q$
-                WITH finals AS (
-                  SELECT m.tourney_id, MAX(m.match_date) AS final_date
-                  FROM estratego_v1.matches m
-                  WHERE m.round='F' AND EXTRACT(YEAR FROM m.match_date) = :season_year
-                  GROUP BY 1
-                ),
-                final_rows AS (
-                  SELECT m.tourney_id, m.match_date, m.winner_id,
-                         CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
-                  FROM estratego_v1.matches m
-                  JOIN finals f USING (tourney_id)
-                  WHERE m.round='F' AND m.match_date = f.final_date
-                ),
-                tmap AS (
-                  SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
-                  FROM estratego_v1.tournaments t
-                ),
-                points AS (
-                  SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
-                  SELECT 'M',             1000,          600         UNION ALL
-                  SELECT 'A',              500,          300
-                )
-                INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
-                FROM final_rows fr
-                JOIN tmap tm USING (tourney_id)
-                JOIN points p ON p.level = tm.level
-                ON CONFLICT (tourney_key, player_id) DO UPDATE
-                SET points = EXCLUDED.points,
-                    title_code = EXCLUDED.title_code;
-              $q$;
-            ELSE
-              RAISE NOTICE 'No hay columnas loser_id ni opponent_id en estratego_v1.matches. Se omite runner-up.';
-              RETURN;
+            SELECT column_name
+            INTO v_date_col
+            FROM information_schema.columns
+            WHERE table_schema='estratego_v1'
+              AND table_name='matches'
+              AND column_name IN ('match_date','dt','date','start_time','start_dt','played_at')
+            ORDER BY CASE column_name
+              WHEN 'match_date' THEN 1
+              WHEN 'dt'         THEN 2
+              WHEN 'date'       THEN 3
+              WHEN 'start_time' THEN 4
+              WHEN 'start_dt'   THEN 5
+              WHEN 'played_at'  THEN 6
+              ELSE 100
+            END
+            LIMIT 1;
+
+            IF v_date_col IS NULL THEN
+              RAISE NOTICE 'No se encontró columna de fecha en estratego_v1.matches; usando match_id como proxy de final.';
             END IF;
 
-            -- Sustituir el parámetro manualmente (:season_year -> valor)
-            sql_text := replace(sql_text, ':season_year', quote_literal(current_setting('my.season_year', true)));
-            EXECUTE sql_text;
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='estratego_v1' AND table_name='matches' AND column_name='loser_id'
+            ) INTO v_has_loser;
+
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='estratego_v1' AND table_name='matches' AND column_name='opponent_id'
+            ) INTO v_has_opponent;
+
+            -- 1) Insertar CAMPEÓN
+            IF v_date_col IS NOT NULL THEN
+              v_sql := format($q$
+                WITH finals AS (
+                  SELECT m.tourney_id, MAX(m.%1$I) AS final_date
+                  FROM estratego_v1.matches m
+                  WHERE m.round='F' AND EXTRACT(YEAR FROM m.%1$I) = %2$L
+                  GROUP BY 1
+                ),
+                final_rows AS (
+                  SELECT m.tourney_id, m.%1$I AS match_dt, m.winner_id
+                  FROM estratego_v1.matches m
+                  JOIN finals f USING (tourney_id)
+                  WHERE m.round='F' AND m.%1$I = f.final_date
+                ),
+                tmap AS (
+                  SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                  FROM estratego_v1.tournaments t
+                ),
+                points AS (
+                  SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                  SELECT 'M',             1000,          600         UNION ALL
+                  SELECT 'A',              500,          300
+                )
+                INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                SELECT tm.tourney_key, fr.winner_id, p.champ, 'champ'
+                FROM final_rows fr
+                JOIN tmap tm USING (tourney_id)
+                JOIN points p ON p.level = tm.level
+                ON CONFLICT (tourney_key, player_id) DO UPDATE
+                SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+              $q$, v_date_col, v_year);
+            ELSE
+              v_sql := format($q$
+                WITH finals AS (
+                  SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
+                  FROM estratego_v1.matches m
+                  WHERE m.round='F'
+                  GROUP BY 1
+                ),
+                final_rows AS (
+                  SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id
+                  FROM estratego_v1.matches m
+                  JOIN finals f USING (tourney_id, final_match_id)
+                  WHERE m.round='F'
+                ),
+                tmap AS (
+                  SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                  FROM estratego_v1.tournaments t
+                ),
+                points AS (
+                  SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                  SELECT 'M',             1000,          600         UNION ALL
+                  SELECT 'A',              500,          300
+                )
+                INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                SELECT tm.tourney_key, fr.winner_id, p.champ, 'champ'
+                FROM final_rows fr
+                JOIN tmap tm USING (tourney_id)
+                JOIN points p ON p.level = tm.level
+                ON CONFLICT (tourney_key, player_id) DO UPDATE
+                SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+              $q$);
+            END IF;
+            EXECUTE v_sql;
+
+            -- 2) Insertar RUNNER-UP (si el esquema lo permite)
+            IF v_has_loser THEN
+              IF v_date_col IS NOT NULL THEN
+                v_sql := format($q$
+                  WITH finals AS (
+                    SELECT m.tourney_id, MAX(m.%1$I) AS final_date
+                    FROM estratego_v1.matches m
+                    WHERE m.round='F' AND EXTRACT(YEAR FROM m.%1$I) = %2$L
+                    GROUP BY 1
+                  ),
+                  final_rows AS (
+                    SELECT m.tourney_id, m.%1$I AS match_dt, m.winner_id, m.loser_id AS runner_id
+                    FROM estratego_v1.matches m
+                    JOIN finals f USING (tourney_id)
+                    WHERE m.round='F' AND m.%1$I = f.final_date
+                  ),
+                  tmap AS (
+                    SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                    FROM estratego_v1.tournaments t
+                  ),
+                  points AS (
+                    SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                    SELECT 'M',             1000,          600         UNION ALL
+                    SELECT 'A',              500,          300
+                  )
+                  INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
+                  FROM final_rows fr
+                  JOIN tmap tm USING (tourney_id)
+                  JOIN points p ON p.level = tm.level
+                  ON CONFLICT (tourney_key, player_id) DO UPDATE
+                  SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+                $q$, v_date_col, v_year);
+              ELSE
+                v_sql := $q$
+                  WITH finals AS (
+                    SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
+                    FROM estratego_v1.matches m
+                    WHERE m.round='F'
+                    GROUP BY 1
+                  ),
+                  final_rows AS (
+                    SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id, m.loser_id AS runner_id
+                    FROM estratego_v1.matches m
+                    JOIN finals f USING (tourney_id, final_match_id)
+                    WHERE m.round='F'
+                  ),
+                  tmap AS (
+                    SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                    FROM estratego_v1.tournaments t
+                  ),
+                  points AS (
+                    SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                    SELECT 'M',             1000,          600         UNION ALL
+                    SELECT 'A',              500,          300
+                  )
+                  INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
+                  FROM final_rows fr
+                  JOIN tmap tm USING (tourney_id)
+                  JOIN points p ON p.level = tm.level
+                  ON CONFLICT (tourney_key, player_id) DO UPDATE
+                  SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+                $q$;
+              END IF;
+              EXECUTE v_sql;
+
+            ELSIF v_has_opponent THEN
+              -- Derivar runner con opponent_id/player_id
+              IF v_date_col IS NOT NULL THEN
+                v_sql := format($q$
+                  WITH finals AS (
+                    SELECT m.tourney_id, MAX(m.%1$I) AS final_date
+                    FROM estratego_v1.matches m
+                    WHERE m.round='F' AND EXTRACT(YEAR FROM m.%1$I) = %2$L
+                    GROUP BY 1
+                  ),
+                  final_rows AS (
+                    SELECT m.tourney_id, m.%1$I AS match_dt, m.winner_id,
+                           CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
+                    FROM estratego_v1.matches m
+                    JOIN finals f USING (tourney_id)
+                    WHERE m.round='F' AND m.%1$I = f.final_date
+                  ),
+                  tmap AS (
+                    SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                    FROM estratego_v1.tournaments t
+                  ),
+                  points AS (
+                    SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                    SELECT 'M',             1000,          600         UNION ALL
+                    SELECT 'A',              500,          300
+                  )
+                  INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
+                  FROM final_rows fr
+                  JOIN tmap tm USING (tourney_id)
+                  JOIN points p ON p.level = tm.level
+                  ON CONFLICT (tourney_key, player_id) DO UPDATE
+                  SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+                $q$, v_date_col, v_year);
+              ELSE
+                v_sql := $q$
+                  WITH finals AS (
+                    SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
+                    FROM estratego_v1.matches m
+                    WHERE m.round='F'
+                    GROUP BY 1
+                  ),
+                  final_rows AS (
+                    SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id,
+                           CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
+                    FROM estratego_v1.matches m
+                    JOIN finals f USING (tourney_id, final_match_id)
+                    WHERE m.round='F'
+                  ),
+                  tmap AS (
+                    SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+                    FROM estratego_v1.tournaments t
+                  ),
+                  points AS (
+                    SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+                    SELECT 'M',             1000,          600         UNION ALL
+                    SELECT 'A',              500,          300
+                  )
+                  INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
+                  FROM final_rows fr
+                  JOIN tmap tm USING (tourney_id)
+                  JOIN points p ON p.level = tm.level
+                  ON CONFLICT (tourney_key, player_id) DO UPDATE
+                  SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+                $q$;
+              END IF;
+              EXECUTE v_sql;
+
+            ELSE
+              RAISE NOTICE 'No hay loser_id ni opponent_id en estratego_v1.matches → se inserta solo campeón.';
+            END IF;
+
           END $$;
           SQL
 
-      - name: Run runner-up insert (if schema supports it)
+      - name: Execute dynamic backfill
         env:
           season_year: ${{ inputs.season_year }}
         run: |
-          # Pasamos el parámetro season_year a través de un GUC temporal
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET my.season_year TO '${season_year}';" -f /tmp/defense_runner.sql
+          # Pasamos el parámetro como GUC temporal accesible desde el DO block:
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET my.season_year TO '${season_year}';" -f /tmp/defense_backfill_dynamic.sql
 
       - name: Export CSV artifact (joined with tournament name/level)
         run: |
@@ -211,9 +326,9 @@ jobs:
           ) TO STDOUT WITH CSV HEADER;
           SQL
           echo "CSV rows:"; wc -l /tmp/defense_artifacts/defense_points_prev_year.csv || true
-          head -n 10 /tmp/defense_artifacts/defense_points_prev_year.csv || true
+          head -n 12 /tmp/defense_artifacts/defense_points_prev_year.csv || true
 
-      - name: Verify sample view
+      - name: Verify sample table view
         run: |
           echo ">>> Sample (20):"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
