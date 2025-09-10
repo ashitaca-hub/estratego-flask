@@ -906,6 +906,7 @@ def enrich_resp_with_extras(resp: dict, conn=None) -> dict:
     inp = resp.get("inputs", {})
     p_id = inp.get("player_id")
     o_id = inp.get("opponent_id")
+    tname = (inp.get("tournament") or {}).get("name")
 
     # ---- meta por jugador (solo BD; tu FS.get_player_meta ya lo hace)
     meta_p = FS.get_player_meta(p_id, conn=conn) if p_id else {}
@@ -946,6 +947,24 @@ def enrich_resp_with_extras(resp: dict, conn=None) -> dict:
         key = FS.norm_tourney(tname) if tname else None
     except Exception:
         key = tname.lower().strip() if tname else None
+
+    # 🔥 NUEVO: Defensa puntos/título (solo BD)
+    if tname and p_id and o_id:
+        dmap = FS.get_defense_prev_year(tname, [p_id, o_id], conn=conn)
+        def_p = dmap.get(p_id, {})
+        def_o = dmap.get(o_id, {})
+        # puntos a defender
+        extras["def_points_p"] = def_p.get("points")
+        extras["def_points_o"] = def_o.get("points")
+        # badge: champ / runner
+        extras["def_title_p"]  = def_p.get("title_code")   # 'champ' | 'runner' | None
+        extras["def_title_o"]  = def_o.get("title_code")
+
+        # flags útiles para UI
+        flags["is_def_champ_p"] = 1 if def_p.get("title_code") == "champ" else 0
+        flags["is_def_champ_o"] = 1 if def_o.get("title_code") == "champ" else 0
+        flags["is_def_runner_p"]= 1 if def_p.get("title_code") == "runner" else 0
+        flags["is_def_runner_o"]= 1 if def_o.get("title_code") == "runner" else 0
 
     if key and p_id:
         row = FS._pg_fetch_one("""
@@ -1048,6 +1067,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
