@@ -1,0 +1,68 @@
+name: DB – Smoke HIST signals
+
+on:
+  workflow_dispatch:
+    inputs:
+      player_id:
+        description: "Player A (int Sportradar digits, ej. 225050)"
+        required: true
+        default: "225050"
+      opponent_id:
+        description: "Player B (ej. 407573)"
+        required: true
+        default: "407573"
+      tournament_name:
+        description: "Nombre torneo (ej. Cincinnati)"
+        required: true
+        default: "Cincinnati"
+      month:
+        description: "Mes numérico del torneo (1-12)"
+        required: true
+        default: "8"
+      years_back:
+        description: "Años hacia atrás para HIST"
+        required: true
+        default: "4"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      P_ID: ${{ inputs.player_id }}
+      O_ID: ${{ inputs.opponent_id }}
+      T_NAME: ${{ inputs.tournament_name }}
+      T_MONTH: ${{ inputs.month }}
+      YEARS_BACK: ${{ inputs.years_back }}
+
+    steps:
+      - name: Sanity – psql connectivity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Check function exists
+        run: |
+          echo ">>> \df+ public.get_matchup_hist_vector"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\df+ public.get_matchup_hist_vector"
+
+      - name: Try to refresh fs_matches_long MV (if any)
+        run: |
+          set -e
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "REFRESH MATERIALIZED VIEW CONCURRENTLY public.fs_matches_long_mv;" \
+          || psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "REFRESH MATERIALIZED VIEW public.fs_matches_long_mv;" \
+          || echo "No MV to refresh; continuing."
+
+      - name: HIST vector sample
+        run: |
+          echo ">>> HIST vector sample:"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "SELECT * FROM public.get_matchup_hist_vector($P_ID,$O_ID,$YEARS_BACK,CURRENT_DATE,'$T_NAME',$T_MONTH);"
+
+      - name: Sample size last N years
+        run: |
+          echo ">>> Sample size last ${YEARS_BACK} years (either player):"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "SELECT COUNT(*) AS n_rows
+             FROM public.fs_matches_long
+             WHERE player_id IN ($P_ID,$O_ID)
+               AND match_date >= (CURRENT_DATE - INTERVAL '${YEARS_BACK} years');"
