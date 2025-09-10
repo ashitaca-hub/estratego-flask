@@ -1,4 +1,4 @@
-name: DB – Defense Points v2 (from estratego_v1 finals, dynamic schema)
+name: DB – Defense Points v2 (from estratego_v1 finals, dynamic schema, dedup)
 
 on:
   workflow_dispatch:
@@ -29,13 +29,11 @@ jobs:
       - name: Write setup.sql (helper + table)
         run: |
           cat > /tmp/defense_setup.sql <<'SQL'
-          -- Helper para clave normalizada de torneo
           CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
           RETURNS text LANGUAGE sql IMMUTABLE AS $$
             SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
           $$;
 
-          -- Tabla destino (si no existe)
           CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
             tourney_key text NOT NULL,
             player_id   int  NOT NULL,
@@ -48,13 +46,12 @@ jobs:
       - name: Apply setup
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_setup.sql
 
-      - name: Write dynamic backfill.sql (detect date & runner columns)
+      - name: Write dynamic backfill.sql (detect date & runner columns with dedup)
         run: |
           cat > /tmp/defense_backfill_dynamic.sql <<'SQL'
           DO $$
           DECLARE
             v_year int := current_setting('my.season_year', true)::int;
-            -- Detectar nombre de columna fecha en estratego_v1.matches
             v_date_col text;
             v_has_loser boolean;
             v_has_opponent boolean;
@@ -91,7 +88,7 @@ jobs:
               WHERE table_schema='estratego_v1' AND table_name='matches' AND column_name='opponent_id'
             ) INTO v_has_opponent;
 
-            -- 1) Insertar CAMPEÓN
+            -- 1) CAMPEÓN
             IF v_date_col IS NOT NULL THEN
               v_sql := format($q$
                 WITH finals AS (
@@ -116,12 +113,22 @@ jobs:
                   SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
                   SELECT 'M',             1000,          600         UNION ALL
                   SELECT 'A',              500,          300
+                ),
+                joined AS (
+                  SELECT tm.tourney_key, fr.winner_id AS player_id, p.champ AS points, 'champ' AS title_code, fr.match_dt
+                  FROM final_rows fr
+                  JOIN tmap tm USING (tourney_id)
+                  JOIN points p ON p.level = tm.level
+                ),
+                dedup AS (
+                  SELECT DISTINCT ON (tourney_key, player_id)
+                         tourney_key, player_id, points, title_code
+                  FROM joined
+                  ORDER BY tourney_key, player_id, match_dt DESC
                 )
                 INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                SELECT tm.tourney_key, fr.winner_id, p.champ, 'champ'
-                FROM final_rows fr
-                JOIN tmap tm USING (tourney_id)
-                JOIN points p ON p.level = tm.level
+                SELECT tourney_key, player_id, points, title_code
+                FROM dedup
                 ON CONFLICT (tourney_key, player_id) DO UPDATE
                 SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
               $q$, v_date_col, v_year);
@@ -149,19 +156,29 @@ jobs:
                   SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
                   SELECT 'M',             1000,          600         UNION ALL
                   SELECT 'A',              500,          300
+                ),
+                joined AS (
+                  SELECT tm.tourney_key, fr.winner_id AS player_id, p.champ AS points, 'champ' AS title_code, fr.final_match_id
+                  FROM final_rows fr
+                  JOIN tmap tm USING (tourney_id)
+                  JOIN points p ON p.level = tm.level
+                ),
+                dedup AS (
+                  SELECT DISTINCT ON (tourney_key, player_id)
+                         tourney_key, player_id, points, title_code
+                  FROM joined
+                  ORDER BY tourney_key, player_id, final_match_id DESC
                 )
                 INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                SELECT tm.tourney_key, fr.winner_id, p.champ, 'champ'
-                FROM final_rows fr
-                JOIN tmap tm USING (tourney_id)
-                JOIN points p ON p.level = tm.level
+                SELECT tourney_key, player_id, points, title_code
+                FROM dedup
                 ON CONFLICT (tourney_key, player_id) DO UPDATE
                 SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
               $q$;
             END IF;
             EXECUTE v_sql;
 
-            -- 2) Insertar RUNNER-UP (si el esquema lo permite)
+            -- 2) RUNNER-UP
             IF v_has_loser THEN
               IF v_date_col IS NOT NULL THEN
                 v_sql := format($q$
@@ -187,12 +204,22 @@ jobs:
                     SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
                     SELECT 'M',             1000,          600         UNION ALL
                     SELECT 'A',              500,          300
+                  ),
+                  joined AS (
+                    SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.match_dt
+                    FROM final_rows fr
+                    JOIN tmap tm USING (tourney_id)
+                    JOIN points p ON p.level = tm.level
+                  ),
+                  dedup AS (
+                    SELECT DISTINCT ON (tourney_key, player_id)
+                           tourney_key, player_id, points, title_code
+                    FROM joined
+                    ORDER BY tourney_key, player_id, match_dt DESC
                   )
                   INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
-                  FROM final_rows fr
-                  JOIN tmap tm USING (tourney_id)
-                  JOIN points p ON p.level = tm.level
+                  SELECT tourney_key, player_id, points, title_code
+                  FROM dedup
                   ON CONFLICT (tourney_key, player_id) DO UPDATE
                   SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
                 $q$, v_date_col, v_year);
@@ -220,12 +247,22 @@ jobs:
                     SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
                     SELECT 'M',             1000,          600         UNION ALL
                     SELECT 'A',              500,          300
+                  ),
+                  joined AS (
+                    SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.final_match_id
+                    FROM final_rows fr
+                    JOIN tmap tm USING (tourney_id)
+                    JOIN points p ON p.level = tm.level
+                  ),
+                  dedup AS (
+                    SELECT DISTINCT ON (tourney_key, player_id)
+                           tourney_key, player_id, points, title_code
+                    FROM joined
+                    ORDER BY tourney_key, player_id, final_match_id DESC
                   )
                   INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
-                  FROM final_rows fr
-                  JOIN tmap tm USING (tourney_id)
-                  JOIN points p ON p.level = tm.level
+                  SELECT tourney_key, player_id, points, title_code
+                  FROM dedup
                   ON CONFLICT (tourney_key, player_id) DO UPDATE
                   SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
                 $q$;
@@ -233,7 +270,6 @@ jobs:
               EXECUTE v_sql;
 
             ELSIF v_has_opponent THEN
-              -- Derivar runner con opponent_id/player_id
               IF v_date_col IS NOT NULL THEN
                 v_sql := format($q$
                   WITH finals AS (
@@ -259,12 +295,22 @@ jobs:
                     SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
                     SELECT 'M',             1000,          600         UNION ALL
                     SELECT 'A',              500,          300
+                  ),
+                  joined AS (
+                    SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.match_dt
+                    FROM final_rows fr
+                    JOIN tmap tm USING (tourney_id)
+                    JOIN points p ON p.level = tm.level
+                  ),
+                  dedup AS (
+                    SELECT DISTINCT ON (tourney_key, player_id)
+                           tourney_key, player_id, points, title_code
+                    FROM joined
+                    ORDER BY tourney_key, player_id, match_dt DESC
                   )
                   INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
-                  FROM final_rows fr
-                  JOIN tmap tm USING (tourney_id)
-                  JOIN points p ON p.level = tm.level
+                  SELECT tourney_key, player_id, points, title_code
+                  FROM dedup
                   ON CONFLICT (tourney_key, player_id) DO UPDATE
                   SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
                 $q$, v_date_col, v_year);
@@ -293,18 +339,27 @@ jobs:
                     SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
                     SELECT 'M',             1000,          600         UNION ALL
                     SELECT 'A',              500,          300
+                  ),
+                  joined AS (
+                    SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.final_match_id
+                    FROM final_rows fr
+                    JOIN tmap tm USING (tourney_id)
+                    JOIN points p ON p.level = tm.level
+                  ),
+                  dedup AS (
+                    SELECT DISTINCT ON (tourney_key, player_id)
+                           tourney_key, player_id, points, title_code
+                    FROM joined
+                    ORDER BY tourney_key, player_id, final_match_id DESC
                   )
                   INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
-                  SELECT tm.tourney_key, fr.runner_id, p.runner, 'runner'
-                  FROM final_rows fr
-                  JOIN tmap tm USING (tourney_id)
-                  JOIN points p ON p.level = tm.level
+                  SELECT tourney_key, player_id, points, title_code
+                  FROM dedup
                   ON CONFLICT (tourney_key, player_id) DO UPDATE
                   SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
                 $q$;
               END IF;
               EXECUTE v_sql;
-
             ELSE
               RAISE NOTICE 'No hay loser_id ni opponent_id en estratego_v1.matches → se inserta solo campeón.';
             END IF;
@@ -316,7 +371,6 @@ jobs:
         env:
           season_year: ${{ inputs.season_year }}
         run: |
-          # Pasamos el parámetro como GUC temporal accesible desde el DO block:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET my.season_year TO '${season_year}';" -f /tmp/defense_backfill_dynamic.sql
 
       - name: Export CSV artifact (joined with tournament name/level)
