@@ -1,0 +1,201 @@
+name: DB – Defense view SR mapping + smoke tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      T_NAME:
+        description: "Nombre del torneo como en Prematch (ej: US Open)"
+        required: true
+        default: "US Open"
+      SR_IDS:
+        description: "Lista de SR IDs separados por coma (ej: 225050,407573)"
+        required: true
+        default: "225050,407573"
+
+jobs:
+  build-defense-view-sr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      T_NAME: ${{ inputs.T_NAME }}
+      SR_IDS: ${{ inputs.SR_IDS }}
+
+    steps:
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Sanity DB
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Create helper + view (prefer players_ext, fallback players_lookup)
+        run: |
+          cat > /tmp/defense_view_sr.sql <<'SQL'
+          -- Helper de normalización
+          CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
+          RETURNS text LANGUAGE sql IMMUTABLE AS $$
+            SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
+          $$;
+
+          -- Creamos/recreamos la vista usando players_ext si existe; si no, players_lookup.
+          DO $$
+          DECLARE
+            has_ext boolean;
+            has_lookup boolean;
+            create_sql text;
+          BEGIN
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='players_ext'
+                AND column_name='ext_sportradar_id'
+            ) INTO has_ext;
+
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='players_lookup'
+                AND column_name='ext_sportradar_id'
+            ) INTO has_lookup;
+
+            IF has_ext AND has_lookup THEN
+              create_sql := $v$
+                CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
+                SELECT
+                  pd.tourney_key,
+                  pd.player_id AS player_id_int,
+                  pd.points,
+                  pd.title_code,
+                  COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id) AS ext_sportradar_id,
+                  NULLIF(regexp_replace(COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id), '\D','','g'),'')::int AS sr_competitor_id
+                FROM public.player_defense_prev_year pd
+                LEFT JOIN public.players_ext    pe ON pe.player_id = pd.player_id
+                LEFT JOIN public.players_lookup pl ON pl.player_id = pd.player_id;
+              $v$;
+
+            ELSIF has_ext THEN
+              create_sql := $v$
+                CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
+                SELECT
+                  pd.tourney_key,
+                  pd.player_id AS player_id_int,
+                  pd.points,
+                  pd.title_code,
+                  pe.ext_sportradar_id,
+                  NULLIF(regexp_replace(pe.ext_sportradar_id, '\D','','g'),'')::int AS sr_competitor_id
+                FROM public.player_defense_prev_year pd
+                JOIN public.players_ext pe ON pe.player_id = pd.player_id;
+              $v$;
+
+            ELSIF has_lookup THEN
+              create_sql := $v$
+                CREATE OR REPLACE VIEW public.v_player_defense_prev_year_sr AS
+                SELECT
+                  pd.tourney_key,
+                  pd.player_id AS player_id_int,
+                  pd.points,
+                  pd.title_code,
+                  pl.ext_sportradar_id,
+                  NULLIF(regexp_replace(pl.ext_sportradar_id, '\D','','g'),'')::int AS sr_competitor_id
+                FROM public.player_defense_prev_year pd
+                JOIN public.players_lookup pl ON pl.player_id = pd.player_id;
+              $v$;
+
+            ELSE
+              RAISE EXCEPTION 'No existe players_ext ni players_lookup con ext_sportradar_id';
+            END IF;
+
+            EXECUTE create_sql;
+          END $$;
+
+          -- Index útil para joins por SR
+          DO $$
+          BEGIN
+            PERFORM 1
+            FROM pg_indexes
+            WHERE schemaname='public' AND indexname='v_defense_sr_idx';
+            IF NOT FOUND THEN
+              EXECUTE 'CREATE INDEX v_defense_sr_idx ON public.v_player_defense_prev_year_sr (sr_competitor_id)';
+            END IF;
+          END $$;
+          SQL
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_view_sr.sql
+
+      - name: Smoke: counts + sample by tournament and SR IDs
+        run: |
+          # Conteo total
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT 'total_rows' AS label, COUNT(*) AS n
+            FROM public.v_player_defense_prev_year_sr;
+          "
+
+          # Muestra por torneo normalizado
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -c "
+            SELECT tourney_key, player_id_int, sr_competitor_id, points, title_code
+            FROM public.v_player_defense_prev_year_sr
+            WHERE tourney_key = public.norm_tourney(:'TNAME')
+            ORDER BY points DESC, player_id_int
+            LIMIT 20;
+          "
+
+          # Muestra por SR IDs (entrada coma → array int)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -c "
+            WITH ids AS (
+              SELECT string_to_array(:'IDS', ',')::int[] AS arr
+            )
+            SELECT v.tourney_key, v.sr_competitor_id, v.points, v.title_code
+            FROM public.v_player_defense_prev_year_sr v, ids
+            WHERE v.sr_competitor_id = ANY(ids.arr)
+            ORDER BY v.points DESC, v.sr_competitor_id
+            LIMIT 50;
+          "
+
+      - name: Export CSV artifact (by tournament)
+        run: |
+          mkdir -p /tmp/defense_view_sr
+          # Export de muestra por torneo
+          cat > /tmp/_export_by_tourney.sql <<'SQL'
+          \COPY (
+            SELECT
+              tourney_key,
+              player_id_int,
+              sr_competitor_id,
+              points,
+              title_code
+            FROM public.v_player_defense_prev_year_sr
+            WHERE tourney_key = public.norm_tourney(:'TNAME')
+            ORDER BY points DESC, player_id_int
+          ) TO STDOUT WITH CSV HEADER;
+          SQL
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v TNAME="$T_NAME" -f /tmp/_export_by_tourney.sql > /tmp/defense_view_sr/defense_by_tourney.csv || true
+
+          # Export por SR IDs
+          cat > /tmp/_export_by_srids.sql <<'SQL'
+          \COPY (
+            WITH ids AS (
+              SELECT string_to_array(:'IDS', ',')::int[] AS arr
+            )
+            SELECT
+              tourney_key,
+              sr_competitor_id,
+              points,
+              title_code
+            FROM public.v_player_defense_prev_year_sr, ids
+            WHERE sr_competitor_id = ANY(ids.arr)
+            ORDER BY tourney_key, points DESC, sr_competitor_id
+          ) TO STDOUT WITH CSV HEADER;
+          SQL
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v IDS="$SR_IDS" -f /tmp/_export_by_srids.sql > /tmp/defense_view_sr/defense_by_srids.csv || true
+
+          echo "Lines by_tourney:"; wc -l /tmp/defense_view_sr/defense_by_tourney.csv || true
+          echo "Lines by_srids:";  wc -l /tmp/defense_view_sr/defense_by_srids.csv || true
+          head -n 10 /tmp/defense_view_sr/defense_by_tourney.csv || true
+          head -n 10 /tmp/defense_view_sr/defense_by_srids.csv  || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: defense_view_sr_artifacts
+          path: /tmp/defense_view_sr/
+          retention-days: 7
