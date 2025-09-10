@@ -1,0 +1,176 @@
+name: DB – Create & Backfill defense_points (prev year)
+
+on:
+  workflow_dispatch:
+    inputs:
+      season_year:
+        description: "Año a usar como 'previo' (ej. 2024)"
+        required: true
+        default: "2024"
+
+jobs:
+  build-defense-points:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SEASON_YEAR: ${{ inputs.season_year }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sanity – psql connectivity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Setup Python (to write SQL files)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate SQL files (view + upsert + export)
+        run: |
+          python - << 'PY'
+          import os, pathlib, textwrap
+          year = int(os.environ.get("SEASON_YEAR","2024"))
+          outdir = pathlib.Path("/tmp")
+          # 1) Helper function and destination table
+          (outdir/"defense_setup.sql").write_text(textwrap.dedent(f"""
+            -- Asegura norm_tourney (no DROP para no romper dependencias)
+            CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
+            RETURNS text LANGUAGE sql IMMUTABLE AS $$
+              SELECT regexp_replace(lower(coalesce(txt,'')), '\\s+', ' ', 'g')
+            $$;
+
+            -- Tabla destino (si no existe)
+            CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
+              tourney_key text NOT NULL,
+              player_id   int  NOT NULL,
+              points      int  NOT NULL,
+              title_code  text,
+              PRIMARY KEY (tourney_key, player_id)
+            );
+          """).strip()+"\n", encoding="utf-8")
+
+          # 2) View for given year (champ + runner with points)
+          (outdir/"defense_view.sql").write_text(textwrap.dedent(f"""
+            DROP VIEW IF EXISTS public.v_defense_points_prev_year CASCADE;
+
+            CREATE VIEW public.v_defense_points_prev_year AS
+            WITH
+            tourney_cat AS (
+              SELECT
+                COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) AS tourney_key,
+                COALESCE(tsr.category, csr.category, 'ATP250') AS category
+              FROM public.fs_matches_long m
+              LEFT JOIN public.tourney_speed_resolved tsr ON tsr.tourney_key = m.tourney_key
+              LEFT JOIN public.court_speed_rankig_norm csr ON csr.tournament_name ILIKE '%' || m.tournament_name || '%'
+              WHERE EXTRACT(YEAR FROM m.match_date) = {year}
+              GROUP BY 1,2
+            ),
+            finals AS (
+              SELECT
+                COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) AS tourney_key,
+                MAX(m.match_date) AS final_date
+              FROM public.fs_matches_long m
+              WHERE EXTRACT(YEAR FROM m.match_date) = {year}
+              GROUP BY 1
+            ),
+            final_match AS (
+              SELECT DISTINCT ON (f.tourney_key)
+                f.tourney_key,
+                m.match_date,
+                m.winner_id,
+                CASE
+                  WHEN m.player_id = m.winner_id THEN m.opponent_id
+                  ELSE m.player_id
+                END AS runner_id
+              FROM finals f
+              JOIN public.fs_matches_long m
+                ON (COALESCE(m.tourney_key, public.norm_tourney(m.tournament_name)) = f.tourney_key
+                    AND m.match_date = f.final_date)
+              ORDER BY f.tourney_key, m.match_date DESC
+            ),
+            points AS (
+              -- Ajusta etiquetas si tus categorías reales difieren
+              SELECT 'Grand Slam'::text AS category, 2000 AS champ, 1200 AS runner UNION ALL
+              SELECT 'Masters'::text,                 1000,  600  UNION ALL
+              SELECT 'ATP500'::text,                   500,  300  UNION ALL
+              SELECT 'ATP250'::text,                   250,  150
+            ),
+            champs AS (
+              SELECT
+                fm.tourney_key,
+                fm.winner_id AS player_id,
+                p.champ      AS points,
+                'champ'      AS title_code
+              FROM final_match fm
+              JOIN tourney_cat tc USING (tourney_key)
+              JOIN points p ON p.category = tc.category
+            ),
+            runners AS (
+              SELECT
+                fm.tourney_key,
+                fm.runner_id AS player_id,
+                p.runner     AS points,
+                'runner'     AS title_code
+              FROM final_match fm
+              JOIN tourney_cat tc USING (tourney_key)
+              JOIN points p ON p.category = tc.category
+            )
+            SELECT * FROM champs
+            UNION ALL
+            SELECT * FROM runners;
+          """).strip()+"\n", encoding="utf-8")
+
+          # 3) Upsert from view to table
+          (outdir/"defense_upsert.sql").write_text(textwrap.dedent("""
+            INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+            SELECT tourney_key, player_id, points, title_code
+            FROM public.v_defense_points_prev_year
+            ON CONFLICT (tourney_key, player_id) DO UPDATE
+            SET points = EXCLUDED.points,
+                title_code = EXCLUDED.title_code;
+          """).strip()+"\n", encoding="utf-8")
+
+          # 4) Export CSV of the view
+          (outdir/"defense_export.sql").write_text(textwrap.dedent("""
+            COPY (
+              SELECT *
+              FROM public.v_defense_points_prev_year
+              ORDER BY tourney_key, points DESC, player_id
+            ) TO STDOUT WITH CSV HEADER;
+          """).strip()+"\n", encoding="utf-8")
+
+          print("Wrote:", "/tmp/defense_setup.sql")
+          print("Wrote:", "/tmp/defense_view.sql")
+          print("Wrote:", "/tmp/defense_upsert.sql")
+          print("Wrote:", "/tmp/defense_export.sql")
+          PY
+
+      - name: Apply setup (function + table)
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_setup.sql
+
+      - name: Create/replace view v_defense_points_prev_year
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_view.sql
+
+      - name: Upsert player_defense_prev_year from view
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_upsert.sql
+
+      - name: Export view to CSV
+        run: |
+          mkdir -p /tmp/defense_artifacts
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/defense_export.sql > /tmp/defense_artifacts/defense_points_prev_year.csv
+          echo "CSV rows:"; wc -l /tmp/defense_artifacts/defense_points_prev_year.csv || true
+
+      - name: Verify table sample
+        run: |
+          echo ">>> Sample from player_defense_prev_year:"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT * FROM public.player_defense_prev_year ORDER BY tourney_key, points DESC, player_id LIMIT 20;"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: defense_points_prev_year
+          path: /tmp/defense_artifacts/defense_points_prev_year.csv
+          retention-days: 7
