@@ -20,9 +20,10 @@ jobs:
       - name: Prepare out dir
         run: mkdir -p /tmp/db_validate
 
-      - name: Checks → CSV (PASS/FAIL)
+      - name: Write SQL file (prematch_checks.sql)
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+          cat > /tmp/prematch_checks.sql <<'SQL'
+          \copy (
             WITH cols AS (
               SELECT table_schema, table_name, column_name
               FROM information_schema.columns
@@ -49,7 +50,7 @@ jobs:
                 ('public','v_player_ytd_now_int','player_id','id jugador'),
                 ('public','v_player_ytd_now_int','wr','winrate YTD'),
 
-                -- estratego_v1 histórico
+                -- histórico estratego_v1
                 ('estratego_v1','matches','match_id','match id histórico'),
                 ('estratego_v1','matches','tourney_id','tourney id'),
                 ('estratego_v1','matches','winner_id','ganador'),
@@ -57,14 +58,30 @@ jobs:
                 ('estratego_v1','tournaments','name','nombre torneo'),
                 ('estratego_v1','tournaments','level','nivel/categoría')
             )
-            SELECT r.table_schema, r.table_name, r.column_name, r.note,
-                   CASE WHEN EXISTS (
-                     SELECT 1 FROM cols c
-                     WHERE c.table_schema=r.table_schema AND c.table_name=r.table_name AND c.column_name=r.column_name
-                   ) THEN 'PASS' ELSE 'FAIL' END AS status
+            SELECT
+              r.table_schema,
+              r.table_name,
+              r.column_name,
+              r.note,
+              CASE
+                WHEN EXISTS (
+                  SELECT 1 FROM cols c
+                  WHERE c.table_schema = r.table_schema
+                    AND c.table_name   = r.table_name
+                    AND c.column_name  = r.column_name
+                )
+                THEN 'PASS' ELSE 'FAIL'
+              END AS status
             FROM req r
-            ORDER BY (status='FAIL') DESC, r.table_schema, r.table_name, r.column_name
-          ) TO STDOUT WITH CSV HEADER" > /tmp/db_validate/prematch_checks.csv
+            ORDER BY (status = 'FAIL') DESC, r.table_schema, r.table_name, r.column_name
+          ) TO STDOUT WITH CSV HEADER
+          SQL
+
+      - name: Run validation and export CSV
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/prematch_checks.sql > /tmp/db_validate/prematch_checks.csv
+          echo "CSV rows:"; wc -l /tmp/db_validate/prematch_checks.csv || true
+          head -n 5 /tmp/db_validate/prematch_checks.csv || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
