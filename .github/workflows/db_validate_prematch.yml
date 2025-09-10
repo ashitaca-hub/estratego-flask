@@ -1,0 +1,74 @@
+name: DB – Validate Prematch Dependencies
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Sanity
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
+
+      - name: Prepare out dir
+        run: mkdir -p /tmp/db_validate
+
+      - name: Checks → CSV (PASS/FAIL)
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\copy (
+            WITH cols AS (
+              SELECT table_schema, table_name, column_name
+              FROM information_schema.columns
+            ),
+            req(table_schema, table_name, column_name, note) AS (
+              VALUES
+                -- fs_matches_long mínimos
+                ('public','fs_matches_long','match_date','fecha partido'),
+                ('public','fs_matches_long','player_id','id jugador'),
+                ('public','fs_matches_long','winner_id','id ganador'),
+                ('public','fs_matches_long','tournament_name','nombre torneo'),
+                -- columnas deseables
+                ('public','fs_matches_long','surface','superficie (deseable)'),
+                ('public','fs_matches_long','speed_bucket','velocidad (si existe)'),
+                ('public','fs_matches_long','ext_event_id','SR event id (si existe)'),
+
+                -- rankings_snapshot_int
+                ('public','rankings_snapshot_int','snapshot_date','fecha snapshot ranking'),
+                ('public','rankings_snapshot_int','player_id','id jugador'),
+                ('public','rankings_snapshot_int','rank','ranking'),
+                ('public','rankings_snapshot_int','points','puntos'),
+
+                -- v_player_ytd_now_int
+                ('public','v_player_ytd_now_int','player_id','id jugador'),
+                ('public','v_player_ytd_now_int','wr','winrate YTD'),
+
+                -- estratego_v1 histórico
+                ('estratego_v1','matches','match_id','match id histórico'),
+                ('estratego_v1','matches','tourney_id','tourney id'),
+                ('estratego_v1','matches','winner_id','ganador'),
+                ('estratego_v1','tournaments','tourney_id','tourney id'),
+                ('estratego_v1','tournaments','name','nombre torneo'),
+                ('estratego_v1','tournaments','level','nivel/categoría')
+            )
+            SELECT r.table_schema, r.table_name, r.column_name, r.note,
+                   CASE WHEN EXISTS (
+                     SELECT 1 FROM cols c
+                     WHERE c.table_schema=r.table_schema AND c.table_name=r.table_name AND c.column_name=r.column_name
+                   ) THEN 'PASS' ELSE 'FAIL' END AS status
+            FROM req r
+            ORDER BY (status='FAIL') DESC, r.table_schema, r.table_name, r.column_name
+          ) TO STDOUT WITH CSV HEADER" > /tmp/db_validate/prematch_checks.csv
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db_prematch_validation
+          path: /tmp/db_validate/prematch_checks.csv
+          retention-days: 7
