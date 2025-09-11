@@ -44,7 +44,6 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/setup.sql
 
       - name: Backfill champs + runners for ${SEASON_YEAR}
-        shell: bash
         run: |
           set -euo pipefail
 
@@ -53,7 +52,7 @@ jobs:
           WITH points(level, champ, runner) AS (
             VALUES ('G',2000,1200), ('M',1000,600), ('A',500,300)
           ),
-          -- Torneos del año pedido (por tournaments.tourney_date)
+          -- Torneos del año pedido (por tournaments.tourney_date; robusto a tipos)
           tmap AS (
             SELECT t.tourney_id,
                    public.norm_tourney(t.name) AS tourney_key,
@@ -62,7 +61,7 @@ jobs:
             FROM estratego_v1.tournaments t
             WHERE substring(t.tourney_date::text, 1, 4)::int = :'SEASON_YEAR'::int
           ),
-          -- Final por torneo (si hay varios registros marcados 'F', coge el de mayor match_id)
+          -- Final por torneo (si hubiera varios 'F', coge el de mayor match_id)
           finals AS (
             SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
             FROM estratego_v1.matches m
@@ -70,15 +69,12 @@ jobs:
             WHERE m.round = 'F'
             GROUP BY 1
           ),
-          -- Fila final con campeón y runner (runner por loser_id; si no, por player/opponent)
+          -- Fila final con campeón y finalista (usando loser_id)
           final_rows AS (
             SELECT m.tourney_id,
                    m.match_id AS final_match_id,
                    m.winner_id,
-                   COALESCE(
-                     m.loser_id,
-                     CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END
-                   ) AS runner_id
+                   m.loser_id AS runner_id
             FROM estratego_v1.matches m
             JOIN finals f
               ON m.tourney_id = f.tourney_id
@@ -92,12 +88,13 @@ jobs:
             JOIN tmap   tt USING (tourney_id)
             JOIN points p  ON p.level = tt.level
           ),
-          -- Finalistas
+          -- Finalistas (solo filas con loser_id no nulo)
           runners AS (
             SELECT tt.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code
             FROM final_rows fr
             JOIN tmap   tt USING (tourney_id)
             JOIN points p  ON p.level = tt.level
+            WHERE fr.runner_id IS NOT NULL
           ),
           upserts AS (
             SELECT * FROM champs
@@ -112,6 +109,7 @@ jobs:
           SQL
 
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v SEASON_YEAR="$SEASON_YEAR" -f /tmp/backfill.sql
+
 
       - name: Export CSV artifact (verificación)
         run: |
