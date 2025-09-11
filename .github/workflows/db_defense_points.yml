@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       season_year:
-        description: "Año para defensa (usa tournaments.tourney_date)"
+        description: "Año para defensa (p.ej. 2024)"
         required: true
         default: "2024"
 
@@ -23,45 +23,48 @@ jobs:
       - name: Sanity
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select now();"
 
-      - name: Setup helpers + target table
+      - name: Setup helpers and target table
         run: |
           cat > /tmp/setup.sql <<'SQL'
-          -- normalizador
+          -- Normalizador de nombre de torneo
           CREATE OR REPLACE FUNCTION public.norm_tourney(txt text)
           RETURNS text LANGUAGE sql IMMUTABLE AS $$
             SELECT regexp_replace(lower(coalesce(txt,'')), '\s+', ' ', 'g')
           $$;
 
-          -- tabla destino (idempotente)
+          -- Tabla destino (idempotente)
           CREATE TABLE IF NOT EXISTS public.player_defense_prev_year (
             tourney_key text NOT NULL,
             player_id   int  NOT NULL,
             points      int  NOT NULL,
-            title_code  text,
+            title_code  text,           -- 'champ' | 'runner'
             PRIMARY KEY (tourney_key, player_id)
           );
           SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/setup.sql
 
-      - name: Backfill champs + runners for ${SEASON_YEAR}
+      - name: Backfill champs and runners for selected year
+        shell: bash
         run: |
           set -euo pipefail
 
+          # Generamos SQL robusto a tipos (date/int/text) en tournaments.tourney_date
           cat > /tmp/backfill.sql <<'SQL'
           -- Puntos por nivel
           WITH points(level, champ, runner) AS (
             VALUES ('G',2000,1200), ('M',1000,600), ('A',500,300)
           ),
-          -- Torneos del año pedido (por tournaments.tourney_date; robusto a tipos)
+          -- Torneos del año pedido (por tournaments.tourney_date -> primeros 4 dígitos)
           tmap AS (
-            SELECT t.tourney_id,
-                   public.norm_tourney(t.name) AS tourney_key,
-                   t.level,
-                   t.tourney_date
+            SELECT
+              t.tourney_id,
+              public.norm_tourney(t.name) AS tourney_key,
+              t.level,
+              t.tourney_date
             FROM estratego_v1.tournaments t
-            WHERE substring(t.tourney_date::text, 1, 4)::int = :'SEASON_YEAR'::int
+            WHERE CAST(substring(t.tourney_date::text, 1, 4) AS int) = :YEAR
           ),
-          -- Final por torneo (si hubiera varios 'F', coge el de mayor match_id)
+          -- Final por torneo (si hubiera duplicados, tomamos el de mayor match_id)
           finals AS (
             SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
             FROM estratego_v1.matches m
@@ -69,12 +72,13 @@ jobs:
             WHERE m.round = 'F'
             GROUP BY 1
           ),
-          -- Fila final con campeón y finalista (usando loser_id)
+          -- Fila final con campeón y runner (runner usando loser_id si existe)
           final_rows AS (
-            SELECT m.tourney_id,
-                   m.match_id AS final_match_id,
-                   m.winner_id,
-                   m.loser_id AS runner_id
+            SELECT
+              m.tourney_id,
+              m.match_id AS final_match_id,
+              m.winner_id,
+              m.loser_id AS runner_id
             FROM estratego_v1.matches m
             JOIN finals f
               ON m.tourney_id = f.tourney_id
@@ -83,14 +87,22 @@ jobs:
           ),
           -- Campeones
           champs AS (
-            SELECT tt.tourney_key, fr.winner_id AS player_id, p.champ AS points, 'champ' AS title_code
+            SELECT
+              tt.tourney_key,
+              fr.winner_id AS player_id,
+              p.champ      AS points,
+              'champ'      AS title_code
             FROM final_rows fr
             JOIN tmap   tt USING (tourney_id)
             JOIN points p  ON p.level = tt.level
           ),
-          -- Finalistas (solo filas con loser_id no nulo)
+          -- Finalistas (solo si loser_id no es nulo)
           runners AS (
-            SELECT tt.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code
+            SELECT
+              tt.tourney_key,
+              fr.runner_id AS player_id,
+              p.runner     AS points,
+              'runner'     AS title_code
             FROM final_rows fr
             JOIN tmap   tt USING (tourney_id)
             JOIN points p  ON p.level = tt.level
@@ -108,17 +120,17 @@ jobs:
           SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
           SQL
 
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v SEASON_YEAR="$SEASON_YEAR" -f /tmp/backfill.sql
+          # Ejecutamos pasando el año como entero (sin comillas)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v YEAR="${SEASON_YEAR}" -f /tmp/backfill.sql
 
-
-      - name: Export CSV artifact (verificación)
+      - name: Export CSV artifact (verification)
         run: |
           mkdir -p /tmp/defense_from_et
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL' > /tmp/defense_from_et/defense_points_prev_year_from_et.csv
-          COPY (
+          cat > /tmp/export.sql <<'SQL'
+          \COPY (
             SELECT
               pd.tourney_key,
-              t.name AS tournament_name,
+              t.name   AS tournament_name,
               t.level,
               t.tourney_date,
               pd.player_id,
@@ -127,10 +139,12 @@ jobs:
             FROM public.player_defense_prev_year pd
             LEFT JOIN estratego_v1.tournaments t
               ON public.norm_tourney(t.name) = pd.tourney_key
-            WHERE substring(t.tourney_date::text, 1, 4)::int = :'SEASON_YEAR'::int
+            WHERE CAST(substring(t.tourney_date::text, 1, 4) AS int) = :YEAR
             ORDER BY t.tourney_date DESC, pd.tourney_key, pd.points DESC, pd.player_id
           ) TO STDOUT WITH CSV HEADER;
           SQL
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v YEAR="${SEASON_YEAR}" -f /tmp/export.sql > /tmp/defense_from_et/defense_points_prev_year_from_et.csv
+
           echo "CSV rows:"; wc -l /tmp/defense_from_et/defense_points_prev_year_from_et.csv || true
           head -n 12 /tmp/defense_from_et/defense_points_prev_year_from_et.csv || true
 
