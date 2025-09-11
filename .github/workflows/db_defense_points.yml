@@ -94,8 +94,8 @@ jobs:
 
           echo "Detected → DATECOL=${DATECOL:-<none>}  HAS_LOSER=$HAS_LOSER  HAS_OPP=$HAS_OPP  FILTER_BY_YEAR=$FILTER_BY_YEAR"
 
-                  - name: Build backfill SQL (champ + runner) with dedup
-        shell: bash
+      - name: Build backfill SQL (champ + runner) with dedup
+     
         run: |
           set -euo pipefail
 
@@ -401,8 +401,6 @@ jobs:
               echo "No loser_id/opponent_id → solo campeón."
             fi
           fi
-
-
 
       - name: Export CSV artifact (joined with tournament name/level)
         run: |
