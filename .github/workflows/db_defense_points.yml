@@ -60,7 +60,7 @@ jobs:
                    t.level,
                    t.tourney_date
             FROM estratego_v1.tournaments t
-            WHERE EXTRACT(YEAR FROM t.tourney_date) = :SEASON_YEAR
+            WHERE substring(t.tourney_date::text, 1, 4)::int = :'SEASON_YEAR'::int
           ),
           -- Final por torneo (si hay varios registros marcados 'F', coge el de mayor match_id)
           finals AS (
@@ -129,7 +129,7 @@ jobs:
             FROM public.player_defense_prev_year pd
             LEFT JOIN estratego_v1.tournaments t
               ON public.norm_tourney(t.name) = pd.tourney_key
-            WHERE EXTRACT(YEAR FROM t.tourney_date) = :SEASON_YEAR
+            WHERE substring(t.tourney_date::text, 1, 4)::int = :'SEASON_YEAR'::int
             ORDER BY t.tourney_date DESC, pd.tourney_key, pd.points DESC, pd.player_id
           ) TO STDOUT WITH CSV HEADER;
           SQL
