@@ -94,72 +94,314 @@ jobs:
 
           echo "Detected → DATECOL=${DATECOL:-<none>}  HAS_LOSER=$HAS_LOSER  HAS_OPP=$HAS_OPP  FILTER_BY_YEAR=$FILTER_BY_YEAR"
 
-            - name: Build backfill SQL (champ + runner) with dedup
-              shell: bash
-              run: |
-                set -euo pipefail
-                set -x  # debug
-      
-                YEAR="${SEASON_YEAR}"
-      
-                # Si no hay DATECOL pero pidieron filtrar por año, forzamos fallback sin fecha
-                if [[ -z "${DATECOL:-}" && "${FILTER_BY_YEAR}" == "true" ]]; then
-                  echo "No DATECOL detectado; forzando FILTER_BY_YEAR=false (fallback sin fecha)."
-                  FILTER_BY_YEAR="false"
-                fi
-      
-                POINTS_CTE="
-                  SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
-                  SELECT 'M',             1000,          600         UNION ALL
-                  SELECT 'A',              500,          300
-                "
-      
-                # --- (idénticas plantillas que ya tenías) ---
-                # CHAMP_WITH_DATE, CHAMP_NO_DATE, RUNNER_LOSER_WITH_DATE,
-                # RUNNER_OPP_WITH_DATE, RUNNER_LOSER_NO_DATE, RUNNER_OPP_NO_DATE
-                #  (no las repito aquí por brevedad; deja las mismas que ya tienes)
-      
-                build_and_run () {
-                  local tpl="$1"
-                  local out="$2"
-                  local sql="${tpl//__POINTS__/$POINTS_CTE}"
-                  sql="${sql//__YEAR__/$YEAR}"
-                  if [[ -n "${DATECOL:-}" ]]; then
-                    sql="${sql//__DATECOL__/$DATECOL}"
-                  fi
-                  printf "%s\n" "$sql" > "$out"
-                  # muestra primeras líneas para debug
-                  head -n 25 "$out" || true
-                  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$out"
-                }
-      
-                if [[ -n "${DATECOL:-}" && "$FILTER_BY_YEAR" == "true" ]]; then
-                  echo "[Champ] with date/year"
-                  build_and_run "$CHAMP_WITH_DATE" /tmp/champ.sql
-      
-                  if [[ "${HAS_LOSER}" == "t" ]]; then
-                    echo "[Runner] loser_id with date/year"
-                    build_and_run "$RUNNER_LOSER_WITH_DATE" /tmp/runner.sql
-                  elif [[ "${HAS_OPP}" == "t" ]]; then
-                    echo "[Runner] opponent_id with date/year"
-                    build_and_run "$RUNNER_OPP_WITH_DATE" /tmp/runner.sql
-                  else
-                    echo "No loser_id/opponent_id → solo campeón."
-                  fi
-                else
-                  echo "[Champ] NO date (latest by match_id)"
-                  build_and_run "$CHAMP_NO_DATE" /tmp/champ.sql
-      
-                  if [[ "${HAS_LOSER}" == "t" ]]; then
-                    echo "[Runner] loser_id NO date"
-                    build_and_run "$RUNNER_LOSER_NO_DATE" /tmp/runner.sql
-                  elif [[ "${HAS_OPP}" == "t" ]]; then
-                    echo "[Runner] opponent_id NO date"
-                    build_and_run "$RUNNER_OPP_NO_DATE" /tmp/runner.sql
-                  else
-                    echo "No loser_id/opponent_id → solo campeón."
-                  fi
-                fi
+                  - name: Build backfill SQL (champ + runner) with dedup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          YEAR="${SEASON_YEAR}"
+
+          # Si no hay DATECOL pero pidieron filtrar por año → forzamos sin fecha
+          if [[ -z "${DATECOL:-}" && "${FILTER_BY_YEAR}" == "true" ]]; then
+            echo "No DATECOL detectado; forzamos FILTER_BY_YEAR=false (fallback sin fecha)."
+            FILTER_BY_YEAR="false"
+          fi
+
+          # Puntos por nivel (se insertará por sed)
+          echo "
+            SELECT 'G' AS level, 2000 AS champ, 1200 AS runner UNION ALL
+            SELECT 'M',             1000,          600         UNION ALL
+            SELECT 'A',              500,          300
+          " > /tmp/_points_cte.sql
+
+          # === Plantillas SQL (6) ===
+          cat > /tmp/CHAMP_WITH_DATE.tpl.sql <<'SQL'
+          WITH finals AS (
+            SELECT m.tourney_id, MAX(m.__DATECOL__) AS final_date
+            FROM estratego_v1.matches m
+            WHERE m.round='F' AND EXTRACT(YEAR FROM m.__DATECOL__) = __YEAR__
+            GROUP BY 1
+          ),
+          final_rows AS (
+            SELECT m.tourney_id, m.__DATECOL__ AS match_dt, m.winner_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.__DATECOL__= f.final_date
+            WHERE m.round='F'
+          ),
+          tmap AS (
+            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+            FROM estratego_v1.tournaments t
+          ),
+          points AS ( __POINTS__ ),
+          joined AS (
+            SELECT tm.tourney_key, fr.winner_id AS player_id, p.champ AS points, 'champ' AS title_code, fr.match_dt
+            FROM final_rows fr
+            JOIN tmap tm USING (tourney_id)
+            JOIN points p ON p.level = tm.level
+          ),
+          dedup AS (
+            SELECT DISTINCT ON (tourney_key, player_id)
+                   tourney_key, player_id, points, title_code
+            FROM joined
+            ORDER BY tourney_key, player_id, match_dt DESC
+          )
+          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+          SELECT tourney_key, player_id, points, title_code
+          FROM dedup
+          ON CONFLICT (tourney_key, player_id) DO UPDATE
+          SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+          SQL
+
+          cat > /tmp/CHAMP_NO_DATE.tpl.sql <<'SQL'
+          WITH finals AS (
+            SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
+            FROM estratego_v1.matches m
+            WHERE m.round='F'
+            GROUP BY 1
+          ),
+          final_rows AS (
+            SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.match_id   = f.final_match_id
+            WHERE m.round='F'
+          ),
+          tmap AS (
+            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+            FROM estratego_v1.tournaments t
+          ),
+          points AS ( __POINTS__ ),
+          joined AS (
+            SELECT tm.tourney_key, fr.winner_id AS player_id, p.champ AS points, 'champ' AS title_code, fr.final_match_id
+            FROM final_rows fr
+            JOIN tmap tm USING (tourney_id)
+            JOIN points p ON p.level = tm.level
+          ),
+          dedup AS (
+            SELECT DISTINCT ON (tourney_key, player_id)
+                   tourney_key, player_id, points, title_code
+            FROM joined
+            ORDER BY tourney_key, player_id, final_match_id DESC
+          )
+          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+          SELECT tourney_key, player_id, points, title_code
+          FROM dedup
+          ON CONFLICT (tourney_key, player_id) DO UPDATE
+          SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+          SQL
+
+          cat > /tmp/RUNNER_LOSER_WITH_DATE.tpl.sql <<'SQL'
+          WITH finals AS (
+            SELECT m.tourney_id, MAX(m.__DATECOL__) AS final_date
+            FROM estratego_v1.matches m
+            WHERE m.round='F' AND EXTRACT(YEAR FROM m.__DATECOL__) = __YEAR__
+            GROUP BY 1
+          ),
+          final_rows AS (
+            SELECT m.tourney_id, m.__DATECOL__ AS match_dt, m.winner_id, m.loser_id AS runner_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.__DATECOL__= f.final_date
+            WHERE m.round='F'
+          ),
+          tmap AS (
+            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+            FROM estratego_v1.tournaments t
+          ),
+          points AS ( __POINTS__ ),
+          joined AS (
+            SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.match_dt
+            FROM final_rows fr
+            JOIN tmap tm USING (tourney_id)
+            JOIN points p ON p.level = tm.level
+          ),
+          dedup AS (
+            SELECT DISTINCT ON (tourney_key, player_id)
+                   tourney_key, player_id, points, title_code
+            FROM joined
+            ORDER BY tourney_key, player_id, match_dt DESC
+          )
+          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+          SELECT tourney_key, player_id, points, title_code
+          FROM dedup
+          ON CONFLICT (tourney_key, player_id) DO UPDATE
+          SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+          SQL
+
+          cat > /tmp/RUNNER_OPP_WITH_DATE.tpl.sql <<'SQL'
+          WITH finals AS (
+            SELECT m.tourney_id, MAX(m.__DATECOL__) AS final_date
+            FROM estratego_v1.matches m
+            WHERE m.round='F' AND EXTRACT(YEAR FROM m.__DATECOL__) = __YEAR__
+            GROUP BY 1
+          ),
+          final_rows AS (
+            SELECT m.tourney_id, m.__DATECOL__ AS match_dt, m.winner_id,
+                   CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.__DATECOL__= f.final_date
+            WHERE m.round='F'
+          ),
+          tmap AS (
+            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+            FROM estratego_v1.tournaments t
+          ),
+          points AS ( __POINTS__ ),
+          joined AS (
+            SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.match_dt
+            FROM final_rows fr
+            JOIN tmap tm USING (tourney_id)
+            JOIN points p ON p.level = tm.level
+          ),
+          dedup AS (
+            SELECT DISTINCT ON (tourney_key, player_id)
+                   tourney_key, player_id, points, title_code
+            FROM joined
+            ORDER BY tourney_key, player_id, match_dt DESC
+          )
+          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+          SELECT tourney_key, player_id, points, title_code
+          FROM dedup
+          ON CONFLICT (tourney_key, player_id) DO UPDATE
+          SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+          SQL
+
+          cat > /tmp/RUNNER_LOSER_NO_DATE.tpl.sql <<'SQL'
+          WITH finals AS (
+            SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
+            FROM estratego_v1.matches m
+            WHERE m.round='F'
+            GROUP BY 1
+          ),
+          final_rows AS (
+            SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id, m.loser_id AS runner_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.match_id   = f.final_match_id
+            WHERE m.round='F'
+          ),
+          tmap AS (
+            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+          FROM estratego_v1.tournaments t
+          ),
+          points AS ( __POINTS__ ),
+          joined AS (
+            SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.final_match_id
+            FROM final_rows fr
+            JOIN tmap tm USING (tourney_id)
+            JOIN points p ON p.level = tm.level
+          ),
+          dedup AS (
+            SELECT DISTINCT ON (tourney_key, player_id)
+                   tourney_key, player_id, points, title_code
+            FROM joined
+            ORDER BY tourney_key, player_id, final_match_id DESC
+          )
+          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+          SELECT tourney_key, player_id, points, title_code
+          FROM dedup
+          ON CONFLICT (tourney_key, player_id) DO UPDATE
+          SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+          SQL
+
+          cat > /tmp/RUNNER_OPP_NO_DATE.tpl.sql <<'SQL'
+          WITH finals AS (
+            SELECT m.tourney_id, MAX(m.match_id) AS final_match_id
+            FROM estratego_v1.matches m
+            WHERE m.round='F'
+            GROUP BY 1
+          ),
+          final_rows AS (
+            SELECT m.tourney_id, m.match_id AS final_match_id, m.winner_id,
+                   CASE WHEN m.player_id = m.winner_id THEN m.opponent_id ELSE m.player_id END AS runner_id
+            FROM estratego_v1.matches m
+            JOIN finals f
+              ON m.tourney_id = f.tourney_id
+             AND m.match_id   = f.final_match_id
+            WHERE m.round='F'
+          ),
+          tmap AS (
+            SELECT t.tourney_id, public.norm_tourney(t.name) AS tourney_key, t.level
+            FROM estratego_v1.tournaments t
+          ),
+          points AS ( __POINTS__ ),
+          joined AS (
+            SELECT tm.tourney_key, fr.runner_id AS player_id, p.runner AS points, 'runner' AS title_code, fr.final_match_id
+            FROM final_rows fr
+            JOIN tmap tm USING (tourney_id)
+            JOIN points p ON p.level = tm.level
+          ),
+          dedup AS (
+            SELECT DISTINCT ON (tourney_key, player_id)
+                   tourney_key, player_id, points, title_code
+            FROM joined
+            ORDER BY tourney_key, player_id, final_match_id DESC
+          )
+          INSERT INTO public.player_defense_prev_year (tourney_key, player_id, points, title_code)
+          SELECT tourney_key, player_id, points, title_code
+          FROM dedup
+          ON CONFLICT (tourney_key, player_id) DO UPDATE
+          SET points=EXCLUDED.points, title_code=EXCLUDED.title_code;
+          SQL
+
+          # === Sustitución de placeholders en copias de trabajo ===
+          sed "s|__POINTS__|$(tr -d '\n' < /tmp/_points_cte.sql)|" /tmp/CHAMP_NO_DATE.tpl.sql             > /tmp/CHAMP_NO_DATE.sql
+          sed "s|__POINTS__|$(tr -d '\n' < /tmp/_points_cte.sql)|" /tmp/RUNNER_LOSER_NO_DATE.tpl.sql       > /tmp/RUNNER_LOSER_NO_DATE.sql
+          sed "s|__POINTS__|$(tr -d '\n' < /tmp/_points_cte.sql)|" /tmp/RUNNER_OPP_NO_DATE.tpl.sql         > /tmp/RUNNER_OPP_NO_DATE.sql
+
+          if [[ "${FILTER_BY_YEAR}" == "true" ]]; then
+            sed -e "s|__POINTS__|$(tr -d '\n' < /tmp/_points_cte.sql)|" \
+                -e "s|__YEAR__|${YEAR}|g" \
+                -e "s|__DATECOL__|${DATECOL}|g" \
+                /tmp/CHAMP_WITH_DATE.tpl.sql > /tmp/CHAMP_WITH_DATE.sql
+
+            sed -e "s|__POINTS__|$(tr -d '\n' < /tmp/_points_cte.sql)|" \
+                -e "s|__YEAR__|${YEAR}|g" \
+                -e "s|__DATECOL__|${DATECOL}|g" \
+                /tmp/RUNNER_LOSER_WITH_DATE.tpl.sql > /tmp/RUNNER_LOSER_WITH_DATE.sql
+
+            sed -e "s|__POINTS__|$(tr -d '\n' < /tmp/_points_cte.sql)|" \
+                -e "s|__YEAR__|${YEAR}|g" \
+                -e "s|__DATECOL__|${DATECOL}|g" \
+                /tmp/RUNNER_OPP_WITH_DATE.tpl.sql > /tmp/RUNNER_OPP_WITH_DATE.sql
+          fi
+
+          # === Ejecución según modo ===
+          if [[ "${FILTER_BY_YEAR}" == "true" ]]; then
+            echo "[Champ] with date/year"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/CHAMP_WITH_DATE.sql
+
+            if [[ "${HAS_LOSER}" == "t" ]]; then
+              echo "[Runner] loser_id with date/year"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/RUNNER_LOSER_WITH_DATE.sql
+            elif [[ "${HAS_OPP}" == "t" ]]; then
+              echo "[Runner] opponent_id with date/year"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/RUNNER_OPP_WITH_DATE.sql
+            else
+              echo "No loser_id/opponent_id → solo campeón."
+            fi
+          else
+            echo "[Champ] NO date (latest by match_id)"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/CHAMP_NO_DATE.sql
+
+            if [[ "${HAS_LOSER}" == "t" ]]; then
+              echo "[Runner] loser_id NO date"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/RUNNER_LOSER_NO_DATE.sql
+            elif [[ "${HAS_OPP}" == "t" ]]; then
+              echo "[Runner] opponent_id NO date"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/RUNNER_OPP_NO_DATE.sql
+            else
+              echo "No loser_id/opponent_id → solo campeón."
+            fi
+          fi
+
 
 
       - name: Export CSV artifact (joined with tournament name/level)
