@@ -125,8 +125,11 @@ jobs:
 
       - name: Export CSV artifact (verification)
         run: |
+          set -euo pipefail
           mkdir -p /tmp/defense_from_et
+
           cat > /tmp/export.sql <<'SQL'
+          \set ON_ERROR_STOP on
           \COPY (
             SELECT
               pd.tourney_key,
@@ -141,9 +144,10 @@ jobs:
               ON public.norm_tourney(t.name) = pd.tourney_key
             WHERE CAST(substring(t.tourney_date::text, 1, 4) AS int) = :YEAR
             ORDER BY t.tourney_date DESC, pd.tourney_key, pd.points DESC, pd.player_id
-          ) TO STDOUT WITH CSV HEADER;
+          ) TO '/tmp/defense_from_et/defense_points_prev_year_from_et.csv' WITH CSV HEADER;
           SQL
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v YEAR="${SEASON_YEAR}" -f /tmp/export.sql > /tmp/defense_from_et/defense_points_prev_year_from_et.csv
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v YEAR="${SEASON_YEAR}" -f /tmp/export.sql
 
           echo "CSV rows:"; wc -l /tmp/defense_from_et/defense_points_prev_year_from_et.csv || true
           head -n 12 /tmp/defense_from_et/defense_points_prev_year_from_et.csv || true
