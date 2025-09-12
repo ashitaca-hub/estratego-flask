@@ -114,7 +114,7 @@ jobs:
           from main import app
           import pathlib
           tpl = pathlib.Path("apps_script/prematch_template.html").read_text(encoding="utf-8")
-          assert '<script id="data-slot">' in tpl, "data-slot marker missing"
+          assert '<script>window.resp =' in tpl, "window.resp placeholder missing"
 
           p_id = int(os.environ["P_ID"])
           o_id = int(os.environ["O_ID"])
@@ -145,9 +145,15 @@ jobs:
           r_html = client.post("/matchup/prematch", json=payload)
           assert r_html.status_code == 200, r_html.data
           html = r_html.get_data(as_text=True)
-          assert "window.resp" in html, "window.resp not injected in prematch HTML"
           with open("prematch.html", "w", encoding="utf-8") as f:
               f.write(html)
+
+          with open("prematch.html", encoding="utf-8") as f:
+              lines = f.readlines()
+          assert any("window.resp =" in l for l in lines), "window.resp not injected in prematch HTML"
+          idx = next(i for i, l in enumerate(lines) if "window.resp" in l)
+          if any("//" in l for l in lines[:idx]):
+              raise SystemExit("'//' found before window.resp")
 
           print("[OK] Generados prematch.html y prematch.json")
           PY

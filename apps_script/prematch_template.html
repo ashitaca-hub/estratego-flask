@@ -73,11 +73,7 @@
   .pill{padding:2px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:#0f172a}
 </style>
 
-<!-- El workflow debe inyectar aquí: window.resp = {...JSON de /matchup...}; -->
-<script id="data-slot">
-  // El backend reemplaza este bloque por:
-  //   window.resp = {{ json_data | safe }};
-</script>
+<script>window.resp = {{ json_data | safe }};</script>
 </head>
 <body>
 <div class="wrap">
