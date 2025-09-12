@@ -945,27 +945,32 @@ def enrich_resp_with_extras(resp: dict, conn=None) -> dict:
     flags["is_local_o"] = 1 if co and tc and co == tc else 0
 
     # --- NEW (defensa) ---
-    if tname and (p_id or o_id):
+    sr_p = meta_p.get("ext_sportradar_id") if meta_p else None
+    sr_o = meta_o.get("ext_sportradar_id") if meta_o else None
+
+    def _sr_int(x):
         try:
-            dmap = FS.get_defense_prev_year_by_sr(tname, [p_id, o_id], conn=conn)
+            return int(re.sub(r"\D", "", str(x)))
+        except Exception:
+            return None
+
+    sr_p = _sr_int(sr_p)
+    sr_o = _sr_int(sr_o)
+
+    if tname and (sr_p or sr_o):
+        try:
+            dmap = FS.get_defense_prev_year_by_sr(tname, [sr_p, sr_o], conn=conn)
         except Exception:
             dmap = {}
 
-        def _badge(code):
-            if code == "champ":   return "🏆"
-            if code == "runner":  return "🥈"
-            return None
-
-        dp = dmap.get(p_id or -1, {})
-        do = dmap.get(o_id or -1, {})
+        dp = dmap.get(sr_p or -1, {})
+        do = dmap.get(sr_o or -1, {})
 
         extras["def_points_p"] = dp.get("points")
         extras["def_title_p"]  = dp.get("title_code")
-        extras["def_badge_p"]  = _badge(dp.get("title_code"))
 
         extras["def_points_o"] = do.get("points")
         extras["def_title_o"]  = do.get("title_code")
-        extras["def_badge_o"]  = _badge(do.get("title_code"))
     # --- END NEW ---
 
     return resp
