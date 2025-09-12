@@ -75,8 +75,8 @@
 
 <!-- El workflow debe inyectar aquí: window.resp = {...JSON de /matchup...}; -->
 <script id="data-slot">
-  // Placeholder: el workflow reemplaza este bloque por:
-  window.resp = {{ json_data | safe }};
+  // El backend reemplaza este bloque por:
+  //   window.resp = {{ json_data | safe }};
 </script>
 </head>
 <body>
@@ -89,6 +89,7 @@
 </div>
 
 <script>
+/* ---------- Helpers de visual ---------- */
 function rankTier(r){
   if (r==null) return 'neutral';
   if (r<=3) return 'gold';
@@ -107,20 +108,19 @@ function ytdTier(p){
 function pctText(p){ return p==null ? '—' : (p*100).toFixed(1)+'%'; }
 function odds(x){ return (x>0 && x<1) ? (1/x).toFixed(2) : '—'; }
 
-  <script>
-// Mapa ISO3 -> ISO2 (añade más si necesitas)
+/* ---------- Banderas (ISO3->ISO2→emoji) ---------- */
 const ISO3_TO_2 = {
   USA:'US', GBR:'GB', GER:'DE', FRA:'FR', ESP:'ES', ITA:'IT', POR:'PT', NED:'NL', BEL:'BE',
   SWE:'SE', NOR:'NO', DEN:'DK', FIN:'FI', SUI:'CH', AUT:'AT', CZE:'CZ', SVK:'SK', SLO:'SI',
   CRO:'HR', BIH:'BA', SRB:'RS', MNE:'ME', MKD:'MK', GRC:'GR', TUR:'TR', ROU:'RO', BGR:'BG',
   POL:'PL', HUN:'HU', IRL:'IE', ISL:'IS', EST:'EE', LVA:'LV', LTU:'LT', UKR:'UA',
-  RUS:'RU', BLR:'BY', GEO:'GE', KAZ:'KZ', CHN:'CN', JPN:'JP', KOR:'KR', IND:'IN',
+  RUS:'RU', BLR:'BY', GEO:'GA', KAZ:'KZ', CHN:'CN', JPN:'JP', KOR:'KR', IND:'IN',
   AUS:'AU', NZL:'NZ', CAN:'CA', MEX:'MX', ARG:'AR', BRA:'BR', CHI:'CL', URU:'UY', COL:'CO',
-  PER:'PE', ECU:'EC', BOL:'BO', VEN:'VE', MAR:'MA', TUN:'TN', EGY:'EG', RSA:'ZA', ZAF:'ZA'
+  PER:'PE', ECU:'EC', BOL:'BO', VEN:'VE', MAR:'MA', TUN:'TN', EGY:'EG', ZAF:'ZA', RSA:'ZA'
 };
 function isoTo2(cc){
   if(!cc) return null;
-  cc = cc.trim().toUpperCase();
+  cc = String(cc).trim().toUpperCase();
   if (cc.length===2) return cc;
   return ISO3_TO_2[cc] || null;
 }
@@ -130,17 +130,8 @@ function flagEmoji(cc){
   const A = 0x1F1E6, up = iso2.toUpperCase();
   return String.fromCodePoint(A + up.charCodeAt(0)-65, A + up.charCodeAt(1)-65);
 }
-</script>
 
-
-// bandera emoji desde country code ISO2
-function flagEmoji(cc){
-  if(!cc || cc.length!==2) return '🏁';
-  const A = 0x1F1E6;
-  const up = cc.trim().toUpperCase();
-  return String.fromCodePoint(A + up.charCodeAt(0)-65, A + up.charCodeAt(1)-65);
-}
-
+/* ---------- Chips por jugador ---------- */
 function buildIconChips(side, resp){
   const fl = (resp.features && resp.features.flags) || {};
   const ex = resp.extras || {};
@@ -175,14 +166,13 @@ function buildIconChips(side, resp){
   return chips.join('');
 }
 
+/* ---------- Render principal ---------- */
 function renderPrematch(resp){
-// ANTES
-// const aName = (resp.inputs?.player ?? resp.inputs?.player_sr_id ?? 'Player A');
-// const bName = (resp.inputs?.opponent ?? resp.inputs?.opponent_sr_id ?? 'Player B');
-
-// DESPUÉS (preferimos nombres bonitos si existen)
+  // Nombres (prioriza display de BD)
   const aName = resp.extras?.display_p ?? resp.inputs?.player ?? resp.inputs?.player_sr_id ?? 'Player A';
   const bName = resp.extras?.display_o ?? resp.inputs?.opponent ?? resp.inputs?.opponent_sr_id ?? 'Player B';
+
+  // Probabilidad
   const pA = resp.prob_player ?? 0.5;
   const pB = 1 - pA;
 
@@ -195,12 +185,13 @@ function renderPrematch(resp){
   document.getElementById('ttl').textContent = `${aName} vs ${bName}`;
   document.getElementById('subttl').textContent = `${tname}${mon?(' · mes '+mon):''} · ${surf} · ${sb}`;
 
-  // Ranking / YTD (opcional vía extras)
+  // Ranking / YTD (desde extras)
   const aRank = resp.extras?.rank_p ?? null;
   const bRank = resp.extras?.rank_o ?? null;
   const aYTD  = resp.extras?.ytd_wr_p ?? null; // 0..1
   const bYTD  = resp.extras?.ytd_wr_o ?? null;
 
+  // Señales HIST (deltas)
   const deltas = resp.features?.deltas || {};
   const det = [];
   if (deltas.hist_month!=null)   det.push(`Mes: ${(deltas.hist_month>=0?'+':'')}${deltas.hist_month.toFixed(3)}`);
@@ -270,7 +261,7 @@ function renderPrematch(resp){
       features:{deltas:{hist_month:0.250,hist_surface:0.250,hist_speed:0.250},
                 flags:{surf_change_p:false,surf_change_o:true,is_local_p:false,is_local_o:true}},
       extras:{rank_p:4, rank_o:25, ytd_wr_p:0.78, ytd_wr_o:0.58,
-              country_p:'IT', country_o:'KZ',
+              country_p:'ITA', country_o:'KAZ',
               def_points_p:600, def_title_p:'runner', def_points_o:0, def_title_o:null}
     };
   }
