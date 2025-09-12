@@ -662,6 +662,73 @@ def get_player_meta(
 # Matchup cache JSON (opcional si tienes funciones SQL)
 # ───────────────────────────────────────────────────────────────────
 
+# --- NEW: defensa puntos por SR IDs (campeón/runner del año previo) ---
+def get_defense_prev_year_by_sr(tourney_name: str, sr_ids, conn=None):
+    """
+    Devuelve { sr_competitor_id(int): {"points": int, "title_code": "champ|runner"} }
+    tourney_name: nombre del torneo tal como llega al servidor (se normaliza dentro de SQL)
+    sr_ids: lista de ints Sportradar (ej. [225050, 407573])
+    """
+    if not tourney_name or not sr_ids:
+        return {}
+    ids = [int(x) for x in sr_ids if x is not None]
+
+    close = False
+    if conn is None:
+        import os, psycopg
+        conn = psycopg.connect(os.environ["DATABASE_URL"])
+        close = True
+
+    try:
+        with conn.cursor() as cur:
+            # 1) Intento con la vista puente (más directa)
+            try:
+                cur.execute(
+                    """
+                    SELECT sr_competitor_id, points, title_code
+                    FROM public.v_player_defense_prev_year_sr
+                    WHERE tourney_key = public.norm_tourney(%s)
+                      AND sr_competitor_id = ANY(%s)
+                    """,
+                    (tourney_name, ids),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    return {r[0]: {"points": r[1], "title_code": r[2]} for r in rows}
+            except Exception:
+                # La vista no existe o no es accesible: fallback via mapping
+                pass
+
+            # 2) Fallback: player_defense_prev_year + mapping (players_ext/players_lookup)
+            cur.execute(
+                """
+                WITH mapped AS (
+                  SELECT
+                    pd.tourney_key,
+                    pd.player_id,
+                    pd.points,
+                    pd.title_code,
+                    COALESCE(pe.ext_sportradar_id, pl.ext_sportradar_id) AS ext_sportradar_id
+                  FROM public.player_defense_prev_year pd
+                  LEFT JOIN public.players_ext    pe ON pe.player_id = pd.player_id
+                  LEFT JOIN public.players_lookup pl ON pl.player_id = pd.player_id
+                  WHERE pd.tourney_key = public.norm_tourney(%s)
+                )
+                SELECT NULLIF(regexp_replace(ext_sportradar_id, '\D','','g'),'')::int AS sr_id,
+                       points, title_code
+                FROM mapped
+                WHERE ext_sportradar_id IS NOT NULL
+                  AND NULLIF(regexp_replace(ext_sportradar_id, '\D','','g'),'')::int = ANY(%s)
+                """,
+                (tourney_name, ids),
+            )
+            rows = cur.fetchall()
+            return {r[0]: {"points": r[1], "title_code": r[2]} for r in rows}
+    finally:
+        if close:
+            conn.close()
+
+
 def get_matchup_cache_json(player_id:int, opponent_id:int,
                            tournament_name:str, mon:int,
                            speed_bucket:str, years_back:int,
