@@ -112,6 +112,9 @@ jobs:
           python - << 'PY'
           import os, json
           from main import app
+          import pathlib
+          tpl = pathlib.Path("apps_script/prematch_template.html").read_text(encoding="utf-8")
+          assert '<script id="data-slot">' in tpl, "data-slot marker missing"
 
           p_id = int(os.environ["P_ID"])
           o_id = int(os.environ["O_ID"])
