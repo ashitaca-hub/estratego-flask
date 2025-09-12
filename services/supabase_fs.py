@@ -349,12 +349,28 @@ def get_matchup_hist_vector(
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             data = data[0]
         if isinstance(data, dict) and "d_hist_month" in data:
+            d_m = data.get("d_hist_month")
+            d_s = data.get("d_hist_surface")
+            d_v = data.get("d_hist_speed")
+            missing = []
+            if d_m is None:
+                missing.append("d_hist_month")
+            if d_s is None:
+                missing.append("d_hist_surface")
+            if d_v is None:
+                missing.append("d_hist_speed")
+            if missing:
+                log.warning(
+                    "RPC get_matchup_hist_vector missing %s (p=%s o=%s yrs=%s t=%s m=%s)",
+                    ",".join(missing), p_id, o_id, yrs, tname, month,
+                )
+                raise ValueError(f"Missing RPC fields: {', '.join(missing)}")
             return {
                 "surface": (data.get("surface") or "hard").lower(),
                 "speed_bucket": data.get("speed_bucket") or "Medium",
-                "d_hist_month": float(data.get("d_hist_month") or 0.0),
-                "d_hist_surface": float(data.get("d_hist_surface") or 0.0),
-                "d_hist_speed": float(data.get("d_hist_speed") or 0.0),
+                "d_hist_month": float(d_m),
+                "d_hist_surface": float(d_s),
+                "d_hist_speed": float(d_v),
             }
     except Exception as e:
         log.info("RPC get_matchup_hist_vector no disponible, fallback winrates: %s", e)
