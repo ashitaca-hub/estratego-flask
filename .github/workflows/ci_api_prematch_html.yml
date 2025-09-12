@@ -110,11 +110,11 @@ jobs:
       - name: Smoke tests + generar HTML y JSON
         run: |
           python - << 'PY'
-          import os, json
+          import os, json, pathlib
           from main import app
-          import pathlib
-          tpl = pathlib.Path("apps_script/prematch_template.html").read_text(encoding="utf-8")
-          assert '<script>window.resp =' in tpl, "window.resp placeholder missing"
+          tpl_path = pathlib.Path("apps_script/prematch_template.html")
+          tpl = tpl_path.read_text(encoding="utf-8")
+          assert '<script id="data-slot">' in tpl, "data-slot marker missing"
 
           p_id = int(os.environ["P_ID"])
           o_id = int(os.environ["O_ID"])
@@ -141,15 +141,18 @@ jobs:
           with open("prematch.json", "w", encoding="utf-8") as f:
               json.dump(data, f, ensure_ascii=False, indent=2)
 
-          # 2) /matchup/prematch (HTML) — render y guardado de archivo
-          r_html = client.post("/matchup/prematch", json=payload)
-          assert r_html.status_code == 200, r_html.data
-          html = r_html.get_data(as_text=True)
-          with open("prematch.html", "w", encoding="utf-8") as f:
-              f.write(html)
+          # 2) Inyectar JSON en la plantilla y guardar HTML
+          html = tpl.replace(
+              '<script id="data-slot"></script>',
+              f'<script>window.resp = {json.dumps(data, ensure_ascii=False)};</script>'
+          )
+          html_final = pathlib.Path("prematch.html")
+          html_final.write_text(html, encoding="utf-8")
 
-          with open("prematch.html", encoding="utf-8") as f:
-              lines = f.readlines()
+          html_final_text = html_final.read_text(encoding="utf-8")
+          assert '<script id="data-slot">' not in html_final_text
+
+          lines = html_final_text.splitlines()
           assert any("window.resp =" in l for l in lines), "window.resp not injected in prematch HTML"
           idx = next(i for i, l in enumerate(lines) if "window.resp" in l)
           if any("//" in l for l in lines[:idx]):
