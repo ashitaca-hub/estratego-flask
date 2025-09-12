@@ -928,65 +928,45 @@ def enrich_resp_with_extras(resp: dict, conn=None) -> dict:
         "sr_id_o":       meta_o.get("ext_sportradar_id"),
     })
 
-    # ---- país del torneo (para chip Local)
-    tname = (inp.get("tournament") or {}).get("name")
-    t_country = FS.get_tourney_country(tname) if tname else None
+    # País del torneo (si tienes helper)
+    try:
+        t_country = FS.get_tourney_country(tname) if tname else None
+    except Exception:
+        t_country = None
     if t_country:
         extras["tourney_country"] = t_country
 
-    # ---- flags Local (normalizando ISO3->ISO2)
+    # Flags "local"
     flags = resp.setdefault("features", {}).setdefault("flags", {})
-    cp2 = to_iso2(extras.get("country_p"))
-    co2 = to_iso2(extras.get("country_o"))
-    tc2 = to_iso2(extras.get("tourney_country"))
-    flags["is_local_p"] = 1 if cp2 and tc2 and cp2 == tc2 else 0
-    flags["is_local_o"] = 1 if co2 and tc2 and co2 == tc2 else 0
+    cp = (meta_p.get("country_code") or "").upper() if meta_p else ""
+    co = (meta_o.get("country_code") or "").upper() if meta_o else ""
+    tc = (extras.get("tourney_country") or "").upper()
+    flags["is_local_p"] = 1 if cp and tc and cp == tc else 0
+    flags["is_local_o"] = 1 if co and tc and co == tc else 0
 
-    # ---- defensa puntos / título (año anterior del mismo torneo)
-    try:
-        key = FS.norm_tourney(tname) if tname else None
-    except Exception:
-        key = tname.lower().strip() if tname else None
+    # --- NEW (defensa) ---
+    if tname and (p_id or o_id):
+        try:
+            dmap = FS.get_defense_prev_year_by_sr(tname, [p_id, o_id], conn=conn)
+        except Exception:
+            dmap = {}
 
-    # 🔥 NUEVO: Defensa puntos/título (solo BD)
-    if tname and p_id and o_id:
-        dmap = FS.get_defense_prev_year(tname, [p_id, o_id], conn=conn)
-        def_p = dmap.get(p_id, {})
-        def_o = dmap.get(o_id, {})
-        # puntos a defender
-        extras["def_points_p"] = def_p.get("points")
-        extras["def_points_o"] = def_o.get("points")
-        # badge: champ / runner
-        extras["def_title_p"]  = def_p.get("title_code")   # 'champ' | 'runner' | None
-        extras["def_title_o"]  = def_o.get("title_code")
+        def _badge(code):
+            if code == "champ":   return "🏆"
+            if code == "runner":  return "🥈"
+            return None
 
-        # flags útiles para UI
-        flags["is_def_champ_p"] = 1 if def_p.get("title_code") == "champ" else 0
-        flags["is_def_champ_o"] = 1 if def_o.get("title_code") == "champ" else 0
-        flags["is_def_runner_p"]= 1 if def_p.get("title_code") == "runner" else 0
-        flags["is_def_runner_o"]= 1 if def_o.get("title_code") == "runner" else 0
+        dp = dmap.get(p_id or -1, {})
+        do = dmap.get(o_id or -1, {})
 
-    if key and p_id:
-        row = FS._pg_fetch_one("""
-            select points, title_code
-            from public.player_defense_prev_year
-            where tourney_key = %s and player_id = %s
-            limit 1
-        """, (key, p_id), conn=conn)
-        if row:
-            extras["def_points_p"] = row.get("points")
-            extras["def_title_p"]  = row.get("title_code")
+        extras["def_points_p"] = dp.get("points")
+        extras["def_title_p"]  = dp.get("title_code")
+        extras["def_badge_p"]  = _badge(dp.get("title_code"))
 
-    if key and o_id:
-        row = FS._pg_fetch_one("""
-            select points, title_code
-            from public.player_defense_prev_year
-            where tourney_key = %s and player_id = %s
-            limit 1
-        """, (key, o_id), conn=conn)
-        if row:
-            extras["def_points_o"] = row.get("points")
-            extras["def_title_o"]  = row.get("title_code")
+        extras["def_points_o"] = do.get("points")
+        extras["def_title_o"]  = do.get("title_code")
+        extras["def_badge_o"]  = _badge(do.get("title_code"))
+    # --- END NEW ---
 
     return resp
 
@@ -1067,6 +1047,7 @@ def matchup_prematch_html():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
