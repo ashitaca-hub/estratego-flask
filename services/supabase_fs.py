@@ -381,6 +381,20 @@ def get_matchup_hist_vector(
     wr_p_speed = _winrate_speed(p_id, speed_bucket, yrs)
     wr_o_speed = _winrate_speed(o_id, speed_bucket, yrs)
 
+    missing = []
+    if wr_p_month is None or wr_o_month is None:
+        missing.append("month")
+    if wr_p_surf is None or wr_o_surf is None:
+        missing.append("surface")
+    if wr_p_speed is None or wr_o_speed is None:
+        missing.append("speed")
+    if missing:
+        log.warning(
+            "Missing winrate data for %s (p=%s o=%s yrs=%s t=%s m=%s)",
+            ",".join(missing), p_id, o_id, yrs, tname, month
+        )
+        raise ValueError(f"Missing winrate data for: {', '.join(missing)}")
+
     out = {
         "surface": surface,
         "speed_bucket": speed_bucket,
