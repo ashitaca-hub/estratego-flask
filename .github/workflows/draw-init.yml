@@ -13,6 +13,15 @@ jobs:
       - name: Install psql client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
+      - name: Preflight check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }} 
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "❌ Falta el secreto DATABASE_URL"; exit 1;
+          fi
+          echo "✅ Secreto presente (oculto)"
+
       - name: Apply schema (idempotent)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }} 
