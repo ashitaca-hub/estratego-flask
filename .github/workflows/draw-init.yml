@@ -1,0 +1,151 @@
+name: Draw Init (schema & function)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply schema (idempotent)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          cat > /tmp/draw_init.sql <<'SQL'
+          -- players_dim PK/unique (por si faltara)
+          create unique index if not exists players_dim_player_id_uidx
+            on public.players_dim(player_id);
+
+          -- staging por nombre
+          create table if not exists public.stg_draw_entries_by_name (
+            tourney_id  text not null,
+            pos         int  not null,
+            player_name text not null,
+            seed        int,
+            tag         text,
+            primary key (tourney_id, pos)
+          );
+
+          -- draw_entries y draw_matches limpios
+          create table if not exists public.draw_entries (
+            tourney_id text not null,
+            pos        int  not null,
+            player_id  text not null,
+            seed       int,
+            primary key (tourney_id, pos)
+          );
+
+          create table if not exists public.draw_matches (
+            id         text primary key,
+            tourney_id text not null,
+            round      text not null check (round in ('R64','R32','R16','QF','SF','F')),
+            top_id     text not null,
+            bot_id     text not null,
+            winner_id  text
+          );
+
+          -- FKs
+          do $$
+          begin
+            if not exists (select 1 from pg_constraint where conname='draw_entries_tourney_fk') then
+              alter table public.draw_entries
+                add constraint draw_entries_tourney_fk
+                foreign key (tourney_id)
+                references estratego_v1.tournaments(tourney_id)
+                on delete cascade;
+            end if;
+
+            if not exists (select 1 from pg_constraint where conname='draw_entries_player_fk') then
+              alter table public.draw_entries
+                add constraint draw_entries_player_fk
+                foreign key (player_id)
+                references public.players_dim(player_id);
+            end if;
+
+            if not exists (select 1 from pg_constraint where conname='draw_matches_tourney_fk') then
+              alter table public.draw_matches
+                add constraint draw_matches_tourney_fk
+                foreign key (tourney_id)
+                references estratego_v1.tournaments(tourney_id)
+                on delete cascade;
+            end if;
+          end$$;
+
+          -- Índices
+          create index if not exists idx_draw_entries_tid on public.draw_entries(tourney_id);
+          create index if not exists idx_draw_matches_tid on public.draw_matches(tourney_id);
+          create index if not exists idx_draw_matches_round on public.draw_matches(round);
+          create index if not exists idx_draw_matches_top on public.draw_matches(top_id);
+          create index if not exists idx_draw_matches_bot on public.draw_matches(bot_id);
+
+          -- RLS + policies de solo lectura (opcionales)
+          alter table public.draw_entries enable row level security;
+          alter table public.draw_matches enable row level security;
+
+          do $$
+          begin
+            if not exists (select 1 from pg_policies where polname='draw_entries_select_all') then
+              create policy draw_entries_select_all on public.draw_entries for select to anon, authenticated using (true);
+            end if;
+            if not exists (select 1 from pg_policies where polname='draw_matches_select_all') then
+              create policy draw_matches_select_all on public.draw_matches for select to anon, authenticated using (true);
+            end if;
+          end$$;
+
+          -- Función build_draw_matches
+          create or replace function public.build_draw_matches(p_tourney_id text)
+          returns void
+          language plpgsql
+          as $$
+          declare
+            v_size int;
+            v_round text;
+            i int;
+            v_idx int;
+            top_pos int;
+            bot_pos int;
+          begin
+            select count(*)::int into v_size
+            from public.draw_entries
+            where tourney_id = p_tourney_id;
+
+            if v_size is null or v_size < 2 then
+              raise exception 'No entries for tourney_id=%', p_tourney_id;
+            end if;
+
+            delete from public.draw_matches where tourney_id = p_tourney_id;
+
+            if v_size >= 64 then
+              v_round := 'R64';
+            elsif v_size >= 32 then
+              v_round := 'R32';
+            else
+              v_round := 'R16';
+            end if;
+
+            v_idx := 1;
+            i := 1;
+            while i <= v_size loop
+              top_pos := i;
+              bot_pos := v_size - i + 1;
+
+              insert into public.draw_matches(id, tourney_id, round, top_id, bot_id)
+              select concat(v_round, '-', v_idx),
+                     p_tourney_id,
+                     v_round,
+                     (select player_id from public.draw_entries where tourney_id=p_tourney_id and pos=top_pos),
+                     (select player_id from public.draw_entries where tourney_id=p_tourney_id and pos=bot_pos);
+
+              v_idx := v_idx + 1;
+              i := i + 2;
+            end loop;
+          end $$;
+          SQL
+
+          PGPASSWORD='' psql "${SUPABASE_DB_URL}" -v ON_ERROR_STOP=1 -f /tmp/draw_init.sql
