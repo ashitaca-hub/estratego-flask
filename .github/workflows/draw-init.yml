@@ -15,7 +15,7 @@ jobs:
 
       - name: Apply schema (idempotent)
         env:
-          SUPABASE_DB_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }} 
         run: |
           cat > /tmp/draw_init.sql <<'SQL'
           -- players_dim PK/unique (por si faltara)
