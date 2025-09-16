@@ -15,7 +15,7 @@ jobs:
 
       - name: Apply schema (idempotent)
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_URL: ${{ secrets.DATABASE_URL }}
         run: |
           cat > /tmp/draw_init.sql <<'SQL'
           -- players_dim PK/unique (por si faltara)
@@ -148,4 +148,4 @@ jobs:
           end $$;
           SQL
 
-          PGPASSWORD='' psql "${SUPABASE_DB_URL}" -v ON_ERROR_STOP=1 -f /tmp/draw_init.sql
+          PGPASSWORD='' psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -f /tmp/draw_init.sql
