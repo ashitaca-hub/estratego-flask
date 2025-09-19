@@ -1,0 +1,153 @@
+name: Draw Load from Staging (resolve names → entries → matches)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tourney_id:
+        description: "tourney_id en estratego_v1.tournaments (ej: 2025-0330)"
+        required: true
+
+jobs:
+  load_draw:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Preflight secret
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "❌ Falta el secreto SUPABASE_DB_URL"; exit 1;
+          fi
+          echo "✅ SUPABASE_DB_URL presente"
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Patch schema (allow NULLs for BYE/QUAL)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          cat > /tmp/patch_nullable.sql <<'SQL'
+          -- draw_entries: permitir NULL en player_id
+          do $$
+          begin
+            if exists (
+              select 1 from information_schema.columns
+              where table_schema='public' and table_name='draw_entries'
+                and column_name='player_id' and is_nullable='NO'
+            ) then
+              alter table public.draw_entries
+                alter column player_id drop not null;
+            end if;
+          end$$;
+
+          -- draw_matches: permitir NULL en top_id/bot_id (por BYE/QUAL)
+          do $$
+          begin
+            if exists (
+              select 1 from information_schema.columns
+              where table_schema='public' and table_name='draw_matches'
+                and column_name='top_id' and is_nullable='NO'
+            ) then
+              alter table public.draw_matches
+                alter column top_id drop not null;
+            end if;
+
+            if exists (
+              select 1 from information_schema.columns
+              where table_schema='public' and table_name='draw_matches'
+                and column_name='bot_id' and is_nullable='NO'
+            ) then
+              alter table public.draw_matches
+                alter column bot_id drop not null;
+            end if;
+          end$$;
+          SQL
+
+          psql --dbname="$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f /tmp/patch_nullable.sql
+
+      - name: Load from staging and build matches
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          TID: ${{ inputs.tourney_id }}
+        run: |
+          cat > /tmp/load_draw_from_staging.sql <<'SQL'
+          begin;
+
+          -- 1) Normaliza nombres "APELLIDO, Nombre" → "Nombre Apellido"
+          drop table if exists tmp_src;
+          create temporary table tmp_src as
+          select
+            s.tourney_id,
+            s.pos,
+            s.seed,
+            s.tag,
+            s.player_name,
+            case
+              when s.player_name ilike '%, %'
+                then trim(split_part(s.player_name, ',', 2)) || ' ' || trim(split_part(s.player_name, ',', 1))
+              else s.player_name
+            end as name_flipped
+          from public.stg_draw_entries_by_name s
+          where s.tourney_id = :'TID';
+
+          -- 2) Resolver player_id (INTEGER) por match exacto o flipped
+          drop table if exists tmp_name_to_id;
+          create temporary table tmp_name_to_id as
+          with j as (
+            select
+              x.*,
+              p1.player_id as pid_exact,
+              p2.player_id as pid_flipped
+            from tmp_src x
+            left join public.players_dim p1 on lower(p1.name) = lower(x.player_name)
+            left join public.players_dim p2 on lower(p2.name) = lower(x.name_flipped)
+          )
+          select
+            tourney_id,
+            pos,
+            seed,
+            tag,
+            player_name,
+            coalesce(pid_exact, pid_flipped) as player_id,        -- INTEGER o NULL
+            case when tag='QUAL'
+              then ((row_number() over(partition by tourney_id order by pos) - 1) % 8) + 1
+            end as qual_slot
+          from j;
+
+          -- 3) (Log opcional) No resueltos (excluye BYE/QUAL)
+          -- select pos, player_name
+          -- from tmp_name_to_id
+          -- where player_id is null and (tag is null or tag not in ('BYE','QUAL'))
+          -- order by pos;
+
+          -- 4) Escribir draw_entries (BYE/QUAL → player_id NULL)
+          delete from public.draw_entries where tourney_id = :'TID';
+
+          insert into public.draw_entries(tourney_id, pos, player_id, seed, tag)
+          select
+            tourney_id,
+            pos,
+            case when tag in ('BYE','QUAL') then null else player_id end as player_id,
+            seed,
+            tag
+          from tmp_name_to_id
+          order by pos;
+
+          -- 5) Construir Ronda Inicial en draw_matches
+          select public.build_draw_matches(:'TID');
+
+          commit;
+
+          -- Resumen
+          -- select tourney_id, count(*) as entries from public.draw_entries where tourney_id=:'TID' group by 1;
+          -- select tourney_id, round, count(*) as matches from public.draw_matches where tourney_id=:'TID' group by 1,2 order by 2;
+          SQL
+
+          psql --dbname="$SUPABASE_DB_URL" --set=ON_ERROR_STOP=1 --set=tid="$TID" -f /tmp/load_draw_from_staging.sql
