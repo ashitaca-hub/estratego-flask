@@ -17,12 +17,12 @@ jobs:
 
       - name: Preflight secret
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          if [ -z "$SUPABASE_DB_URL" ]; then
-            echo "❌ Falta el secreto SUPABASE_DB_URL"; exit 1;
+          if [ -z "$DATABASE_URL" ]; then
+            echo "❌ Falta el secreto DATABASE_URL"; exit 1;
           fi
-          echo "✅ SUPABASE_DB_URL presente"
+          echo "✅ DATABASE_URL presente"
 
       - name: Install psql client
         run: |
@@ -31,7 +31,7 @@ jobs:
 
       - name: Apply function v2 + preflight checks + load & build
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TID: ${{ inputs.tourney_id }}
         run: |
           cat > /tmp/load_draw_from_staging.sql <<'SQL'
@@ -197,4 +197,4 @@ jobs:
           order by 1;
           SQL
 
-          psql --dbname="$SUPABASE_DB_URL" --set=ON_ERROR_STOP=1 --set=tid="$TID" -f /tmp/load_draw_from_staging.sql
+          psql --dbname="$DATABASE_URL" --set=ON_ERROR_STOP=1 --set=tid="$TID" -f /tmp/load_draw_from_staging.sql
