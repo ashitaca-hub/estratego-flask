@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tourney_id:
-        description: "tourney_id en estratego_v1.tournaments (ej: 2025-0330)"
+        description: "tourney_id en estratego_v1.tournaments (texto o número, ej: 2025-0330 o 581)"
         required: true
 
 jobs:
@@ -17,70 +17,102 @@ jobs:
 
       - name: Preflight secret
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "❌ Falta el secreto DATABASE_URL"; exit 1;
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "❌ Falta el secreto SUPABASE_DB_URL"; exit 1;
           fi
-          echo "✅ DATABASE_URL presente"
+          echo "✅ SUPABASE_DB_URL presente"
 
       - name: Install psql client
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Patch schema (allow NULLs for BYE/QUAL)
+      - name: Apply function v2 + preflight checks + load & build
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          cat > /tmp/patch_nullable.sql <<'SQL'
-          -- draw_entries: permitir NULL en player_id
-          do $$
-          begin
-            if exists (
-              select 1 from information_schema.columns
-              where table_schema='public' and table_name='draw_entries'
-                and column_name='player_id' and is_nullable='NO'
-            ) then
-              alter table public.draw_entries
-                alter column player_id drop not null;
-            end if;
-          end$$;
-
-          -- draw_matches: permitir NULL en top_id/bot_id (por BYE/QUAL)
-          do $$
-          begin
-            if exists (
-              select 1 from information_schema.columns
-              where table_schema='public' and table_name='draw_matches'
-                and column_name='top_id' and is_nullable='NO'
-            ) then
-              alter table public.draw_matches
-                alter column top_id drop not null;
-            end if;
-
-            if exists (
-              select 1 from information_schema.columns
-              where table_schema='public' and table_name='draw_matches'
-                and column_name='bot_id' and is_nullable='NO'
-            ) then
-              alter table public.draw_matches
-                alter column bot_id drop not null;
-            end if;
-          end$$;
-          SQL
-
-          psql --dbname="$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/patch_nullable.sql
-
-      - name: Load from staging and build matches
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          7581: ${{ inputs.tourney_id }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          TID: ${{ inputs.tourney_id }}
         run: |
           cat > /tmp/load_draw_from_staging.sql <<'SQL'
+          -- =========[ v2: build_draw_matches sin tabla 'draws' ]=========
+          create or replace function public.build_draw_matches(p_tourney_id text)
+          returns void
+          language plpgsql
+          as $$
+          declare
+            v_size int;
+            v_round text;
+            i int;
+            v_idx int;
+            top_pos int;
+            bot_pos int;
+          begin
+            -- tamaño desde draw_entries
+            select count(*)::int into v_size
+            from public.draw_entries
+            where tourney_id = p_tourney_id;
+
+            if v_size is null or v_size < 2 then
+              raise exception 'No entries for tourney_id=%', p_tourney_id;
+            end if;
+
+            delete from public.draw_matches where tourney_id = p_tourney_id;
+
+            if v_size >= 64 then
+              v_round := 'R64';
+            elsif v_size >= 32 then
+              v_round := 'R32';
+            else
+              v_round := 'R16';
+            end if;
+
+            v_idx := 1;
+            i := 1;
+            while i <= v_size loop
+              top_pos := i;
+              bot_pos := v_size - i + 1;
+
+              insert into public.draw_matches(id, tourney_id, round, top_id, bot_id)
+              select concat(v_round, '-', v_idx),
+                     p_tourney_id,
+                     v_round,
+                     (select player_id from public.draw_entries where tourney_id=p_tourney_id and pos=top_pos),
+                     (select player_id from public.draw_entries where tourney_id=p_tourney_id and pos=bot_pos);
+
+              v_idx := v_idx + 1;
+              i := i + 2;
+            end loop;
+          end $$;
+
+          -- =========[ Preflight checks ]=========
+          -- 1) Existe el torneo en estratego_v1.tournaments
+          do $$
+          declare v_exists int;
+          begin
+            select count(*) into v_exists
+            from estratego_v1.tournaments
+            where tourney_id::text = :'TID'::text;
+            if coalesce(v_exists,0)=0 then
+              raise exception 'No existe tourney_id=% en estratego_v1.tournaments', :'TID';
+            end if;
+          end$$;
+
+          -- 2) Hay staging para ese TID
+          do $$
+          declare v_stg int;
+          begin
+            select count(*) into v_stg
+            from public.stg_draw_entries_by_name
+            where tourney_id::text = :'TID'::text;
+            if coalesce(v_stg,0)=0 then
+              raise exception 'No hay filas en stg_draw_entries_by_name para tourney_id=% (carga primero el CSV al staging)', :'TID';
+            end if;
+          end$$;
+
           begin;
 
-          -- 1) Normaliza nombres "APELLIDO, Nombre" → "Nombre Apellido"
+          -- =========[ Normalizar nombres (flip APELLIDO, Nombre) ]=========
           drop table if exists tmp_src;
           create temporary table tmp_src as
           select
@@ -95,9 +127,9 @@ jobs:
               else s.player_name
             end as name_flipped
           from public.stg_draw_entries_by_name s
-          where s.tourney_id = :'7581';
+          where s.tourney_id::text = :'TID'::text;
 
-          -- 2) Resolver player_id (INTEGER) por match exacto o flipped
+          -- =========[ Resolver player_id (INTEGER) por exacto o flipped ]=========
           drop table if exists tmp_name_to_id;
           create temporary table tmp_name_to_id as
           with j as (
@@ -121,33 +153,48 @@ jobs:
             end as qual_slot
           from j;
 
-          -- 3) (Log opcional) No resueltos (excluye BYE/QUAL)
-          -- select pos, player_name
-          -- from tmp_name_to_id
-          -- where player_id is null and (tag is null or tag not in ('BYE','QUAL'))
-          -- order by pos;
+          -- =========[ Log de no resueltos (excluye BYE/QUAL) ]=========
+          do $$
+          declare v_unres int;
+          begin
+            select count(*) into v_unres
+            from tmp_name_to_id
+            where player_id is null and (tag is null or tag not in ('BYE','QUAL'));
+            if coalesce(v_unres,0) > 0 then
+              raise notice 'Nombres no resueltos: %', v_unres;
+            end if;
+          end$$;
 
-          -- 4) Escribir draw_entries (BYE/QUAL → player_id NULL)
-          delete from public.draw_entries where tourney_id = :'7581';
+          -- =========[ Escribir draw_entries ]=========
+          delete from public.draw_entries where tourney_id::text = :'TID'::text;
 
           insert into public.draw_entries(tourney_id, pos, player_id, seed, tag)
           select
             tourney_id,
             pos,
-            case when tag in ('BYE','QUAL') then null else player_id end as player_id,
+            case when tag in ('BYE','QUAL') then null else player_id end,
             seed,
             tag
           from tmp_name_to_id
           order by pos;
 
-          -- 5) Construir Ronda Inicial en draw_matches
-          select public.build_draw_matches(:'7581');
+          -- =========[ Construir ronda inicial ]=========
+          select public.build_draw_matches(:'TID');
 
           commit;
 
-          -- Resumen
-          -- select tourney_id, count(*) as entries from public.draw_entries where tourney_id=:'7581' group by 1;
-          -- select tourney_id, round, count(*) as matches from public.draw_matches where tourney_id=:'7581' group by 1,2 order by 2;
+          -- =========[ Resumen ]=========
+          -- Entradas
+          select 'entries' as kind, count(*) as n
+          from public.draw_entries
+          where tourney_id::text = :'TID'::text;
+
+          -- Partidos por ronda
+          select round, count(*) as n
+          from public.draw_matches
+          where tourney_id::text = :'TID'::text
+          group by 1
+          order by 1;
           SQL
 
-          psql --dbname="$DATABASE_URL" --set=ON_ERROR_STOP=1 --set=7581="$7581" -f /tmp/load_draw_from_staging.sql
+          psql --dbname="$SUPABASE_DB_URL" --set=ON_ERROR_STOP=1 --set=tid="$TID" -f /tmp/load_draw_from_staging.sql
