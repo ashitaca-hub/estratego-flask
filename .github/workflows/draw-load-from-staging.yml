@@ -17,12 +17,12 @@ jobs:
 
       - name: Preflight secret
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          if [ -z "$SUPABASE_DB_URL" ]; then
-            echo "❌ Falta el secreto SUPABASE_DB_URL"; exit 1;
+          if [ -z "$DATABASE_URL" ]; then
+            echo "❌ Falta el secreto DATABASE_URL"; exit 1;
           fi
-          echo "✅ SUPABASE_DB_URL presente"
+          echo "✅ DATABASE_URL presente"
 
       - name: Install psql client
         run: |
@@ -31,7 +31,7 @@ jobs:
 
       - name: Patch schema (allow NULLs for BYE/QUAL)
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           cat > /tmp/patch_nullable.sql <<'SQL'
           -- draw_entries: permitir NULL en player_id
@@ -70,12 +70,12 @@ jobs:
           end$$;
           SQL
 
-          psql --dbname="$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f /tmp/patch_nullable.sql
+          psql --dbname="$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/patch_nullable.sql
 
       - name: Load from staging and build matches
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          TID: ${{ inputs.tourney_id }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          7581: ${{ inputs.tourney_id }}
         run: |
           cat > /tmp/load_draw_from_staging.sql <<'SQL'
           begin;
@@ -95,7 +95,7 @@ jobs:
               else s.player_name
             end as name_flipped
           from public.stg_draw_entries_by_name s
-          where s.tourney_id = :'TID';
+          where s.tourney_id = :'7581';
 
           -- 2) Resolver player_id (INTEGER) por match exacto o flipped
           drop table if exists tmp_name_to_id;
@@ -128,7 +128,7 @@ jobs:
           -- order by pos;
 
           -- 4) Escribir draw_entries (BYE/QUAL → player_id NULL)
-          delete from public.draw_entries where tourney_id = :'TID';
+          delete from public.draw_entries where tourney_id = :'7581';
 
           insert into public.draw_entries(tourney_id, pos, player_id, seed, tag)
           select
@@ -141,13 +141,13 @@ jobs:
           order by pos;
 
           -- 5) Construir Ronda Inicial en draw_matches
-          select public.build_draw_matches(:'TID');
+          select public.build_draw_matches(:'7581');
 
           commit;
 
           -- Resumen
-          -- select tourney_id, count(*) as entries from public.draw_entries where tourney_id=:'TID' group by 1;
-          -- select tourney_id, round, count(*) as matches from public.draw_matches where tourney_id=:'TID' group by 1,2 order by 2;
+          -- select tourney_id, count(*) as entries from public.draw_entries where tourney_id=:'7581' group by 1;
+          -- select tourney_id, round, count(*) as matches from public.draw_matches where tourney_id=:'7581' group by 1,2 order by 2;
           SQL
 
-          psql --dbname="$SUPABASE_DB_URL" --set=ON_ERROR_STOP=1 --set=tid="$TID" -f /tmp/load_draw_from_staging.sql
+          psql --dbname="$DATABASE_URL" --set=ON_ERROR_STOP=1 --set=7581="$7581" -f /tmp/load_draw_from_staging.sql
