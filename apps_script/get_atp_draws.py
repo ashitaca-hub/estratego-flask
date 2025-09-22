@@ -26,15 +26,27 @@ def parse_draw(pdf_path: Path) -> list:
     with pdfplumber.open(pdf_path) as pdf:
         text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
 
-    start = text.find("1 ")
-    if start == -1:
-        raise ValueError("No draw found in PDF")
+    # Localizar sección Main Draw Singles
+    if "Main Draw Singles" not in text:
+        raise ValueError("No se encontró la sección Main Draw Singles en el PDF")
+    section = text.split("Main Draw Singles", 1)[1]
 
-    lines = text[start:].splitlines()
+    # Cortar antes de Round of 32 o cualquier otra sección
+    stop_words = ["Round of 32", "Seeded Players", "Last Direct Acceptance"]
+    for stop in stop_words:
+        if stop in section:
+            section = section.split(stop, 1)[0]
+
+    lines = section.splitlines()
+
+    seen_pos = set()
     for line in lines:
         parts = line.strip().split(" ", 2)
         if len(parts) >= 3 and parts[0].isdigit():
             pos = int(parts[0])
+            if pos in seen_pos:
+                continue  # evitar duplicados
+            seen_pos.add(pos)
             player_name = parts[2].strip()
             entries.append({
                 "pos": pos,
@@ -42,6 +54,7 @@ def parse_draw(pdf_path: Path) -> list:
                 "seed": None,
                 "tag": None
             })
+
     return entries
 
 
