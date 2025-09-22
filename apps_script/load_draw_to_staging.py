@@ -1,51 +1,94 @@
-# scripts/load_draw_to_staging.py
+# apps_script/load_draw_to_staging.py
 
-import sys
 import pandas as pd
 import requests
 import os
+import sys
 
-CSV_PATH = sys.argv[1] if len(sys.argv) > 1 else "data/draw_329.csv"
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-TABLE_NAME = "stg_draw_entries_by_name"
 
-# tourney_id en formato año-id
-tourney_id = "2025-329"
-
-# Leer CSV
-entries = pd.read_csv(CSV_PATH)
-entries.fillna("", inplace=True)
-entries["seed"] = entries["seed"].replace("", None)
-entries["tag"] = entries["tag"].replace("", None)
-entries["tourney_id"] = tourney_id
-
-# Convertir a registros
-records = entries.to_dict(orient="records")
-
-# Headers comunes
-headers = {
+HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json"
 }
 
-# DELETE previo para evitar duplicados
-delete_url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}?tourney_id=eq.{tourney_id}"
-delete_res = requests.delete(delete_url, headers=headers)
-if delete_res.status_code >= 200 and delete_res.status_code < 300:
-    print(f"Eliminadas filas existentes para tourney_id={tourney_id}.")
-else:
-    print(f"Error al eliminar: {delete_res.status_code}\n{delete_res.text}")
-    delete_res.raise_for_status()
+STAGING_TABLE = "stg_draw_entries_by_name"
 
-# Insertar nueva data
-insert_url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
-headers["Prefer"] = "return=representation"
-insert_res = requests.post(insert_url, json=records, headers=headers)
 
-if insert_res.status_code >= 200 and insert_res.status_code < 300:
-    print(f"Cargado CSV con {len(records)} filas a staging.")
-else:
-    print(f"Error al insertar: {insert_res.status_code}\n{insert_res.text}")
-    insert_res.raise_for_status()
+def parse_row(row):
+    """
+    Parse una fila del CSV exportado desde el PDF.
+    Formato típico:
+    1 1 ALCARAZ, Carlos ESP
+    2 BAEZ, Sebastian ARG
+    7 Qualifier
+    10 WC MOCHIZUKI, Shintaro JPN
+    """
+    tokens = row.strip().split()
+    if not tokens:
+        return None
+
+    pos = tokens[0]
+    seed = None
+    tag = None
+    player_name = None
+    country = None
+
+    # Caso: solo posición + tag (Qualifier, BYE)
+    if len(tokens) == 2 and tokens[1].isalpha():
+        tag = tokens[1]
+        return {"pos": int(pos), "player_name": None, "seed": None, "tag": tag, "country": None}
+
+    # Si el segundo token es numérico => seed
+    idx = 1
+    if tokens[1].isdigit():
+        seed = tokens[1]
+        idx = 2
+    # Si el segundo token es un tag especial
+    elif tokens[1] in ["WC", "Qualifier", "BYE"]:
+        tag = tokens[1]
+        idx = 2
+
+    # El último token puede ser país (3 letras mayúsculas)
+    if len(tokens[-1]) == 3 and tokens[-1].isupper():
+        country = tokens[-1]
+        name_tokens = tokens[idx:-1]
+    else:
+        name_tokens = tokens[idx:]
+
+    player_name = " ".join(name_tokens).replace(" ,", ",")
+
+    return {
+        "pos": int(pos),
+        "player_name": player_name if player_name else None,
+        "seed": int(seed) if seed else None,
+        "tag": tag,
+        "country": country
+    }
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Uso: python load_draw_to_staging.py <csv_file>")
+        sys.exit(1)
+
+    csv_file = sys.argv[1]
+    df = pd.read_csv(csv_file)
+
+    entries = []
+    for _, row in df.iterrows():
+        parsed = parse_row(str(row["player_name"]))
+        if parsed:
+            entries.append(parsed)
+
+    # Subir a Supabase REST
+    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}"
+    res = requests.post(url, headers={**HEADERS, "Prefer": "resolution=merge-duplicates"}, json=entries)
+
+    if res.status_code >= 200 and res.status_code < 300:
+        print(f"Cargado CSV con {len(entries)} filas a staging.")
+    else:
+        print(f"Error al insertar: {res.status_code}\n{res.text}")
+        res.raise_for_status()
