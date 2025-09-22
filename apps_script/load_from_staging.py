@@ -26,14 +26,24 @@ def fetch_staging():
     res = requests.get(url, headers=HEADERS)
     res.raise_for_status()
     data = res.json()
-    # Filtrar en Python los no procesados
     return [row for row in data if row.get("processed_at") in (None, "")]
+
+
+def normalize_name(raw):
+    if not raw:
+        return ""
+    raw = raw.strip().title()
+    if "," in raw:
+        last, first = [part.strip().title() for part in raw.split(",", 1)]
+        return f"{first} {last}"
+    return raw
 
 
 def find_player_id(player_name):
     if not player_name:
         return None
-    url = f"{SUPABASE_URL}/rest/v1/{PLAYERS_TABLE}?name=eq.{player_name}"
+    norm_name = normalize_name(player_name)
+    url = f"{SUPABASE_URL}/rest/v1/{PLAYERS_TABLE}?name=ilike.*{norm_name}*"
     res = requests.get(url, headers=HEADERS)
     res.raise_for_status()
     data = res.json()
@@ -75,16 +85,18 @@ if __name__ == "__main__":
 
     for row in staging_rows:
         player_id = find_player_id(row.get("player_name"))
-        draw_entries.append({
+        entry = {
             "tourney_id": TOURNEY_ID,
             "pos": row["pos"],
             "player_id": player_id,
             "seed": row["seed"],
             "tag": row["tag"]
-        })
+        }
+        if not player_id:
+            entry["tag"] = "UNRESOLVED"
+        draw_entries.append(entry)
         processed_ids.append(row["pos"])
 
-    # Borrar antes de insertar
     delete_existing_draw_entries()
 
     inserted = insert_draw_entries(draw_entries)
