@@ -18,6 +18,12 @@ entries["seed"] = entries["seed"].replace("", None)
 entries["tag"] = entries["tag"].replace("", None)
 entries["tourney_id"] = TOURNEY_ID
 
+# Validar unicidad de pos
+duplicados = entries["pos"].duplicated().any()
+if duplicados:
+    dups = entries[entries["pos"].duplicated()]["pos"].tolist()
+    raise ValueError(f"El CSV contiene posiciones duplicadas para tourney_id={TOURNEY_ID}: {dups}")
+
 # Convertir a registros
 records = entries.to_dict(orient="records")
 
