@@ -7,10 +7,9 @@ from psycopg2.extras import execute_values
 import os
 
 CSV_PATH = sys.argv[1] if len(sys.argv) > 1 else "data/draw_329.csv"
-DB_URL = os.environ["DATABASE_URL"]
-DB_PASSWORD = os.environ["SUPABASE_KEY"]
+DB_URL = os.environ["SUPABASE_DB_URL"]
 
-conn = psycopg2.connect(DB_URL, password=DB_PASSWORD)
+conn = psycopg2.connect(DB_URL)
 cursor = conn.cursor()
 
 # Leer CSV
