@@ -21,54 +21,84 @@ def download_pdf(tourney_id: int, year: int = 2025, output_dir: str = "data") ->
         raise ValueError(f"PDF not found for tourney_id={tourney_id} ({response.status_code})")
 
 
-def parse_draw(pdf_path: Path) -> list:
-    entries = []
-    with pdfplumber.open(pdf_path) as pdf:
-        text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+def parse_line(line: str):
+    """
+    Parse una línea del draw desde PDF.
+    Ejemplos:
+    1 1 ALCARAZ, Carlos ESP
+    2 BAEZ, Sebastian ARG
+    7 Qualifier
+    10 WC MOCHIZUKI, Shintaro JPN
+    """
+    tokens = line.strip().split()
+    if not tokens:
+        return None
 
-    # Localizar sección Main Draw Singles
-    if "Main Draw Singles" not in text:
-        raise ValueError("No se encontró la sección Main Draw Singles en el PDF")
-    section = text.split("Main Draw Singles", 1)[1]
+    pos = tokens[0]
+    seed = None
+    tag = None
+    player_name = None
+    country = None
 
-    # Cortar antes de Round of 32 o cualquier otra sección
-    stop_words = ["Round of 32", "Seeded Players", "Last Direct Acceptance"]
-    for stop in stop_words:
-        if stop in section:
-            section = section.split(stop, 1)[0]
+    # Caso: solo posición + tag (Qualifier, BYE)
+    if len(tokens) == 2 and tokens[1] in ["Qualifier", "BYE"]:
+        tag = tokens[1]
+        return {
+            "pos": int(pos),
+            "player_name": None,
+            "seed": None,
+            "tag": tag,
+            "country": None,
+        }
 
-    lines = section.splitlines()
+    # Si el segundo token es numérico => seed
+    idx = 1
+    if tokens[1].isdigit():
+        seed = tokens[1]
+        idx = 2
+    # Si el segundo token es un tag especial
+    elif tokens[1] in ["WC", "Qualifier", "BYE"]:
+        tag = tokens[1]
+        idx = 2
 
-    seen_pos = set()
-    for line in lines:
-        parts = line.strip().split(" ", 2)
-        if len(parts) >= 3 and parts[0].isdigit():
-            pos = int(parts[0])
-            if pos in seen_pos:
-                continue  # evitar duplicados
-            seen_pos.add(pos)
-            player_name = parts[2].strip()
-            entries.append({
-                "pos": pos,
-                "player_name": player_name,
-                "seed": None,
-                "tag": None
-            })
+    # El último token puede ser país (3 letras mayúsculas)
+    if len(tokens[-1]) == 3 and tokens[-1].isupper():
+        country = tokens[-1]
+        name_tokens = tokens[idx:-1]
+    else:
+        name_tokens = tokens[idx:]
 
-    return entries
+    player_name = " ".join(name_tokens).replace(" ,", ",")
 
-
-def save_to_csv(entries: list, output_file: str):
-    with open(output_file, "w", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=["pos", "player_name", "seed", "tag"])
-        writer.writeheader()
-        for entry in entries:
-            writer.writerow(entry)
+    return {
+        "pos": int(pos),
+        "player_name": player_name if player_name else None,
+        "seed": int(seed) if seed else None,
+        "tag": tag,
+        "country": country,
+    }
 
 
 if __name__ == "__main__":
-    tourney_id = 329
-    pdf_path = download_pdf(tourney_id)
+    if len(sys.argv) < 3:
+        print("Uso: python get_atp_draws.py <pdf_file> <out_csv_file>")
+        sys.exit(1)
+
+    pdf_file = sys.argv[1]
+    out_csv_file = sys.argv[2]
+
+    entries = []
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            lines = page.extract_text().split("\n")
+            for line in lines:
+                parsed = parse_line(line)
+                if parsed:
+                    entries.append(parsed)
+
+    df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
+    df.to_csv(out_csv_file, index=False)
+    print(f"Generado CSV con {len(df)} filas: {out_csv_file}")
     entries = parse_draw(pdf_path)
     save_to_csv(entries, f"data/draw_{tourney_id}.csv")
     print(f"Parsed and saved {len(entries)} entries for tourney {tourney_id}.")
