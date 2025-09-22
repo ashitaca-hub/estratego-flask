@@ -17,7 +17,8 @@ STAGING_TABLE = "stg_draw_entries_by_name"
 TARGET_TABLE = "draw_entries"
 PLAYERS_TABLE = "players_dim"
 
-TOURNEY_ID = 329  # se puede parametrizar
+# tourney_id en formato año-id
+TOURNEY_ID = "2025-329"
 
 
 def fetch_staging():
