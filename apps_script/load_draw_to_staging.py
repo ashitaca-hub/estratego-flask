@@ -2,39 +2,37 @@
 
 import sys
 import pandas as pd
-import psycopg2
-from psycopg2.extras import execute_values
+import requests
 import os
 
 CSV_PATH = sys.argv[1] if len(sys.argv) > 1 else "data/draw_329.csv"
-DB_URL = os.environ["SUPABASE_DB_URL"]
-
-conn = psycopg2.connect(DB_URL)
-cursor = conn.cursor()
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+TABLE_NAME = "stg_draw_entries_by_name"
+TOURNEY_ID = 329
 
 # Leer CSV
 entries = pd.read_csv(CSV_PATH)
-
-# Normalizar datos
 entries.fillna("", inplace=True)
 entries["seed"] = entries["seed"].replace("", None)
 entries["tag"] = entries["tag"].replace("", None)
+entries["tourney_id"] = TOURNEY_ID
 
-# Borrar staging previo
-cursor.execute("TRUNCATE estratego_v1.stg_draw_entries_by_name")
+# Convertir a registros
+records = entries.to_dict(orient="records")
 
-# Insertar
-values = list(entries.itertuples(index=False, name=None))
-execute_values(
-    cursor,
-    """
-    INSERT INTO estratego_v1.stg_draw_entries_by_name (pos, player_name, seed, tag)
-    VALUES %s
-    """,
-    values
-)
+# Insertar vía REST
+url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+headers = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation"
+}
+response = requests.post(url, json=records, headers=headers)
 
-conn.commit()
-cursor.close()
-conn.close()
-print(f"Cargado CSV con {len(entries)} filas a staging.")
+if response.status_code >= 200 and response.status_code < 300:
+    print(f"Cargado CSV con {len(records)} filas a staging.")
+else:
+    print(f"Error al insertar: {response.status_code}\n{response.text}")
+    response.raise_for_status()
