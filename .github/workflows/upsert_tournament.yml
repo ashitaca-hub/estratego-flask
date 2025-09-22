@@ -1,0 +1,28 @@
+name: Upsert Tournament
+
+on:
+  workflow_dispatch:
+
+jobs:
+  upsert-tournament:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install requests
+
+      - name: Run upsert tournament
+        run: |
+          python apps_script/upsert_tournament.py
