@@ -13,8 +13,8 @@ HEADERS = {
     "Prefer": "resolution=merge-duplicates"
 }
 
-# Importante: usar la tabla del esquema estratego_v1
-TOURNAMENTS_TABLE = "estratego_v1.tournaments"
+# Ahora apuntamos de nuevo a public.tournaments (que es la vista hacia estratego_v1.tournaments)
+TOURNAMENTS_TABLE = "tournaments"
 
 # Datos del torneo Tokyo 2025
 tournament = {
