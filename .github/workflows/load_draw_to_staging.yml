@@ -7,8 +7,7 @@ jobs:
   load-draw:
     runs-on: ubuntu-latest
     env:
-      SUPABASE_DB_URL: ${{ secrets.DATABASE_URL }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
     steps:
       - name: Checkout repo
