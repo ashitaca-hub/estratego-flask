@@ -22,7 +22,7 @@ TOURNEY_ID = "2025-329"
 
 
 def fetch_staging():
-    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}"
+    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.\"{TOURNEY_ID}\""
     res = requests.get(url, headers=HEADERS)
     res.raise_for_status()
     data = res.json()
@@ -43,7 +43,7 @@ def find_player_id(player_name):
 
 
 def delete_existing_draw_entries():
-    url = f"{SUPABASE_URL}/rest/v1/{TARGET_TABLE}?tourney_id=eq.{TOURNEY_ID}"
+    url = f"{SUPABASE_URL}/rest/v1/{TARGET_TABLE}?tourney_id=eq.\"{TOURNEY_ID}\""
     res = requests.delete(url, headers=HEADERS)
     res.raise_for_status()
     print(f"Eliminados registros previos en draw_entries para tourney_id={TOURNEY_ID}.")
@@ -59,7 +59,7 @@ def insert_draw_entries(records):
 def mark_processed(ids):
     now = datetime.datetime.utcnow().isoformat()
     for row_id in ids:
-        url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}&pos=eq.{row_id}"
+        url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.\"{TOURNEY_ID}\"&pos=eq.{row_id}"
         res = requests.patch(url, headers=HEADERS, json={"processed_at": now})
         res.raise_for_status()
 
