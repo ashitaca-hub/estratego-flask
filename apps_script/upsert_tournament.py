@@ -19,10 +19,10 @@ TOURNAMENTS_TABLE = "tournaments"
 tournament = {
     "tourney_id": "2025-329",
     "name": "Kinoshita Group Japan Open Tennis Championships",
+    "level": "ATP500",
     "surface": "Hard",
-    "location": "Tokyo, Japan",
-    "date_start": "2025-09-24",
-    "date_end": "2025-09-30"
+    "draw_size": 32,
+    "tourney_date": 20250924
 }
 
 url = f"{SUPABASE_URL}/rest/v1/{TOURNAMENTS_TABLE}"
