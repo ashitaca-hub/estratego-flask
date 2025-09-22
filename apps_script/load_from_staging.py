@@ -21,14 +21,17 @@ TOURNEY_ID = 329  # se puede parametrizar
 
 
 def fetch_staging():
-    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}&processed_at=is.null"
+    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}"
     res = requests.get(url, headers=HEADERS)
     res.raise_for_status()
-    return res.json()
+    data = res.json()
+    # Filtrar en Python los no procesados
+    return [row for row in data if row.get("processed_at") in (None, "")]
 
 
 def find_player_id(player_name):
-    # Coincidencia exacta por nombre
+    if not player_name:
+        return None
     url = f"{SUPABASE_URL}/rest/v1/{PLAYERS_TABLE}?name=eq.{player_name}"
     res = requests.get(url, headers=HEADERS)
     res.raise_for_status()
@@ -63,10 +66,7 @@ if __name__ == "__main__":
     processed_ids = []
 
     for row in staging_rows:
-        player_id = None
-        if row["player_name"] not in ("", None):
-            player_id = find_player_id(row["player_name"])
-
+        player_id = find_player_id(row.get("player_name"))
         draw_entries.append({
             "tourney_id": TOURNEY_ID,
             "pos": row["pos"],
