@@ -41,6 +41,13 @@ def find_player_id(player_name):
     return None
 
 
+def delete_existing_draw_entries():
+    url = f"{SUPABASE_URL}/rest/v1/{TARGET_TABLE}?tourney_id=eq.{TOURNEY_ID}"
+    res = requests.delete(url, headers=HEADERS)
+    res.raise_for_status()
+    print(f"Eliminados registros previos en draw_entries para tourney_id={TOURNEY_ID}.")
+
+
 def insert_draw_entries(records):
     url = f"{SUPABASE_URL}/rest/v1/{TARGET_TABLE}"
     res = requests.post(url, headers={**HEADERS, "Prefer": "return=representation"}, json=records)
@@ -75,6 +82,9 @@ if __name__ == "__main__":
             "tag": row["tag"]
         })
         processed_ids.append(row["pos"])
+
+    # Borrar antes de insertar
+    delete_existing_draw_entries()
 
     inserted = insert_draw_entries(draw_entries)
     print(f"Insertados {len(inserted)} registros en draw_entries.")
