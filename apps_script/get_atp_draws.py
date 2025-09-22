@@ -35,6 +35,10 @@ def parse_line(line: str):
     if not tokens:
         return None
 
+    # ✅ ignorar encabezados y texto no numérico
+    if not tokens[0].isdigit():
+        return None
+
     pos = tokens[0]
     seed = None
     tag = None
@@ -80,6 +84,26 @@ def parse_line(line: str):
     }
 
 
+def download_pdf(tourney_id: int, year: int = 2025, output_dir: str = "data") -> Path:
+    """
+    Descarga el PDF del cuadro principal (Main Draw Singles) de ProTennisLive.
+    """
+    import requests
+
+    url = f"https://www.protennislive.com/posting/{year}/{tourney_id}/mds.pdf"
+    output_path = Path(output_dir) / f"mds_{year}_{tourney_id}.pdf"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    res = requests.get(url)
+    res.raise_for_status()
+
+    with open(output_path, "wb") as f:
+        f.write(res.content)
+
+    print(f"PDF descargado en {output_path}")
+    return output_path
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Uso: python get_atp_draws.py <pdf_file> <out_csv_file>")
@@ -100,6 +124,4 @@ if __name__ == "__main__":
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df.to_csv(out_csv_file, index=False)
     print(f"Generado CSV con {len(df)} filas: {out_csv_file}")
-    entries = parse_draw(pdf_path)
-    save_to_csv(entries, f"data/draw_{tourney_id}.csv")
-    print(f"Parsed and saved {len(entries)} entries for tourney {tourney_id}.")
+
