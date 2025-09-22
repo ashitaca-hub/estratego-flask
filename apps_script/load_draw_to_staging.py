@@ -9,20 +9,16 @@ CSV_PATH = sys.argv[1] if len(sys.argv) > 1 else "data/draw_329.csv"
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 TABLE_NAME = "stg_draw_entries_by_name"
-TOURNEY_ID = 329
+
+# tourney_id en formato año-id
+tourney_id = "2025-329"
 
 # Leer CSV
 entries = pd.read_csv(CSV_PATH)
 entries.fillna("", inplace=True)
 entries["seed"] = entries["seed"].replace("", None)
 entries["tag"] = entries["tag"].replace("", None)
-entries["tourney_id"] = TOURNEY_ID
-
-# Validar unicidad de pos
-duplicados = entries["pos"].duplicated().any()
-if duplicados:
-    dups = entries[entries["pos"].duplicated()]["pos"].tolist()
-    raise ValueError(f"El CSV contiene posiciones duplicadas para tourney_id={TOURNEY_ID}: {dups}")
+entries["tourney_id"] = tourney_id
 
 # Convertir a registros
 records = entries.to_dict(orient="records")
@@ -35,10 +31,10 @@ headers = {
 }
 
 # DELETE previo para evitar duplicados
-delete_url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}?tourney_id=eq.{TOURNEY_ID}"
+delete_url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}?tourney_id=eq.{tourney_id}"
 delete_res = requests.delete(delete_url, headers=headers)
 if delete_res.status_code >= 200 and delete_res.status_code < 300:
-    print(f"Eliminadas filas existentes para tourney_id={TOURNEY_ID}.")
+    print(f"Eliminadas filas existentes para tourney_id={tourney_id}.")
 else:
     print(f"Error al eliminar: {delete_res.status_code}\n{delete_res.text}")
     delete_res.raise_for_status()
