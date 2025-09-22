@@ -21,18 +21,29 @@ entries["tourney_id"] = TOURNEY_ID
 # Convertir a registros
 records = entries.to_dict(orient="records")
 
-# Insertar vía REST
-url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+# Headers comunes
 headers = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=representation"
+    "Content-Type": "application/json"
 }
-response = requests.post(url, json=records, headers=headers)
 
-if response.status_code >= 200 and response.status_code < 300:
+# DELETE previo para evitar duplicados
+delete_url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}?tourney_id=eq.{TOURNEY_ID}"
+delete_res = requests.delete(delete_url, headers=headers)
+if delete_res.status_code >= 200 and delete_res.status_code < 300:
+    print(f"Eliminadas filas existentes para tourney_id={TOURNEY_ID}.")
+else:
+    print(f"Error al eliminar: {delete_res.status_code}\n{delete_res.text}")
+    delete_res.raise_for_status()
+
+# Insertar nueva data
+insert_url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+headers["Prefer"] = "return=representation"
+insert_res = requests.post(insert_url, json=records, headers=headers)
+
+if insert_res.status_code >= 200 and insert_res.status_code < 300:
     print(f"Cargado CSV con {len(records)} filas a staging.")
 else:
-    print(f"Error al insertar: {response.status_code}\n{response.text}")
-    response.raise_for_status()
+    print(f"Error al insertar: {insert_res.status_code}\n{insert_res.text}")
+    insert_res.raise_for_status()
