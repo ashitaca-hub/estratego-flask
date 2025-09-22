@@ -17,4 +17,4 @@ jobs:
             -H "apikey: ${SUPABASE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
-            -d '{"tourney_id":329}'
+            -d '{"p_tournament_id":329}'
