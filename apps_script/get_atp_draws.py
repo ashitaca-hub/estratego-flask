@@ -4,6 +4,7 @@ import requests
 import pdfplumber
 import csv
 import sys
+import pandas as pd
 from pathlib import Path
 
 
