@@ -21,14 +21,11 @@ TOURNEY_ID = "2025-329"
 
 
 def fetch_staging():
-    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}&processed_at=is.null"
+    # ✅ Supabase necesita is.null.true
+    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}&processed_at=is.null.true"
     res = requests.get(url, headers=HEADERS)
     res.raise_for_status()
     return res.json()
-
-
-def normalize_name(name: str) -> str:
-    return name.strip().lower() if name else ""
 
 
 def reorder_name(name: str) -> str:
@@ -44,10 +41,9 @@ def resolve_player_id(name: str):
 
     variants = [name, reorder_name(name)]
     for variant in variants:
-        query = variant.strip()
-        if not query:
+        if not variant:
             continue
-        url = f"{SUPABASE_URL}/rest/v1/players_dim?name=ilike.*{query}*"
+        url = f"{SUPABASE_URL}/rest/v1/players_dim?name=ilike.*{variant}*"
         res = requests.get(url, headers=HEADERS)
         res.raise_for_status()
         rows = res.json()
@@ -65,9 +61,9 @@ def insert_draw_entries(rows):
         json=rows,
     )
     if res.status_code >= 200 and res.status_code < 300:
-        print(f"Insertados {len(rows)} registros en draw_entries.")
+        print(f"✅ Insertados {len(rows)} registros en draw_entries.")
     else:
-        print(f"Error al insertar: {res.status_code}\n{res.text}")
+        print(f"❌ Error al insertar: {res.status_code}\n{res.text}")
         res.raise_for_status()
 
 
@@ -86,10 +82,10 @@ def mark_processed(ids):
 if __name__ == "__main__":
     staging_rows = fetch_staging()
     if not staging_rows:
-        print("No hay registros nuevos en staging.")
+        print("ℹ️ No hay registros nuevos en staging.")
         sys.exit(0)
 
-    print(f"Procesando {len(staging_rows)} filas desde staging…")
+    print(f"🔄 Procesando {len(staging_rows)} filas desde staging…")
 
     draw_entries = []
     processed_ids = []
@@ -106,17 +102,17 @@ if __name__ == "__main__":
         draw_entries.append(entry)
         processed_ids.append(row["pos"])
 
-        print(f" → Pos {row['pos']} | {row['player_name']} → player_id={player_id}")
+        print(f" → Pos {row['pos']} | {row['player_name']} → player_id={player_id or '❌ UNRESOLVED'}")
 
     # limpiar previos
     url = f"{SUPABASE_URL}/rest/v1/{DRAW_ENTRIES_TABLE}?tourney_id=eq.{TOURNEY_ID}"
     del_res = requests.delete(url, headers=HEADERS)
     del_res.raise_for_status()
-    print(f"Eliminados registros previos en draw_entries para tourney_id={TOURNEY_ID}.")
+    print(f"🗑️ Eliminados registros previos en draw_entries para tourney_id={TOURNEY_ID}.")
 
     # insertar
     insert_draw_entries(draw_entries)
 
     # marcar staging como procesado
     mark_processed(processed_ids)
-    print("Marcadas filas como procesadas en staging.")
+    print("✅ Marcadas filas como procesadas en staging.")
