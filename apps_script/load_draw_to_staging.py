@@ -29,6 +29,13 @@ if __name__ == "__main__":
     for col in expected_cols:
         if col not in df.columns:
             df[col] = None
+            
+    # Aseguramos tipos seguros
+    if "seed" in df.columns:
+        df["seed"] = df["seed"].astype("Int64")
+    
+    # Convertir NaN → None
+    entries = df.replace({pd.NA: None}).where(pd.notnull(df), None).to_dict(orient="records")
 
     # Convertir NaN → None
     entries = df.where(pd.notnull(df), None).to_dict(orient="records")
