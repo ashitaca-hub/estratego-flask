@@ -14,12 +14,22 @@ HEADERS = {
 
 
 def fetch_staging(tourney_id):
-    url = f"{SUPABASE_URL}/rest/v1/stg_draw_entries_by_name?tourney_id=eq.{tourney_id}&processed_at=is.null"
+    url = f"{SUPABASE_URL}/rest/v1/stg_draw_entries_by_name?tourney_id=eq.{tourney_id}"
     res = requests.get(url, headers=HEADERS)
     if not res.ok:
         print("Error al consultar staging:", res.status_code, res.text)
         res.raise_for_status()
     return res.json()
+
+
+def clear_existing_draw_entries(tourney_id):
+    print(f"🧹 Borrando draw_entries y draw_matches para torneo {tourney_id}...")
+    for table in ["draw_matches", "draw_entries"]:
+        url = f"{SUPABASE_URL}/rest/v1/{table}?tourney_id=eq.{tourney_id}"
+        res = requests.delete(url, headers=HEADERS)
+        if not res.ok:
+            print(f"Error borrando {table}: {res.status_code} {res.text}")
+            res.raise_for_status()
 
 
 def resolve_player_id(player_name):
@@ -70,9 +80,10 @@ def main():
         sys.exit(1)
 
     tourney_id = sys.argv[1]
+    clear_existing_draw_entries(tourney_id)
     staging_rows = fetch_staging(tourney_id)
 
-    print(f"Filas a procesar para torneo {tourney_id}: {len(staging_rows)}")
+    print(f"📥 Filas a procesar para torneo {tourney_id}: {len(staging_rows)}")
 
     for row in staging_rows:
         player_id = resolve_player_id(row.get("player_name"))
