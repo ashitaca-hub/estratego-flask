@@ -2,13 +2,18 @@ name: Migrate Staging to Draw Entries
 
 on:
   workflow_dispatch:
+    inputs:
+      tourney_id:
+        description: 'Tourney ID (ej: 2025-329)'
+        required: true
+        type: string
 
 jobs:
   migrate-draw:
     runs-on: ubuntu-latest
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_KEY }}
 
     steps:
       - name: Checkout repo
@@ -25,4 +30,4 @@ jobs:
 
       - name: Run staging migration
         run: |
-          python apps_script/load_from_staging.py
+          python apps_script/load_from_staging.py ${{ inputs.tourney_id }}
