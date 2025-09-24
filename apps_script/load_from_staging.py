@@ -20,9 +20,10 @@ DRAW_ENTRIES_TABLE = "draw_entries"
 TOURNEY_ID = "2025-329"
 
 
+
 def fetch_staging():
     # ✅ Supabase necesita is.null.true
-    url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}&processed_at=is.null.true"
+    url = f"{SUPABASE_URL}/rest/v1/stg_draw_entries_by_name?tourney_id=eq.{tourney_id}&processed_at=is.null"
     res = requests.get(url, headers=HEADERS)
     res.raise_for_status()
     return res.json()
