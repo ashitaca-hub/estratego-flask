@@ -1,119 +1,89 @@
-# apps_script/load_from_staging.py
-
-import requests
 import os
 import sys
+import requests
+import json
 from datetime import datetime
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
+    "Content-Type": "application/json"
 }
 
-STAGING_TABLE = "stg_draw_entries_by_name"
-DRAW_ENTRIES_TABLE = "draw_entries"
 
-TOURNEY_ID = "2025-329"
-
-
-
-def fetch_staging():
-    # ✅ Supabase necesita is.null.true
+def fetch_staging(tourney_id):
     url = f"{SUPABASE_URL}/rest/v1/stg_draw_entries_by_name?tourney_id=eq.{tourney_id}&processed_at=is.null"
     res = requests.get(url, headers=HEADERS)
-    res.raise_for_status()
+    if not res.ok:
+        print("Error al consultar staging:", res.status_code, res.text)
+        res.raise_for_status()
     return res.json()
 
 
-def reorder_name(name: str) -> str:
-    if not name or "," not in name:
-        return name
-    last, first = [p.strip() for p in name.split(",", 1)]
-    return f"{first} {last}"
-
-
-def resolve_player_id(name: str):
-    if not name:
+def resolve_player_id(player_name):
+    if not player_name:
         return None
 
-    variants = [name, reorder_name(name)]
-    for variant in variants:
-        if not variant:
-            continue
-        url = f"{SUPABASE_URL}/rest/v1/players_dim?name=ilike.*{variant}*"
+    name_variants = [player_name.strip()]
+    if "," in player_name:
+        parts = player_name.split(",", 1)
+        name_variants.append(f"{parts[1].strip()} {parts[0].strip()}")
+
+    for variant in name_variants:
+        url = f"{SUPABASE_URL}/rest/v1/players_dim?name=ilike.{variant}"
         res = requests.get(url, headers=HEADERS)
-        res.raise_for_status()
-        rows = res.json()
-        if rows:
-            return rows[0]["player_id"]
+        if res.ok and len(res.json()) == 1:
+            return res.json()[0]["player_id"]
 
     return None
 
 
-def insert_draw_entries(rows):
-    url = f"{SUPABASE_URL}/rest/v1/{DRAW_ENTRIES_TABLE}"
-    res = requests.post(
-        url,
-        headers={**HEADERS, "Prefer": "resolution=merge-duplicates"},
-        json=rows,
-    )
-    if res.status_code >= 200 and res.status_code < 300:
-        print(f"✅ Insertados {len(rows)} registros en draw_entries.")
-    else:
-        print(f"❌ Error al insertar: {res.status_code}\n{res.text}")
+def insert_draw_entry(tourney_id, row, player_id):
+    payload = {
+        "tourney_id": tourney_id,
+        "pos": row["pos"],
+        "player_id": player_id,
+        "seed": row.get("seed"),
+        "tag": row.get("tag") or ("UNRESOLVED" if not player_id else None)
+    }
+    url = f"{SUPABASE_URL}/rest/v1/draw_entries"
+    res = requests.post(url, headers=HEADERS, data=json.dumps(payload))
+    if not res.ok:
+        print(f"Error insertando draw_entry en pos {row['pos']}: {res.status_code} {res.text}")
         res.raise_for_status()
 
 
-def mark_processed(ids):
+def mark_as_processed(row_id):
     now = datetime.utcnow().isoformat()
-    for pos in ids:
-        url = f"{SUPABASE_URL}/rest/v1/{STAGING_TABLE}?tourney_id=eq.{TOURNEY_ID}&pos=eq.{pos}"
-        res = requests.patch(
-            url,
-            headers=HEADERS,
-            json={"processed_at": now},
-        )
-        res.raise_for_status()
+    url = f"{SUPABASE_URL}/rest/v1/stg_draw_entries_by_name?id=eq.{row_id}"
+    payload = {"processed_at": now}
+    res = requests.patch(url, headers=HEADERS, data=json.dumps(payload))
+    if not res.ok:
+        print(f"Error marcando como procesado (id={row_id}):", res.text)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Uso: python load_from_staging.py <tourney_id>")
+        sys.exit(1)
+
+    tourney_id = sys.argv[1]
+    staging_rows = fetch_staging(tourney_id)
+
+    print(f"Filas a procesar para torneo {tourney_id}: {len(staging_rows)}")
+
+    for row in staging_rows:
+        player_id = resolve_player_id(row.get("player_name"))
+        insert_draw_entry(tourney_id, row, player_id)
+        mark_as_processed(row["id"])
+
+        if not player_id and not row.get("tag"):
+            print(f"[!] No se pudo resolver: {row['player_name']} (pos {row['pos']})")
+
+    print("✅ Migración completada.")
 
 
 if __name__ == "__main__":
-    staging_rows = fetch_staging()
-    if not staging_rows:
-        print("ℹ️ No hay registros nuevos en staging.")
-        sys.exit(0)
-
-    print(f"🔄 Procesando {len(staging_rows)} filas desde staging…")
-
-    draw_entries = []
-    processed_ids = []
-
-    for row in staging_rows:
-        player_id = resolve_player_id(row["player_name"])
-        entry = {
-            "tourney_id": TOURNEY_ID,
-            "pos": row["pos"],
-            "player_id": player_id,
-            "seed": row["seed"],
-            "tag": row["tag"] if row["tag"] else ("UNRESOLVED" if not player_id else None),
-        }
-        draw_entries.append(entry)
-        processed_ids.append(row["pos"])
-
-        print(f" → Pos {row['pos']} | {row['player_name']} → player_id={player_id or '❌ UNRESOLVED'}")
-
-    # limpiar previos
-    url = f"{SUPABASE_URL}/rest/v1/{DRAW_ENTRIES_TABLE}?tourney_id=eq.{TOURNEY_ID}"
-    del_res = requests.delete(url, headers=HEADERS)
-    del_res.raise_for_status()
-    print(f"🗑️ Eliminados registros previos en draw_entries para tourney_id={TOURNEY_ID}.")
-
-    # insertar
-    insert_draw_entries(draw_entries)
-
-    # marcar staging como procesado
-    mark_processed(processed_ids)
-    print("✅ Marcadas filas como procesadas en staging.")
+    main()
