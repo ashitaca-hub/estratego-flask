@@ -65,13 +65,13 @@ def insert_draw_entry(tourney_id, row, player_id):
         res.raise_for_status()
 
 
-def mark_as_processed(row_id):
+def mark_as_processed(tourney_id, pos):
     now = datetime.utcnow().isoformat()
-    url = f"{SUPABASE_URL}/rest/v1/stg_draw_entries_by_name?id=eq.{row_id}"
+    url = f"{SUPABASE_URL}/rest/v1/stg_draw_entries_by_name?tourney_id=eq.{tourney_id}&pos=eq.{pos}"
     payload = {"processed_at": now}
     res = requests.patch(url, headers=HEADERS, data=json.dumps(payload))
     if not res.ok:
-        print(f"Error marcando como procesado (id={row_id}):", res.text)
+        print(f"Error marcando como procesado (tourney={tourney_id}, pos={pos}):", res.text)
 
 
 def main():
@@ -88,7 +88,7 @@ def main():
     for row in staging_rows:
         player_id = resolve_player_id(row.get("player_name"))
         insert_draw_entry(tourney_id, row, player_id)
-        mark_as_processed(row["id"])
+        mark_as_processed(tourney_id, row["pos"])
 
         if not player_id and not row.get("tag"):
             print(f"[!] No se pudo resolver: {row['player_name']} (pos {row['pos']})")
