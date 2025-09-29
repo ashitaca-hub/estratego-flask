@@ -12,13 +12,19 @@ VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL"}
 
 def parse_line(line: str):
     tokens = line.strip().split()
-    if not tokens:
+    if not tokens or not tokens[0].isdigit():
         return None
 
-    if not tokens[0].isdigit():
+    pos = int(tokens[0])
+
+    # ⛔ Solo considerar posiciones de R32 (hasta 32)
+    if pos > 32:
         return None
 
-    pos = tokens[0]
+    # ⛔ Filtrar líneas que contienen resultados numéricos
+    if any(t.replace("(", "").replace(")", "").isdigit() for t in tokens[1:]):
+        return None
+
     seed = None
     tag = None
     player_name = None
@@ -26,7 +32,7 @@ def parse_line(line: str):
 
     if len(tokens) == 2 and tokens[1] in VALID_TAGS:
         return {
-            "pos": int(pos),
+            "pos": pos,
             "player_name": None,
             "seed": None,
             "tag": tokens[1],
@@ -52,7 +58,7 @@ def parse_line(line: str):
         return None
 
     return {
-        "pos": int(pos),
+        "pos": pos,
         "player_name": player_name if player_name else None,
         "seed": seed,
         "tag": tag,
