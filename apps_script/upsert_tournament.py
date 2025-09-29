@@ -2,57 +2,64 @@ import os
 import sys
 import requests
 import json
-from datetime import datetime
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
 HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json"
 }
 
-def get_latest_tournament_entry(tourney_code):
-    # Usar wildcard * para like
-    url = f"{SUPABASE_URL}/rest/v1/tournaments?tourney_id=like=*.{tourney_code}"
-    url += "&order=tourney_date.desc&limit=1"
+def extract_code(tourney_id):
+    return tourney_id.split("-")[-1]
+
+def fetch_previous_tournament(tourney_id):
+    code = extract_code(tourney_id)
+    year = int(tourney_id.split("-")[0])
+    url = f"{SUPABASE_URL}/rest/v1/tournaments?tourney_id=like=*.{code}&select=*&order=tourney_id.desc"
     res = requests.get(url, headers=HEADERS)
-    if res.ok:
-        data = res.json()
-        if data and len(data) > 0:
-            return data[0]
+    if not res.ok:
+        raise Exception(f"Error buscando torneos: {res.text}")
+
+    for row in res.json():
+        y = int(row["tourney_id"].split("-")[0])
+        if y < year:
+            return row
+
     return None
 
-def insert_tournament(tourney_id, original):
+def upsert_tournament(new_id, template):
     payload = {
-        "tourney_id": tourney_id,
-        "name": original["name"],
-        "level": original["level"],
-        "surface": original["surface"],
-        "draw_size": original["draw_size"],
-        "tourney_date": int(tourney_id.split("-")[0] + "0901")  # estimado para septiembre
+        "tourney_id": new_id,
+        "name": template["name"],
+        "level": template["level"],
+        "surface": template["surface"],
+        "draw_size": template["draw_size"],
+        "tourney_date": int(new_id.split("-")[0] + "01"),
     }
     url = f"{SUPABASE_URL}/rest/v1/tournaments"
     res = requests.post(url, headers=HEADERS, data=json.dumps(payload))
     if not res.ok:
-        print("❌ Error al insertar torneo:", res.text)
-        res.raise_for_status()
-    print("✅ Torneo insertado correctamente")
+        raise Exception(f"Error insertando torneo: {res.text}")
 
 def main():
     if len(sys.argv) < 2:
         print("Uso: python upsert_tournament.py <tourney_id>")
         sys.exit(1)
 
-    tourney_id = sys.argv[1]  # ej: 2025-747
-    year, code = tourney_id.split("-")
+    new_id = sys.argv[1]
+    print(f"🔍 Buscando plantilla para {new_id}...")
 
-    existing = get_latest_tournament_entry(code)
-    if not existing:
-        print(f"❌ No se encontró torneo anterior con código {code}")
+    prev = fetch_previous_tournament(new_id)
+    if not prev:
+        print("❌ No se encontró torneo anterior con ese código")
         sys.exit(1)
 
-    insert_tournament(tourney_id, existing)
+    print(f"✅ Usando {prev['tourney_id']} como plantilla")
+    upsert_tournament(new_id, prev)
+    print(f"🎾 Torneo {new_id} insertado correctamente")
 
 if __name__ == "__main__":
     main()
