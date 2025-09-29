@@ -1,15 +1,13 @@
-name: Full Tournament Loader
-
-description: Carga completa de cuadro desde PDF oficial (protennislive)
+name: Load ATP Tournament
 
 on:
   workflow_dispatch:
     inputs:
       tourney_id:
-        description: "ID del torneo (ej: 2025-329)"
+        description: "Tournament ID (e.g., 2025-747)"
         required: true
       pdf_url:
-        description: "URL del PDF oficial (ej: https://www.protennislive.com/posting/2025/329/mds.pdf)"
+        description: "Draw PDF URL"
         required: true
 
 jobs:
@@ -17,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
 
     steps:
       - name: Checkout repo
@@ -30,26 +28,25 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests pdfplumber pandas
+          pip install requests pandas pdfplumber
 
-      - name: Descargar PDF
+      - name: Step 1 - Upsert tournament
         run: |
-          mkdir -p data
-          curl -o data/mds.pdf "${{ github.event.inputs.pdf_url }}"
+          python apps_script/upsert_tournament.py "${{ github.event.inputs.tourney_id }}"
 
-      - name: Generar CSV desde PDF
+      - name: Step 2 - Download PDF and generate CSV
         run: |
-          python apps_script/get_atp_draws.py "data/mds.pdf" "data/draw_${{ github.event.inputs.tourney_id }}.csv"
+          python apps_script/get_atp_draws.py "${{ github.event.inputs.pdf_url }}" "data/draw_${{ github.event.inputs.tourney_id }}.csv"
 
-      - name: Cargar CSV a staging
+      - name: Step 3 - Load CSV to staging
         run: |
-          python apps_script/load_draw_to_staging.py "data/draw_${{ github.event.inputs.tourney_id }}.csv" --tourney_id "${{ github.event.inputs.tourney_id }}"
+          python apps_script/load_draw_to_staging.py "data/draw_${{ github.event.inputs.tourney_id }}.csv"
 
-      - name: Cargar staging a draw_entries
+      - name: Step 4 - Migrate from staging
         run: |
           python apps_script/load_from_staging.py "${{ github.event.inputs.tourney_id }}"
 
-      - name: Generar draw_matches
+      - name: Step 5 - Build draw matches
         run: |
           curl -X POST "${SUPABASE_URL}/rest/v1/rpc/build_draw_matches" \
             -H "apikey: ${SUPABASE_KEY}" \
