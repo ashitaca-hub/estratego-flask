@@ -40,7 +40,9 @@ def upsert_tournament(new_id, template):
         "tourney_date": int(new_id.split("-")[0] + "01"),
     }
     url = f"{SUPABASE_URL}/rest/v1/tournaments"
-    res = requests.post(f"{url}?on_conflict=tourney_id", headers=HEADERS, data=json.dumps(payload))
+    headers = HEADERS.copy()
+    headers["Prefer"] = "resolution=merge-duplicates"
+    res = requests.post(url, headers=headers, data=json.dumps(payload))
     if not res.ok:
         raise Exception(f"Error insertando torneo: {res.text}")
 
