@@ -18,7 +18,7 @@ def extract_code(tourney_id):
 def fetch_previous_tournament(tourney_id):
     code = extract_code(tourney_id)
     year = int(tourney_id.split("-")[0])
-    url = f"{SUPABASE_URL}/rest/v1/tournaments?tourney_id=like=*.{code}&select=*&order=tourney_id.desc"
+    url = f"{SUPABASE_URL}/rest/v1/tournaments?tourney_id=like.*-{code}&select=*&order=tourney_id.desc"
     res = requests.get(url, headers=HEADERS)
     if not res.ok:
         raise Exception(f"Error buscando torneos: {res.text}")
