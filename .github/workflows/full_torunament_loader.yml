@@ -55,4 +55,4 @@ jobs:
             -H "apikey: ${SUPABASE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
-            -d '{"p_tourney_id": "${{ github.event.inputs.tourney_id }}"}'
+            -d '{"p_tournament_id": "${{ github.event.inputs.tourney_id }}"}'
