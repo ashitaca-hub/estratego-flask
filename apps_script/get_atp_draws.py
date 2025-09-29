@@ -21,35 +21,34 @@ def parse_line(line: str):
 
     seed = None
     tag = None
-    player_name = None
     country = None
-
-    if len(tokens) == 2 and tokens[1] in VALID_TAGS:
-        return {
-            "pos": pos,
-            "player_name": None,
-            "seed": None,
-            "tag": tokens[1],
-            "country": None,
-        }
+    player_name = None
 
     idx = 1
-    if len(tokens) > 1 and tokens[1].isdigit():
-        seed = int(tokens[1])
-        idx = 2
-    elif len(tokens) > 1 and tokens[1] in VALID_TAGS:
-        tag = tokens[1]
-        idx = 2
 
-    if len(tokens) < idx + 1 or len(tokens[-1]) != 3 or not tokens[-1].isupper():
-        return None  # país inválido
+    # Seed
+    if idx < len(tokens) and tokens[idx].isdigit():
+        seed = int(tokens[idx])
+        idx += 1
 
-    country = tokens[-1]
-    name_tokens = tokens[idx:-1]
+    # Tag
+    if idx < len(tokens) and tokens[idx] in VALID_TAGS:
+        tag = tokens[idx]
+        idx += 1
+
+    # Buscar país (primer token que son 3 letras mayúsculas)
+    country_idx = None
+    for i in range(idx, len(tokens)):
+        if len(tokens[i]) == 3 and tokens[i].isupper():
+            country_idx = i
+            break
+
+    if country_idx is None:
+        return None  # país no encontrado
+
+    country = tokens[country_idx]
+    name_tokens = tokens[idx:country_idx]
     player_name = " ".join(name_tokens).replace(" ,", ",").strip()
-
-    if not player_name and not tag:
-        return None
 
     return {
         "pos": pos,
