@@ -10,6 +10,9 @@ on:
         description: "Draw PDF URL"
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   load-draw:
     runs-on: ubuntu-latest
@@ -42,6 +45,7 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git add data/draw_${{ github.event.inputs.tourney_id }}.csv
           git commit -m "Add draw CSV for ${{ github.event.inputs.tourney_id }}" || echo "No changes to commit"
           git push
