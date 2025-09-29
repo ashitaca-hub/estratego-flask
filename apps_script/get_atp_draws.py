@@ -16,14 +16,8 @@ def parse_line(line: str):
         return None
 
     pos = int(tokens[0])
-
-    # ⛔ Solo considerar posiciones de R32 (hasta 32)
     if pos > 32:
-        return None
-
-    # ⛔ Filtrar líneas que contienen resultados numéricos
-    if any(t.replace("(", "").replace(")", "").isdigit() for t in tokens[1:]):
-        return None
+        return None  # ⛔ Solo R32
 
     seed = None
     tag = None
@@ -40,20 +34,20 @@ def parse_line(line: str):
         }
 
     idx = 1
-    if tokens[1].isdigit():
+    if len(tokens) > 1 and tokens[1].isdigit():
         seed = int(tokens[1])
         idx = 2
-    elif tokens[1] in VALID_TAGS:
+    elif len(tokens) > 1 and tokens[1] in VALID_TAGS:
         tag = tokens[1]
         idx = 2
 
-    if len(tokens[-1]) == 3 and tokens[-1].isupper():
-        country = tokens[-1]
-        name_tokens = tokens[idx:-1]
-    else:
-        return None
+    if len(tokens) < idx + 1 or len(tokens[-1]) != 3 or not tokens[-1].isupper():
+        return None  # país inválido
 
+    country = tokens[-1]
+    name_tokens = tokens[idx:-1]
     player_name = " ".join(name_tokens).replace(" ,", ",").strip()
+
     if not player_name and not tag:
         return None
 
