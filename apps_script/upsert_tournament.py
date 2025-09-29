@@ -13,10 +13,14 @@ HEADERS = {
 }
 
 def get_latest_tournament_entry(tourney_code):
-    url = f"{SUPABASE_URL}/rest/v1/tournaments?tourney_id=like=%.{tourney_code}&order=tourney_date.desc"
+    # Usar wildcard * para like
+    url = f"{SUPABASE_URL}/rest/v1/tournaments?tourney_id=like=*.{tourney_code}"
+    url += "&order=tourney_date.desc&limit=1"
     res = requests.get(url, headers=HEADERS)
-    if res.ok and res.json():
-        return res.json()[0]
+    if res.ok:
+        data = res.json()
+        if data and len(data) > 0:
+            return data[0]
     return None
 
 def insert_tournament(tourney_id, original):
