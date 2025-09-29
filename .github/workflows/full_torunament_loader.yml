@@ -34,12 +34,12 @@ jobs:
 
       - name: Descargar PDF
         run: |
+          mkdir -p data
           curl -o data/mds.pdf "${{ github.event.inputs.pdf_url }}"
 
       - name: Generar CSV desde PDF
         run: |
           python apps_script/get_atp_draws.py "data/mds.pdf" "data/draw_${{ github.event.inputs.tourney_id }}.csv"
-
 
       - name: Cargar CSV a staging
         run: |
