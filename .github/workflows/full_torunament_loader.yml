@@ -38,6 +38,12 @@ jobs:
         run: |
           python apps_script/get_atp_draws.py "${{ github.event.inputs.pdf_url }}" "data/draw_${{ github.event.inputs.tourney_id }}.csv"
 
+      - name: Export CSV como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: draw-csv
+          path: data/draw_${{ github.event.inputs.tourney_id }}.csv
+
       - name: Step 3 - Load CSV to staging
         run: |
           python apps_script/load_draw_to_staging.py "data/draw_${{ github.event.inputs.tourney_id }}.csv"
