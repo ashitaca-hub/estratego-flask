@@ -32,9 +32,14 @@ jobs:
         run: |
           pip install requests pdfplumber pandas
 
-      - name: Descargar PDF y generar CSV
+      - name: Descargar PDF
         run: |
-          python apps_script/get_atp_draws.py "${{ github.event.inputs.pdf_url }}" "data/draw_${{ github.event.inputs.tourney_id }}.csv"
+          curl -o data/mds.pdf "${{ github.event.inputs.pdf_url }}"
+
+      - name: Generar CSV desde PDF
+        run: |
+          python apps_script/get_atp_draws.py "data/mds.pdf" "data/draw_${{ github.event.inputs.tourney_id }}.csv"
+
 
       - name: Cargar CSV a staging
         run: |
