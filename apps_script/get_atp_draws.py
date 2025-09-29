@@ -3,6 +3,7 @@
 import pdfplumber
 import pandas as pd
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -91,8 +92,15 @@ if __name__ == "__main__":
         print("Uso: python get_atp_draws.py <pdf_file> <out_csv_file>")
         sys.exit(1)
 
-    pdf_file = sys.argv[1]
-    out_csv_file = sys.argv[2]
+pdf_url = sys.argv[1]
+csv_output = sys.argv[2]
+
+res = requests.get(pdf_url)
+res.raise_for_status()
+
+with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+    tmp.write(res.content)
+    tmp_path = tmp.name
 
     entries = []
     with pdfplumber.open(pdf_file) as pdf:
