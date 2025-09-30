@@ -11,51 +11,43 @@ VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL"}
 
 def parse_line(line: str):
     tokens = line.strip().split()
-    if not tokens or len(tokens) < 4:
-        print(f"[!] Línea descartada (muy corta): {line}")
+    if not tokens or not tokens[0].isdigit():
         return None
 
-    if not tokens[0].isdigit():
-        print(f"[!] Línea descartada (sin posición numérica): {line}")
+    pos = int(tokens[0])
+    if pos > 32:
         return None
 
-    pos = tokens[0]
     seed = None
     tag = None
-    player_name = None
-    country = None
-
-    if len(tokens) == 2 and tokens[1] in VALID_TAGS:
-        return {
-            "pos": int(pos),
-            "player_name": None,
-            "seed": None,
-            "tag": tokens[1],
-            "country": None,
-        }
 
     idx = 1
-    if tokens[1].isdigit():
-        seed = int(tokens[1])
-        idx = 2
-    elif tokens[1] in VALID_TAGS:
-        tag = tokens[1]
-        idx = 2
+    if idx < len(tokens) and tokens[idx].isdigit():
+        seed = int(tokens[idx])
+        idx += 1
+    elif idx < len(tokens) and tokens[idx] in VALID_TAGS:
+        tag = tokens[idx]
+        idx += 1
 
-    if len(tokens[-1]) == 3 and tokens[-1].isupper():
-        country = tokens[-1]
-        name_tokens = tokens[idx:-1]
-    else:
-        print(f"[!] Línea descartada (país inválido): {line}")
+    # buscar país — primer token de 3 letras mayúsculas
+    country_idx = None
+    for i in range(idx, len(tokens)):
+        if len(tokens[i]) == 3 and tokens[i].isupper():
+            country_idx = i
+            break
+
+    if country_idx is None:
         return None
 
+    country = tokens[country_idx]
+    name_tokens = tokens[idx:country_idx]
+
     player_name = " ".join(name_tokens).replace(" ,", ",").strip()
-    if not player_name or "..." in player_name or "…" in player_name:
-        print(f"[!] Línea descartada (nombre incompleto): {line}")
+    if not player_name:
         return None
 
     return {
-        "pos": int(pos),
+        "pos": pos,
         "player_name": player_name,
         "seed": seed,
         "tag": tag,
@@ -80,13 +72,19 @@ if __name__ == "__main__":
     entries = []
     with pdfplumber.open(tmp_path) as pdf:
         for page in pdf.pages:
-            lines = page.extract_text().split("\n")
+            text = page.extract_text()
+            if not text:
+                continue
+            lines = text.split("\n")
             for line in lines:
                 parsed = parse_line(line)
                 if parsed:
                     entries.append(parsed)
+                else:
+                    print(f"Ignorada: {line}")
 
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df["seed"] = df["seed"].astype("Int64")
+    Path(out_csv_file).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv_file, index=False)
-    print(f"\n✅ Generado CSV con {len(df)} filas: {out_csv_file}")
+    print(f"Generado CSV con {len(df)} filas: {out_csv_file}")
