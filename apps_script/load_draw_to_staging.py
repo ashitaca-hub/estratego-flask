@@ -4,7 +4,6 @@ import pandas as pd
 import requests
 import os
 import sys
-from pathlib import Path
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -23,20 +22,20 @@ if __name__ == "__main__":
         sys.exit(1)
 
     csv_file = sys.argv[1]
-
-    # Extraer tourney_id desde el nombre del fichero
-    filename = Path(csv_file).stem  # ej: draw_2025-747
-    try:
-        tourney_id = filename.split("_")[1]  # "2025-747"
-    except IndexError:
-        print("❌ No se pudo extraer tourney_id del nombre del archivo.")
-        sys.exit(1)
-
     df = pd.read_csv(csv_file)
+
+    tourney_id = os.path.basename(csv_file).replace("draw_", "").replace(".csv", "")
 
     # Asegurar tipos
     if "seed" in df.columns:
         df["seed"] = df["seed"].astype("Int64")
+
+    # Deduplicar por posición
+    before = len(df)
+    df = df.drop_duplicates(subset=["pos"])
+    after = len(df)
+    if before != after:
+        print(f"⚠️ Eliminadas {before - after} filas duplicadas por 'pos'.")
 
     # Convertir NaN → None
     entries = df.replace({pd.NA: None}).where(pd.notnull(df), None).to_dict(orient="records")
