@@ -1,29 +1,38 @@
 pos,player_name,seed,tag,country
-25,September — 1 October 2025 |,,,USD
-1,"SINNER, Jannik",1,,ITA
-2,"CILIC, Marin",,,CRO
-3,"Q ATMANE, Terence",,,FRA
-4,"ZHANG, Zhizhen",,WC,CHN
-5,"BONZI, Benjamin",,,FRA
-6,"MAROZSAN, Fabian",,,HUN
-7,"MULLER, Alexandre",,,FRA
-9,"DE MINAUR, Alex",3,,AUS
-11,"Q GOFFIN, David",,,BEL
-12,"RINDERKNECH, Arthur",,LL,FRA
-13,"SHANG, Juncheng",,WC,CHN
-14,"Q CAZAUX, Arthur",,,FRA
-15,"KECMANOVIC, Miomir",,,SRB
-16,"MENSIK, Jakub",7,,CZE
-18,"COBOLLI, Flavio",,,ITA
-19,"TIEN, Learner",,,USA
-20,"CERUNDOLO, Francisco",,,ARG
-21,"Q MANNARINO, Adrian",,,FRA
-22,"BUBLIK, Alexander",,,KAZ
-23,"MPETSHI PERRICARD, …",,,FRA
-24,"MUSETTI, Lorenzo",4,,ITA
-26,"NORRIE, Cameron",,,GBR
-27,"DAVIDOVICH FOKINA, Al…",,,ESP
-29,"MOUTET, Corentin",,,FRA
-30,"GRIEKSPOOR, Tallon",,,NED
-31,"SONEGO, Lorenzo",,,ITA
-32,"ZVEREV, Alexander",2,,GER
+25,September — 1 October 2025 | USD 4 016 050 | Hard,,,
+1,"SINNER, Jannik ITA J. Sinner1",1,,
+2,"CILIC, Marin CRO 62 62 J. Sinner1",,,
+3,"ATMANE, Terence FRA T. Atmane 64 57 60",,Qualifier,
+4,"ZHANG, Zhizhen CHN 64 62 J. Sinner1",,WC,
+5,"BONZI, Benjamin FRA F. Marozsan 61 75",,,
+6,"MAROZSAN, Fabian HUN 761 63 F. Marozsan",,,
+7,"MULLER, Alexandre FRA A. Muller 63 765",,,
+8,"KHACHANOV, Karen 46 765 64",5,,
+9,"DE MINAUR, Alex AUS A. de Minaur3",3,,
+10,"BU, Yunchaokete CHN 64 60 A. de Minaur3",,WC,
+11,"GOFFIN, David BEL A. Rinderknech 63 36 762",,Qualifier,
+12,"RINDERKNECH, Arthur FRA 64 36 64 A. de Minaur3",,LL,
+13,"SHANG, Juncheng CHN A. Cazaux 41",,WC,RET
+14,"CAZAUX, Arthur FRA 06 765 75 J. Mensik7",,Qualifier,
+15,"KECMANOVIC, Miomir SRB J. Mensik7 63 26 64",,,
+16,"MENSIK, Jakub CZE 75 64",7,,
+17,"RUBLEV, Andrey F. Cobolli",6,,
+18,"COBOLLI, Flavio ITA 763 63 L. Tien",,,
+19,"TIEN, Learner USA L. Tien 63 62",,,
+20,"CERUNDOLO, Francisco ARG 46 63 64 L. Tien",,,
+21,"MANNARINO, Adrian FRA A. Mannarino 46 63 30",,Qualifier,RET
+22,"BUBLIK, Alexander KAZ 63 62 L. Musetti4",,,
+23,"MPETSHI PERRICARD,  FRA L. Musetti4 63 63",,,
+24,"MUSETTI, Lorenzo ITA 763 674 64",4,,
+25,"MEDVEDEV, Daniil D. Medvedev8",8,,
+26,"NORRIE, Cameron GBR 63 64 D. Medvedev8",,,
+27,"DAVIDOVICH FOKINA, Al ESP A. Davidovich Fokina 63 63",,,
+28,"UGO CARABELLI, Camilo ARG 61 63 D. Medvedev8",,,
+29,"MOUTET, Corentin FRA C. Moutet 63 63",,,
+30,"GRIEKSPOOR, Tallon NED 64 75 A. Zverev2",,,
+31,"SONEGO, Lorenzo ITA A. Zverev2 75 36 63",,,
+32,"ZVEREV, Alexander GER 64 63",2,,
+5,"Khachanov, Karen 10",,,
+6,"Rublev, Andrey 14",,,
+7,"Mensik, Jakub 17",,,
+8,"Medvedev, Daniil 18",,,
