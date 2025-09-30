@@ -35,11 +35,21 @@ def clear_existing_draw_entries(tourney_id):
 import re
 
 def normalize_name(name: str) -> str:
-    # Eliminar puntuaciones/sufijos como "Medvedev8"
-    name = re.sub(r"\d+\s*$", "", name)
-    name = re.sub(r"[^\w\s,\.]", "", name)
+    # Eliminar puntuaciones, resultados y residuos al final
+    name = re.sub(r"\d{2,}.*$", "", name)  # quita resultados tipo '63 64 ...'
+    name = re.sub(r"\b\d+\b", "", name)  # quita números aislados
+    name = re.sub(r"[^\w\s,\.…]", "", name)  # limpia símbolos no deseados
     name = re.sub(r"\.{2,}", ".", name)  # normaliza puntos suspensivos
-    return name.strip()
+    name = re.sub(r"\s+", " ", name)  # normaliza espacios
+    name = name.strip()
+
+    # Quita lo que venga después de un segundo nombre potencial
+    if "," in name:
+        surname, rest = name.split(",", 1)
+        firstname = rest.strip().split()[0] if rest.strip() else ""
+        name = f"{surname.strip()}, {firstname}"
+
+    return name
 
 def resolve_player_id(player_name):
     if not player_name:
