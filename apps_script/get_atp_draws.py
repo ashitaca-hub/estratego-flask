@@ -19,11 +19,7 @@ def clean_name(name: str):
 
 def parse_line(line: str):
     tokens = line.strip().split()
-    if not tokens:
-        return None
-
-    # 🧹 Ignorar líneas que no empiezan con número
-    if not tokens[0].isdigit():
+    if not tokens or not tokens[0].isdigit():
         return None
 
     pos = int(tokens[0])
@@ -33,8 +29,8 @@ def parse_line(line: str):
     name_tokens = []
 
     idx = 1
-    # Detectar TAG y/o SEED en cualquier orden
-    for _ in range(2):  # como mucho 2 tokens (tag y seed)
+    # Leer tag y/o seed
+    for _ in range(2):
         if idx < len(tokens) and tokens[idx] in VALID_TAGS:
             tag = tokens[idx]
             idx += 1
@@ -42,21 +38,21 @@ def parse_line(line: str):
             seed = int(tokens[idx])
             idx += 1
 
-    # Buscar país al final (3 letras mayúsculas)
-    if len(tokens) >= idx + 2 and re.fullmatch(r"[A-Z]{3}", tokens[-1]):
-        country = tokens[-1]
-        name_tokens = tokens[idx:-1]
-    else:
-        name_tokens = tokens[idx:]
+    # Construir el nombre hasta detectar el país (3 letras mayúsculas)
+    while idx < len(tokens):
+        token = tokens[idx]
+        if re.fullmatch(r"[A-Z]{3}", token):
+            country = token
+            idx += 1
+            break
+        name_tokens.append(token)
+        idx += 1
 
-    # Buscar coma que separa apellido y nombre
-    if not any("," in token for token in name_tokens):
-        return None  # nombre mal formado
+    # Ignorar si no hay coma en el nombre (formato inválido)
+    if not any("," in tok for tok in name_tokens):
+        return None
 
     player_name = " ".join(name_tokens).replace(" ,", ",").strip()
-
-    # limpiar puntuaciones si se colaron (ej: “63 64” al final del nombre)
-    player_name = re.sub(r"\d[\d\s\-]+$", "", player_name).strip()
 
     return {
         "pos": pos,
