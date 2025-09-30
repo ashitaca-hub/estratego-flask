@@ -5,61 +5,58 @@ import pandas as pd
 import sys
 import tempfile
 import requests
-from pathlib import Path
+import re
 
-VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL"}
-
+VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q"}
+MAX_POS = 32  # Máxima posición a considerar (primera ronda)
 
 def parse_line(line: str):
     tokens = line.strip().split()
-    if not tokens or len(tokens) < 2:
-        print(f"[!] Línea descartada (muy corta): {line}")
-        return None
-
-    if not tokens[0].isdigit():
-        print(f"[!] Línea descartada (sin posición numérica): {line}")
+    if not tokens or not tokens[0].isdigit():
         return None
 
     pos = int(tokens[0])
+    if pos > MAX_POS:
+        return None
+
     seed = None
     tag = None
     player_name = None
     country = None
-
     idx = 1
 
-    # Caso: dos números al inicio (pos y seed)
-    if len(tokens) >= 3 and tokens[1].isdigit():
-        seed = int(tokens[1])
-        idx = 2
+    # Posible semilla
+    if idx < len(tokens) and tokens[idx].isdigit():
+        seed = int(tokens[idx])
+        idx += 1
 
-    # Caso: tag como segundo token
-    elif tokens[1] in VALID_TAGS or tokens[1] == "Q":
-        tag = tokens[1] if tokens[1] in VALID_TAGS else "Qualifier"
-        idx = 2
+    # Posible etiqueta
+    if idx < len(tokens) and tokens[idx] in VALID_TAGS:
+        tag = tokens[idx]
+        idx += 1
 
-    # Si hay un país al final
-    if len(tokens[-1]) == 3 and tokens[-1].isupper():
+    # País debe estar al final y tener 3 letras
+    if len(tokens) >= 2 and re.match(r"^[A-Z]{3}$", tokens[-1]):
         country = tokens[-1]
         name_tokens = tokens[idx:-1]
     else:
-        name_tokens = tokens[idx:]
-        print(f"[!] Línea sin país detectado: {line}")
+        return None
 
-    # Reconstruir nombre
-    player_name = " ".join(name_tokens).replace(" ,", ",").replace("…", "").strip()
-    if not player_name and not tag:
-        print(f"[!] Línea ignorada: {line}")
+    # Limpiar nombre del jugador
+    name = " ".join(name_tokens)
+    name = re.sub(r"[A-Z]\.\s\S+", "", name)  # eliminar posibles scores mal pegados
+    name = name.replace(" ,", ",").strip()
+
+    if not name and not tag:
         return None
 
     return {
         "pos": pos,
-        "player_name": player_name if player_name else None,
+        "player_name": name if name else None,
         "seed": seed,
         "tag": tag,
         "country": country,
     }
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -84,8 +81,12 @@ if __name__ == "__main__":
                 parsed = parse_line(line)
                 if parsed:
                     entries.append(parsed)
+                if len(entries) >= MAX_POS:
+                    break
+            if len(entries) >= MAX_POS:
+                break
 
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df["seed"] = df["seed"].astype("Int64")
     df.to_csv(out_csv_file, index=False)
-    print(f"✅ Generado CSV con {len(df)} filas: {out_csv_file}")
+    print(f"Generado CSV con {len(df)} filas: {out_csv_file}")
