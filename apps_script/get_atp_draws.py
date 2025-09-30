@@ -16,55 +16,56 @@ def clean_name(name: str):
     name = name.replace(" ,", ",").strip()
     return name
 
+
 def parse_line(line: str):
     tokens = line.strip().split()
-    if not tokens or not tokens[0].isdigit():
+    if not tokens:
+        return None
+
+    # 🧹 Ignorar líneas que no empiezan con número
+    if not tokens[0].isdigit():
         return None
 
     pos = int(tokens[0])
-    if pos > MAX_POS:
-        return None
-
-    seed = None
     tag = None
-    idx = 1
-
-    if idx < len(tokens) and tokens[idx].isdigit():
-        seed = int(tokens[idx])
-        idx += 1
-
-    if idx < len(tokens) and tokens[idx] in VALID_TAGS:
-        tag = tokens[idx]
-        idx += 1
-
-    # buscar país (el primer token válido de 3 letras al final)
+    seed = None
     country = None
-    country_idx = None
-    for i in range(len(tokens)-1, idx-1, -1):
-        if re.match(r"^[A-Z]{3}$", tokens[i]):
-            country = tokens[i]
-            country_idx = i
-            break
+    name_tokens = []
 
-    if country_idx is None:
-        # sin país válido, pero aún podemos intentar
-        country = None
-        name_tokens = tokens[idx:]
+    idx = 1
+    # Detectar TAG y/o SEED en cualquier orden
+    for _ in range(2):  # como mucho 2 tokens (tag y seed)
+        if idx < len(tokens) and tokens[idx] in VALID_TAGS:
+            tag = tokens[idx]
+            idx += 1
+        elif idx < len(tokens) and tokens[idx].isdigit():
+            seed = int(tokens[idx])
+            idx += 1
+
+    # Buscar país al final (3 letras mayúsculas)
+    if len(tokens) >= idx + 2 and re.fullmatch(r"[A-Z]{3}", tokens[-1]):
+        country = tokens[-1]
+        name_tokens = tokens[idx:-1]
     else:
-        name_tokens = tokens[idx:country_idx]
+        name_tokens = tokens[idx:]
 
-    name = " ".join(name_tokens)
-    name = clean_name(name)
-    if not name and not tag:
-        return None
+    # Buscar coma que separa apellido y nombre
+    if not any("," in token for token in name_tokens):
+        return None  # nombre mal formado
+
+    player_name = " ".join(name_tokens).replace(" ,", ",").strip()
+
+    # limpiar puntuaciones si se colaron (ej: “63 64” al final del nombre)
+    player_name = re.sub(r"\d[\d\s\-]+$", "", player_name).strip()
 
     return {
         "pos": pos,
-        "player_name": name if name else None,
+        "player_name": player_name if player_name else None,
         "seed": seed,
         "tag": tag,
         "country": country,
     }
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
