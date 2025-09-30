@@ -32,13 +32,24 @@ def clear_existing_draw_entries(tourney_id):
             res.raise_for_status()
 
 
+import re
+
+def normalize_name(name: str) -> str:
+    # Eliminar puntuaciones/sufijos como "Medvedev8"
+    name = re.sub(r"\d+\s*$", "", name)
+    name = re.sub(r"[^\w\s,\.]", "", name)
+    name = re.sub(r"\.{2,}", ".", name)  # normaliza puntos suspensivos
+    return name.strip()
+
 def resolve_player_id(player_name):
     if not player_name:
         return None
 
-    name_variants = [player_name.strip()]
-    if "," in player_name:
-        parts = player_name.split(",", 1)
+    name_clean = normalize_name(player_name)
+
+    name_variants = [name_clean]
+    if "," in name_clean:
+        parts = name_clean.split(",", 1)
         name_variants.append(f"{parts[1].strip()} {parts[0].strip()}")
 
     for variant in name_variants:
@@ -48,6 +59,7 @@ def resolve_player_id(player_name):
             return res.json()[0]["player_id"]
 
     return None
+
 
 
 def insert_draw_entry(tourney_id, row, player_id):
