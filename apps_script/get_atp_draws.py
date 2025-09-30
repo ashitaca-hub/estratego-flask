@@ -8,7 +8,13 @@ import requests
 import re
 
 VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q"}
-MAX_POS = 32  # Máxima posición a considerar (primera ronda)
+MAX_POS = 32
+
+def clean_name(name: str):
+    # eliminar puntuaciones de resultado al final, ej “41” o “63 30”
+    name = re.sub(r"\s+\d+(\s+\d+)*$", "", name)
+    name = name.replace(" ,", ",").strip()
+    return name
 
 def parse_line(line: str):
     tokens = line.strip().split()
@@ -21,32 +27,34 @@ def parse_line(line: str):
 
     seed = None
     tag = None
-    player_name = None
-    country = None
     idx = 1
 
-    # Posible semilla
     if idx < len(tokens) and tokens[idx].isdigit():
         seed = int(tokens[idx])
         idx += 1
 
-    # Posible etiqueta
     if idx < len(tokens) and tokens[idx] in VALID_TAGS:
         tag = tokens[idx]
         idx += 1
 
-    # País debe estar al final y tener 3 letras
-    if len(tokens) >= 2 and re.match(r"^[A-Z]{3}$", tokens[-1]):
-        country = tokens[-1]
-        name_tokens = tokens[idx:-1]
+    # buscar país (el primer token válido de 3 letras al final)
+    country = None
+    country_idx = None
+    for i in range(len(tokens)-1, idx-1, -1):
+        if re.match(r"^[A-Z]{3}$", tokens[i]):
+            country = tokens[i]
+            country_idx = i
+            break
+
+    if country_idx is None:
+        # sin país válido, pero aún podemos intentar
+        country = None
+        name_tokens = tokens[idx:]
     else:
-        return None
+        name_tokens = tokens[idx:country_idx]
 
-    # Limpiar nombre del jugador
     name = " ".join(name_tokens)
-    name = re.sub(r"[A-Z]\.\s\S+", "", name)  # eliminar posibles scores mal pegados
-    name = name.replace(" ,", ",").strip()
-
+    name = clean_name(name)
     if not name and not tag:
         return None
 
@@ -76,17 +84,16 @@ if __name__ == "__main__":
     entries = []
     with pdfplumber.open(tmp_path) as pdf:
         for page in pdf.pages:
-            lines = page.extract_text().split("\n")
+            txt = page.extract_text()
+            if not txt:
+                continue
+            lines = txt.split("\n")
             for line in lines:
                 parsed = parse_line(line)
                 if parsed:
                     entries.append(parsed)
-                if len(entries) >= MAX_POS:
-                    break
-            if len(entries) >= MAX_POS:
-                break
 
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df["seed"] = df["seed"].astype("Int64")
     df.to_csv(out_csv_file, index=False)
-    print(f"Generado CSV con {len(df)} filas: {out_csv_file}")
+    print(f"✅ Generado CSV con {len(df)} filas: {out_csv_file}")
