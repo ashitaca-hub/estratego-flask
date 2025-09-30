@@ -6,52 +6,55 @@ import sys
 import tempfile
 import requests
 import re
-from pathlib import Path
 
-VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL"}
+VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q"}
+MAX_POS = 32
+
+def clean_name(name: str):
+    # eliminar puntuaciones de resultado al final, ej “41” o “63 30”
+    name = re.sub(r"\s+\d+(\s+\d+)*$", "", name)
+    name = name.replace(" ,", ",").strip()
+    return name
 
 def parse_line(line: str):
-    line = line.strip()
-    if not line:
-        return None
-
-    tokens = line.split()
+    tokens = line.strip().split()
     if not tokens or not tokens[0].isdigit():
         return None
 
-    try:
-        pos = int(tokens[0])
-    except ValueError:
+    pos = int(tokens[0])
+    if pos > MAX_POS:
         return None
 
     seed = None
     tag = None
-    country = None
-    player_name = None
-
     idx = 1
 
-    if len(tokens) > idx and tokens[idx].isdigit():
+    if idx < len(tokens) and tokens[idx].isdigit():
         seed = int(tokens[idx])
         idx += 1
 
-    if len(tokens) > idx and tokens[idx] in VALID_TAGS:
+    if idx < len(tokens) and tokens[idx] in VALID_TAGS:
         tag = tokens[idx]
         idx += 1
 
-    remaining = tokens[idx:]
+    # buscar país (el primer token válido de 3 letras al final)
+    country = None
+    country_idx = None
+    for i in range(len(tokens)-1, idx-1, -1):
+        if re.match(r"^[A-Z]{3}$", tokens[i]):
+            country = tokens[i]
+            country_idx = i
+            break
 
-    if remaining and re.fullmatch(r"[A-Z]{3}", remaining[-1]):
-        country = remaining[-1]
-        name_tokens = remaining[:-1]
+    if country_idx is None:
+        # sin país válido, pero aún podemos intentar
+        country = None
+        name_tokens = tokens[idx:]
     else:
-        name_tokens = remaining
+        name_tokens = tokens[idx:country_idx]
 
-    name = " ".join(name_tokens).replace(" ,", ",").strip()
-    name = name.replace("…", "").replace("..", "").strip()
-    name = re.sub(r"\([^)]*\)", "", name).strip()
-    name = re.sub(r"\d{2,}.*", "", name).strip()
-
+    name = " ".join(name_tokens)
+    name = clean_name(name)
     if not name and not tag:
         return None
 
@@ -81,7 +84,10 @@ if __name__ == "__main__":
     entries = []
     with pdfplumber.open(tmp_path) as pdf:
         for page in pdf.pages:
-            lines = page.extract_text().split("\n")
+            txt = page.extract_text()
+            if not txt:
+                continue
+            lines = txt.split("\n")
             for line in lines:
                 parsed = parse_line(line)
                 if parsed:
@@ -90,4 +96,4 @@ if __name__ == "__main__":
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df["seed"] = df["seed"].astype("Int64")
     df.to_csv(out_csv_file, index=False)
-    print(f"Generado CSV con {len(df)} filas: {out_csv_file}")
+    print(f"✅ Generado CSV con {len(df)} filas: {out_csv_file}")
