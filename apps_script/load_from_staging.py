@@ -63,7 +63,7 @@ def resolve_player_id(player_name):
         name_variants.append(f"{parts[1].strip()} {parts[0].strip()}")
 
     for variant in name_variants:
-        url = f"{SUPABASE_URL}/rest/v1/players_dim?name=ilike.{variant}"
+        url = f"{SUPABASE_URL}/rest/v1/players_min?select=player_id&name=ilike.{variant}"
         res = requests.get(url, headers=HEADERS)
         if res.ok and len(res.json()) == 1:
             return res.json()[0]["player_id"]
