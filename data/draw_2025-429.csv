@@ -1,5 +1,6 @@
 pos,player_name,seed,tag,country
 1,"RUNE, Holger",1,,DEN
+2,,,BYE,
 3,"DE JONG, Jesper",,,NED
 4,"FUCSOVICS, Marton",,,HUN
 5,"LAJAL, Mark",,Q,EST
@@ -7,6 +8,7 @@ pos,player_name,seed,tag,country
 7,"KECMANOVIC, Miomir",,,SRB
 8,"MULLER, Alexandre",6,,FRA
 9,"HUMBERT, Ugo",4,,FRA
+10,,,BYE,
 11,"BERRETTINI, Matteo",,,ITA
 12,"ZEPPIERI, Giulio",,Q,ITA
 13,"FERY, Arthur",,Q,GBR
