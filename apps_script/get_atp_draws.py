@@ -1,5 +1,3 @@
-# apps_script/get_atp_draws.py
-
 import pdfplumber
 import pandas as pd
 import sys
@@ -11,11 +9,9 @@ VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q"}
 MAX_POS = 32
 
 def clean_name(name: str):
-    # eliminar puntuaciones de resultado al final, ej “41” o “63 30”
     name = re.sub(r"\s+\d+(\s+\d+)*$", "", name)
     name = name.replace(" ,", ",").strip()
     return name
-
 
 def parse_line(line: str):
     tokens = line.strip().split()
@@ -29,7 +25,6 @@ def parse_line(line: str):
     name_tokens = []
 
     idx = 1
-    # Leer tag y/o seed
     for _ in range(2):
         if idx < len(tokens) and tokens[idx] in VALID_TAGS:
             tag = tokens[idx]
@@ -38,7 +33,6 @@ def parse_line(line: str):
             seed = int(tokens[idx])
             idx += 1
 
-    # Construir el nombre hasta detectar el país (3 letras mayúsculas)
     while idx < len(tokens):
         token = tokens[idx]
         if re.fullmatch(r"[A-Z]{3}", token):
@@ -48,7 +42,16 @@ def parse_line(line: str):
         name_tokens.append(token)
         idx += 1
 
-    # Ignorar si no hay coma en el nombre (formato inválido)
+    # Incluir entradas BYE incluso si no tienen nombre
+    if tag == "BYE":
+        return {
+            "pos": pos,
+            "player_name": None,
+            "seed": seed,
+            "tag": tag,
+            "country": None,
+        }
+
     if not any("," in tok for tok in name_tokens):
         return None
 
@@ -61,7 +64,6 @@ def parse_line(line: str):
         "tag": tag,
         "country": country,
     }
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
