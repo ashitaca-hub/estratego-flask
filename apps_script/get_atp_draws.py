@@ -42,7 +42,7 @@ def parse_line(line: str):
         name_tokens.append(token)
         idx += 1
 
-    # Incluir entradas BYE incluso si no tienen nombre
+    # Incluir BYE aunque no tenga nombre ni coma
     if tag == "BYE":
         return {
             "pos": pos,
@@ -52,6 +52,7 @@ def parse_line(line: str):
             "country": None,
         }
 
+    # Ignorar si no hay coma en el nombre (formato inválido)
     if not any("," in tok for tok in name_tokens):
         return None
 
@@ -95,4 +96,4 @@ if __name__ == "__main__":
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df["seed"] = df["seed"].astype("Int64")
     df.to_csv(out_csv_file, index=False)
-    print(f"✅ Generado CSV con {len(df)} filas: {out_csv_file}")
+    print(f"\u2705 Generado CSV con {len(df)} filas: {out_csv_file}")
