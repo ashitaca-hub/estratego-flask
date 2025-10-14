@@ -1,4 +1,4 @@
-import pdfplumber
+""import pdfplumber
 import pandas as pd
 import sys
 import tempfile
@@ -9,7 +9,6 @@ VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q"}
 MAX_POS = 32
 
 def clean_name(name: str):
-    # eliminar puntuaciones de resultado al final, ej “41” o “63 30”
     name = re.sub(r"\s+\d+(\s+\d+)*$", "", name)
     name = name.replace(" ,", ",").strip()
     return name
@@ -20,13 +19,21 @@ def parse_line(line: str):
         return None
 
     pos = int(tokens[0])
+    if len(tokens) == 2 and tokens[1].lower() == "bye":
+        return {
+            "pos": pos,
+            "player_name": None,
+            "seed": None,
+            "tag": "BYE",
+            "country": None
+        }
+
     tag = None
     seed = None
     country = None
     name_tokens = []
 
     idx = 1
-    # Leer tag y/o seed
     for _ in range(2):
         if idx < len(tokens) and tokens[idx] in VALID_TAGS:
             tag = tokens[idx]
@@ -35,7 +42,6 @@ def parse_line(line: str):
             seed = int(tokens[idx])
             idx += 1
 
-    # Construir el nombre hasta detectar el país (3 letras mayúsculas)
     while idx < len(tokens):
         token = tokens[idx]
         if re.fullmatch(r"[A-Z]{3}", token):
@@ -45,17 +51,6 @@ def parse_line(line: str):
         name_tokens.append(token)
         idx += 1
 
-    # Aceptar "Bye" explícitamente aunque no tenga nombre ni país
-    if len(name_tokens) == 1 and name_tokens[0].lower() == "bye":
-        return {
-            "pos": pos,
-            "player_name": None,
-            "seed": None,
-            "tag": "BYE",
-            "country": None,
-        }
-
-    # Ignorar si no hay coma en el nombre (formato inválido)
     if not any("," in tok for tok in name_tokens):
         return None
 
