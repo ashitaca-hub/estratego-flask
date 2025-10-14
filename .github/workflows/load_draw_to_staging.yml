@@ -25,4 +25,4 @@ jobs:
 
       - name: Load CSV to staging
         run: |
-          python apps_script/load_draw_to_staging.py data/draw_329.csv
+          python apps_script/load_draw_to_staging.py data/draw_2025-429.csv
