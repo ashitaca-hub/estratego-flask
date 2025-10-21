@@ -13,16 +13,16 @@ pos,player_name,seed,tag,country
 13,"BROOKSBY, Jenson",,PR,USA
 14,"MULLER, Alexandre",,,FRA
 15,"SONEGO, Lorenzo",,,ITA
-16,"DAVIDOVICH FOKINA, Al…",8,,ESP
+16,"DAVIDOVICH FOKINA, Alejandro",8,,ESP
 17,"MENSIK, Jakub",7,,CZE
 18,"BERNET, Henry",,WC,SUI
-19,"MPETSHI PERRICARD, …",,,FRA
+19,"MPETSHI PERRICARD, Giovanni",,,FRA
 20,"FONSECA, Joao",,,BRA
-21,"SE COLLIGNON, Raphael",,,BEL
+21,"COLLIGNON, Raphael",,,BEL
 22,"RINDERKNECH, Arthur",,,FRA
 23,"GIRON, Marcos",,,USA
 24,"SHAPOVALOV, Denis",9,,CAN
-25,"AUGER-ALIASSIME, Felix",5,,CAN
+25,"AUGER ALIASSIME, Felix",5,,CAN
 26,"DIALLO, Gabriel",,,CAN
 27,"GOFFIN, David",,LL,BEL
 28,"CILIC, Marin",,Q,CRO
@@ -30,7 +30,3 @@ pos,player_name,seed,tag,country
 30,"MUNAR, Jaume",,,ESP
 31,"MAJCHRZAK, Kamil",,Q,POL
 32,"SHELTON, Ben",2,,USA
-5,"Auger-Aliassime, Felix 13",,,
-6,"Lehecka, Jiri 17",,,
-7,"Mensik, Jakub 19",,,
-8,"Davidovich Fokina, Alej… 20",,,
