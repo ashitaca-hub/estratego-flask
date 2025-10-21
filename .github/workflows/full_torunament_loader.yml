@@ -37,9 +37,15 @@ jobs:
         run: |
           python apps_script/upsert_tournament.py "${{ github.event.inputs.tourney_id }}"
 
-      - name: Step 2 - Download PDF and generate CSV
+      - name: Step 2 - Download PDF and generate CSV (if not exists)
         run: |
-          python apps_script/get_atp_draws.py "${{ github.event.inputs.pdf_url }}" "data/draw_${{ github.event.inputs.tourney_id }}.csv"
+          FILE="data/draw_${{ github.event.inputs.tourney_id }}.csv"
+          if [ -f "$FILE" ]; then
+            echo "✅ CSV already exists: $FILE — skipping generation."
+          else
+            echo "⬇️ Generating CSV: $FILE"
+            python apps_script/get_atp_draws.py "${{ github.event.inputs.pdf_url }}" "$FILE"
+          fi
 
       - name: Commit CSV to repo
         run: |
