@@ -46,7 +46,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           echo "Cargando data/2025.csv"
-          python scripts/load_matches_full_improved.py --csv data/2025.csv
+          python apps_script/load_matches_full_improved.py --csv data/2025.csv
 
       - name: Analyze table and create indexes
         env:
