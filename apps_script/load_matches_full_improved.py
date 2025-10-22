@@ -108,12 +108,22 @@ def upsert_players(cur, rows):
 def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
     m_rows, skipped = [], 0
     ignored = []
+    snapshot_rows = []
+
     for r in rows:
         try:
             tid = r.get('tourney_id')
             mnum = as_int(r.get('match_num'))
+            tdate = r.get("tourney_date")
+            tyear = tdate[:4] if tdate else "0000"
+
             wid = resolve_player_id(r.get("winner_id"), r.get("winner_name"), name_id_map, cur)
             lid = resolve_player_id(r.get("loser_id"), r.get("loser_name"), name_id_map, cur)
+            w_rank = as_int(r.get("winner_rank"))
+            w_rank_pts = as_int(r.get("winner_rank_points"))
+            l_rank = as_int(r.get("loser_rank"))
+            l_rank_pts = as_int(r.get("loser_rank_points"))
+
             reason = None
             if not tid:
                 reason = "tourney_id missing"
@@ -129,7 +139,7 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
 
             m_rows.append((
                 tid, r.get("tourney_name"), norm_surface(r.get("surface")), as_int(r.get("draw_size")),
-                r.get("tourney_level"), r.get("tourney_date")[:4] + '-' + r.get("tourney_date")[4:6] + '-' + r.get("tourney_date")[6:],
+                r.get("tourney_level"), tyear + '-' + tdate[4:6] + '-' + tdate[6:],
                 mnum, wid, r.get("winner_seed"), r.get("winner_entry"), r.get("winner_name"), norm_hand(r.get("winner_hand")),
                 as_int(r.get("winner_ht")), r.get("winner_ioc"), as_float(r.get("winner_age")),
                 lid, r.get("loser_seed"), r.get("loser_entry"), r.get("loser_name"), norm_hand(r.get("loser_hand")),
@@ -139,10 +149,15 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
                 as_int(r.get("w_1stWon")), as_int(r.get("w_2ndWon")), as_int(r.get("w_SvGms")), as_int(r.get("w_bpSaved")), as_int(r.get("w_bpFaced")),
                 as_int(r.get("l_ace")), as_int(r.get("l_df")), as_int(r.get("l_svpt")), as_int(r.get("l_1stIn")),
                 as_int(r.get("l_1stWon")), as_int(r.get("l_2ndWon")), as_int(r.get("l_SvGms")), as_int(r.get("l_bpSaved")), as_int(r.get("l_bpFaced")),
-                as_int(r.get("winner_rank")), as_int(r.get("winner_rank_points")),
-                as_int(r.get("loser_rank")), as_int(r.get("loser_rank_points")),
-                r.get("tourney_date"), tid, mnum, wid, lid
+                w_rank, w_rank_pts, l_rank, l_rank_pts
             ))
+
+            match_id = f"{tyear}_{tid}_{mnum or 0}"
+            if wid and w_rank is not None:
+                snapshot_rows.append((wid, match_id, w_rank, w_rank_pts))
+            if lid and l_rank is not None:
+                snapshot_rows.append((lid, match_id, l_rank, l_rank_pts))
+
         except Exception as e:
             r["reason"] = f"unknown error: {str(e)}"
             ignored.append(r)
@@ -161,16 +176,7 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
             )
             VALUES %s
             ON CONFLICT DO NOTHING;
-        """, [r[:-5] for r in m_rows], page_size=1000)
-
-        snapshot_rows = []
-        for r in m_rows:
-            year = r[-5][:4]
-            match_id = f"{year}_{r[-4]}_{r[-3] or 0}"
-            if r[-2] and r[50] is not None:
-                snapshot_rows.append((r[-2], match_id, r[50], r[51]))
-            if r[-1] and r[52] is not None:
-                snapshot_rows.append((r[-1], match_id, r[52], r[53]))
+        """, m_rows, page_size=1000)
 
         if snapshot_rows:
             execute_values(cur, f"""
