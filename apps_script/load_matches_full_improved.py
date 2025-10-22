@@ -3,8 +3,11 @@ import argparse, csv, os
 import logging
 import psycopg2
 from psycopg2.extras import execute_values
+from datetime import datetime
 
 DDL_SCHEMA = "estratego_v1"
+
+IGNORED_OUTPUT = "ignored_matches.csv"
 
 def connect(url):
     return psycopg2.connect(url)
@@ -106,15 +109,26 @@ def upsert_players(cur, rows):
 
 def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
     m_rows, skipped = [], 0
+    ignored = []
     for r in rows:
         try:
             tid = r.get('tourney_id')
-            mnum = as_int(r.get('match_num'))
+            mnum = as_int(r.get('match_num'))  # ya no obligatorio
             wid = resolve_player_id(r.get("winner_id"), r.get("winner_name"), name_id_map, cur)
             lid = resolve_player_id(r.get("loser_id"), r.get("loser_name"), name_id_map, cur)
-            if not tid or mnum is None or wid is None or lid is None:
+            reason = None
+            if not tid:
+                reason = "tourney_id missing"
+            elif wid is None:
+                reason = "winner_id not resolved"
+            elif lid is None:
+                reason = "loser_id not resolved"
+            if reason:
+                r["reason"] = reason
+                ignored.append(r)
                 skipped += 1
                 continue
+
             m_rows.append((
                 tid, r.get("tourney_name"), norm_surface(r.get("surface")), as_int(r.get("draw_size")),
                 r.get("tourney_level"), r.get("tourney_date")[:4] + '-' + r.get("tourney_date")[4:6] + '-' + r.get("tourney_date")[6:],
@@ -131,7 +145,8 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
                 as_int(r.get("loser_rank")), as_int(r.get("loser_rank_points"))
             ))
         except Exception as e:
-            logging.error(f"Error procesando fila: {e}")
+            r["reason"] = f"unknown error: {str(e)}"
+            ignored.append(r)
             skipped += 1
 
     if not dry_run and m_rows:
@@ -148,6 +163,13 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
             VALUES %s
             ON CONFLICT DO NOTHING;
         """, m_rows, page_size=1000)
+
+    if ignored:
+        fieldnames = list(ignored[0].keys())
+        with open(IGNORED_OUTPUT, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(ignored)
 
     return len(m_rows), skipped
 
@@ -184,7 +206,7 @@ def main():
                         skipped += skip
                 print(f"✅ {inserted} partidos insertados desde {args.csv}")
                 if skipped:
-                    print(f"⚠️  {skipped} partidos ignorados por datos incompletos")
+                    print(f"⚠️  {skipped} partidos ignorados por datos incompletos (ver {IGNORED_OUTPUT})")
     finally:
         conn.close()
 
