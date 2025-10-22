@@ -140,7 +140,8 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
                 as_int(r.get("l_ace")), as_int(r.get("l_df")), as_int(r.get("l_svpt")), as_int(r.get("l_1stIn")),
                 as_int(r.get("l_1stWon")), as_int(r.get("l_2ndWon")), as_int(r.get("l_SvGms")), as_int(r.get("l_bpSaved")), as_int(r.get("l_bpFaced")),
                 as_int(r.get("winner_rank")), as_int(r.get("winner_rank_points")),
-                as_int(r.get("loser_rank")), as_int(r.get("loser_rank_points"))
+                as_int(r.get("loser_rank")), as_int(r.get("loser_rank_points")),
+                r.get("tourney_date"), tid, mnum, wid, lid
             ))
         except Exception as e:
             r["reason"] = f"unknown error: {str(e)}"
@@ -160,16 +161,16 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
             )
             VALUES %s
             ON CONFLICT DO NOTHING;
-        """, m_rows, page_size=1000)
+        """, [r[:-5] for r in m_rows], page_size=1000)
 
         snapshot_rows = []
         for r in m_rows:
-            year = r[5][:4]
-            match_id = f"{year}_{r[0]}_{r[6] or 0}"
-            if r[7] and r[50] is not None:
-                snapshot_rows.append((r[7], match_id, r[50], r[51]))
-            if r[15] and r[52] is not None:
-                snapshot_rows.append((r[15], match_id, r[52], r[53]))
+            year = r[-5][:4]
+            match_id = f"{year}_{r[-4]}_{r[-3] or 0}"
+            if r[-2] and r[50] is not None:
+                snapshot_rows.append((r[-2], match_id, r[50], r[51]))
+            if r[-1] and r[52] is not None:
+                snapshot_rows.append((r[-1], match_id, r[52], r[53]))
 
         if snapshot_rows:
             execute_values(cur, f"""
@@ -228,4 +229,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
