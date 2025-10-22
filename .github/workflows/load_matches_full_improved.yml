@@ -1,0 +1,77 @@
+name: Load Matches Full 2015-2024
+
+on:
+  workflow_dispatch:
+
+jobs:
+  load_history:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir psycopg2-binary
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client
+
+      - name: Check DATABASE_URL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Missing DATABASE_URL secret"
+            exit 1
+          fi
+
+      - name: Dry run (validación sin insertar)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          ls -1 data/atp_matches_20*.csv > /tmp/filelist.txt
+
+          while IFS= read -r f; do
+            echo "Validando $f (dry run)"
+            python scripts/load_matches_full.py --csv "$f" --dry-run
+          done < /tmp/filelist.txt
+
+      - name: Load CSVs into matches_full
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            echo "Cargando $f"
+            python scripts/load_matches_full_improved.py --csv "$f"
+          done < /tmp/filelist.txt
+
+      - name: Analyze table and create indexes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET search_path TO estratego_v1, public; ANALYZE estratego_v1.matches_full;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_winner ON estratego_v1.matches_full(winner_id);"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_loser ON estratego_v1.matches_full(loser_id);"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_tourney_date ON estratego_v1.matches_full(tourney_date);"
+
+      - name: Check unresolved mappings
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "Revisando correspondencias no resueltas en player_name_map..."
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\
+            SELECT * FROM estratego_v1.player_name_map
+            WHERE resolved_player_id IS NULL
+            ORDER BY csv_id;
+          " || echo "⚠️  No se pudieron resolver algunos jugadores. Revisa manualmente."
