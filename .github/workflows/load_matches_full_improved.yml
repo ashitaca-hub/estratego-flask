@@ -39,7 +39,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           echo "Validando data/2025.csv (dry run)"
-          python scripts/load_matches_full_improved.py --csv data/2025.csv --dry-run
+          python apps_script/load_matches_full_improved.py --csv data/2025.csv --dry-run
 
       - name: Load CSV into matches_full
         env:
