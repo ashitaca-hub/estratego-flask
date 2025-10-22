@@ -67,3 +67,10 @@ jobs:
             WHERE resolved_player_id IS NULL
             ORDER BY csv_id;
           " || echo "⚠️  No se pudieron resolver algunos jugadores. Revisa manualmente."
+
+      - name: Upload ignored matches
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ignored-matches-2025
+          path: ignored_matches.csv
