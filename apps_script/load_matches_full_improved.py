@@ -16,7 +16,6 @@ def as_int(x):
     try:
         return int(float(s))
     except (ValueError, TypeError):
-        logging.warning("Unable to convert %r to int", s)
         return None
 
 def as_float(x):
@@ -45,7 +44,8 @@ def load_player_name_id_map(cur):
     cur.execute(f"SELECT player_id, name FROM {DDL_SCHEMA}.players")
     return {name.strip(): pid for pid, name in cur.fetchall() if pid is not None and name}
 
-def resolve_from_mapping(cur, csv_id, name):
+def resolve_from_mapping(cur, raw_id, name):
+    csv_id = str(raw_id).strip()
     cur.execute(f"""
         SELECT resolved_player_id FROM {DDL_SCHEMA}.player_name_map
         WHERE csv_id = %s
@@ -58,7 +58,6 @@ def resolve_from_mapping(cur, csv_id, name):
     row = cur.fetchone()
     if row:
         resolved_id = row[0]
-        # guardar mapeo
         cur.execute(f"""
             INSERT INTO {DDL_SCHEMA}.player_name_map (csv_id, player_name, resolved_player_id)
             VALUES (%s, %s, %s)
@@ -68,17 +67,21 @@ def resolve_from_mapping(cur, csv_id, name):
     return None
 
 def resolve_player_id(raw_id, name, name_id_map, cur):
-    pid = as_int(raw_id)
-    if pid is not None and pid in name_id_map.values():
-        return pid
-    return resolve_from_mapping(cur, pid, name)
+    try:
+        int_id = int(str(raw_id))
+        if int_id in name_id_map.values():
+            return int_id
+    except:
+        pass
+    return resolve_from_mapping(cur, raw_id, name)
 
 def upsert_players(cur, rows):
     seen = set()
     batch = []
     for r in rows:
         for side in ("winner", "loser"):
-            pid = as_int(r.get(f"{side}_id"))
+            raw_id = r.get(f"{side}_id")
+            pid = resolve_from_mapping(cur, raw_id, r.get(f"{side}_name"))
             if pid is None or pid in seen:
                 continue
             seen.add(pid)
