@@ -6,7 +6,6 @@ from psycopg2.extras import execute_values
 from datetime import datetime
 
 DDL_SCHEMA = "estratego_v1"
-
 IGNORED_OUTPUT = "ignored_matches.csv"
 
 def connect(url):
@@ -56,7 +55,6 @@ def resolve_from_mapping(cur, raw_id, name):
     row = cur.fetchone()
     if row:
         return row[0]
-    # intento de resolver por nombre si no existe mapping
     cur.execute(f"SELECT player_id FROM {DDL_SCHEMA}.players WHERE lower(name) = lower(%s)", (name.strip(),))
     row = cur.fetchone()
     if row:
@@ -113,7 +111,7 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
     for r in rows:
         try:
             tid = r.get('tourney_id')
-            mnum = as_int(r.get('match_num'))  # ya no obligatorio
+            mnum = as_int(r.get('match_num'))
             wid = resolve_player_id(r.get("winner_id"), r.get("winner_name"), name_id_map, cur)
             lid = resolve_player_id(r.get("loser_id"), r.get("loser_name"), name_id_map, cur)
             reason = None
@@ -164,6 +162,24 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
             ON CONFLICT DO NOTHING;
         """, m_rows, page_size=1000)
 
+        snapshot_rows = []
+        for r in m_rows:
+            year = r[5][:4]
+            match_id = f"{year}_{r[0]}_{r[6] or 0}"
+            if r[7] and r[50] is not None:
+                snapshot_rows.append((r[7], match_id, r[50], r[51]))
+            if r[15] and r[52] is not None:
+                snapshot_rows.append((r[15], match_id, r[52], r[53]))
+
+        if snapshot_rows:
+            execute_values(cur, f"""
+                INSERT INTO {DDL_SCHEMA}.rankings_snapshot (player_id, match_id, rank, rank_points)
+                VALUES %s
+                ON CONFLICT (player_id, match_id) DO UPDATE SET
+                    rank = EXCLUDED.rank,
+                    rank_points = EXCLUDED.rank_points
+            """, snapshot_rows)
+
     if ignored:
         fieldnames = list(ignored[0].keys())
         with open(IGNORED_OUTPUT, "w", newline="", encoding="utf-8") as f:
@@ -212,3 +228,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
