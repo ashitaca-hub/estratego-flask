@@ -106,24 +106,18 @@ def upsert_players(cur, rows):
         execute_values(cur, sql, batch, page_size=1000)
 
 def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
-    m_rows, skipped = [], 0
+    m_rows, snapshot_rows, skipped = [], [], 0
     ignored = []
-    snapshot_rows = []
-
     for r in rows:
         try:
             tid = r.get('tourney_id')
             mnum = as_int(r.get('match_num'))
-            tdate = r.get("tourney_date")
-            tyear = tdate[:4] if tdate else "0000"
-
             wid = resolve_player_id(r.get("winner_id"), r.get("winner_name"), name_id_map, cur)
             lid = resolve_player_id(r.get("loser_id"), r.get("loser_name"), name_id_map, cur)
             w_rank = as_int(r.get("winner_rank"))
             w_rank_pts = as_int(r.get("winner_rank_points"))
             l_rank = as_int(r.get("loser_rank"))
             l_rank_pts = as_int(r.get("loser_rank_points"))
-
             reason = None
             if not tid:
                 reason = "tourney_id missing"
@@ -137,9 +131,15 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
                 skipped += 1
                 continue
 
+            date_str = r.get("tourney_date")
+            if not date_str or len(date_str) < 8:
+                continue
+            tdate = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            match_id = f"{date_str[:4]}_{tid}_{mnum or '0'}"
+
             m_rows.append((
                 tid, r.get("tourney_name"), norm_surface(r.get("surface")), as_int(r.get("draw_size")),
-                r.get("tourney_level"), tyear + '-' + tdate[4:6] + '-' + tdate[6:],
+                r.get("tourney_level"), tdate,
                 mnum, wid, r.get("winner_seed"), r.get("winner_entry"), r.get("winner_name"), norm_hand(r.get("winner_hand")),
                 as_int(r.get("winner_ht")), r.get("winner_ioc"), as_float(r.get("winner_age")),
                 lid, r.get("loser_seed"), r.get("loser_entry"), r.get("loser_name"), norm_hand(r.get("loser_hand")),
@@ -152,17 +152,15 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
                 w_rank, w_rank_pts, l_rank, l_rank_pts
             ))
 
-            match_id = f"{tyear}_{tid}_{mnum or 0}"
             if wid and w_rank is not None:
-				snapshot_rows.append((wid, match_id, w_rank, w_rank_pts, 'winner'))
-				if lid and l_rank is not None:
-				snapshot_rows.append((lid, match_id, l_rank, l_rank_pts, 'loser'))
+                snapshot_rows.append((wid, match_id, w_rank, w_rank_pts, 'winner'))
+            if lid and l_rank is not None:
+                snapshot_rows.append((lid, match_id, l_rank, l_rank_pts, 'loser'))
 
-
-				except Exception as e:
-				r["reason"] = f"unknown error: {str(e)}"
-				ignored.append(r)
-				skipped += 1
+        except Exception as e:
+            r["reason"] = f"unknown error: {str(e)}"
+            ignored.append(r)
+            skipped += 1
 
     if not dry_run and m_rows:
         execute_values(cur, f"""
@@ -181,12 +179,11 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
 
         if snapshot_rows:
             execute_values(cur, f"""
-                INSERT INTO {DDL_SCHEMA}.rankings_snapshot (player_id, match_id, rank, rank_points)
-                VALUES %s
-                ON CONFLICT (player_id, match_id) DO UPDATE SET
-                    rank = EXCLUDED.rank,
-                    rank_points = EXCLUDED.rank_points
-            """, snapshot_rows)
+                INSERT INTO {DDL_SCHEMA}.rankings_snapshot (
+                    player_id, match_id, rank, rank_points, side
+                ) VALUES %s
+                ON CONFLICT DO NOTHING;
+            """, snapshot_rows, page_size=1000)
 
     if ignored:
         fieldnames = list(ignored[0].keys())
@@ -236,3 +233,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
