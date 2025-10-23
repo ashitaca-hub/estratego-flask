@@ -154,9 +154,9 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
 
             match_id = f"{tyear}_{tid}_{mnum or 0}"
             if wid and w_rank is not None:
-                snapshot_rows.append((wid, match_id, w_rank, w_rank_pts))
+                snapshot_rows.append((wid, match_id, w_rank, w_rank_pts, 'W'))
             if lid and l_rank is not None:
-                snapshot_rows.append((lid, match_id, l_rank, l_rank_pts))
+                snapshot_rows.append((lid, match_id, l_rank, l_rank_pts, 'L'))
 
         except Exception as e:
             r["reason"] = f"unknown error: {str(e)}"
@@ -180,11 +180,12 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
 
         if snapshot_rows:
             execute_values(cur, f"""
-                INSERT INTO {DDL_SCHEMA}.rankings_snapshot (player_id, match_id, rank, rank_points)
+                INSERT INTO {DDL_SCHEMA}.rankings_snapshot (player_id, match_id, rank, rank_points, side)
                 VALUES %s
                 ON CONFLICT (player_id, match_id) DO UPDATE SET
                     rank = EXCLUDED.rank,
-                    rank_points = EXCLUDED.rank_points
+                    rank_points = EXCLUDED.rank_points,
+                    side = EXCLUDED.side
             """, snapshot_rows)
 
     if ignored:
