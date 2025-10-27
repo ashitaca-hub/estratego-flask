@@ -7,7 +7,7 @@ pos,player_name,seed,tag,country
 6,"RINDERKNECH, Arthur",,WC,FRA
 7,"VACHEROT, Valentin",,WC,MON
 8,"LEHECKA, Jiri",14,,CZE
-9,"AUGER-ALIASSIME, Felix",9,,CAN
+9,"AUGER ALIASSIME, Felix",9,,CAN
 10,"COMESANA, Francisco",,Q,ARG
 11,"MULLER, Alexandre",,,FRA
 12,"NAKASHIMA, Brandon",,,USA
@@ -28,22 +28,25 @@ pos,player_name,seed,tag,country
 28,"FONSECA, Joao",,,BRA
 29,"GRIEKSPOOR, Tallon",,,NED
 30,"DIALLO, Gabriel",,,CAN
+31,,,BYE,
 32,"DE MINAUR, Alex",6,,AUS
 33,"MUSETTI, Lorenzo",7,,ITA
 34,,,BYE,
 35,"SONEGO, Lorenzo",,,ITA
 36,"KORDA, Sebastian",,Q,USA
-37,"MPETSHI PERRICARD, …",,,FRA
+37,"MPETSHI PERRICARD, Giovanni",,,FRA
 38,"DIMITROV, Grigor",,,BUL
 39,"MUNAR, Jaume",,,ESP
 40,"MEDVEDEV, Daniil",11,,
-41,"DAVIDOVICH FOKINA, Al…",15,,ESP
+41,"DAVIDOVICH FOKINA, Alejandro",15,,ESP
 42,"HUMBERT, Ugo",,,FRA
 43,"DARDERI, Luciano",,,ITA
 44,"CAZAUX, Arthur",,WC,FRA
-45,"ETCHEVERRY, Tomas Ma…",,Q,ARG
+45,"ETCHEVERRY, Tomas Martin",,Q,ARG
+46,"UGO CARABELLI, Camilo",,,ARG
+47,,,BYE,
 48,"ZVEREV, Alexander",3,,GER
-49,"SHELTON, Ben",5,,USA
+49,"SHELTON, Benjamin",5,,USA
 50,,,BYE,
 51,"COBOLLI, Flavio",,,ITA
 52,"MACHAC, Tomas",,,CZE
@@ -57,8 +60,5 @@ pos,player_name,seed,tag,country
 60,"KECMANOVIC, Miomir",,,SRB
 61,"MICHELSEN, Alex",,,USA
 62,"BERGS, Zizou",,,BEL
+63,,,BYE,
 64,"SINNER, Jannik",2,,ITA
-5,"Shelton, Ben 6 13 Bublik, Alexander 16",,,
-6,"de Minaur, Alex 7 14 Lehecka, Jiri 17",,,
-7,"Musetti, Lorenzo 8 15 Davidovich Fokina, Alej… 18",,,
-8,"Ruud, Casper 11 16 Mensik, Jakub 19",,,
