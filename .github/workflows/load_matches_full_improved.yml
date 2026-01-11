@@ -1,4 +1,4 @@
-name: Load Matches Full 2025
+name: Load Matches Full 2026
 
 on:
   workflow_dispatch:
