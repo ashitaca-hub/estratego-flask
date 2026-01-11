@@ -38,15 +38,15 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "Validando data/2025.csv (dry run)"
-          python apps_script/load_matches_full_improved.py --csv data/2025.csv --dry-run
+          echo "Validando data/2026.csv (dry run)"
+          python apps_script/load_matches_full_improved.py --csv data/2026.csv --dry-run
 
       - name: Load CSV into matches_full
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "Cargando data/2025.csv"
-          python apps_script/load_matches_full_improved.py --csv data/2025.csv
+          echo "Cargando data/2026.csv"
+          python apps_script/load_matches_full_improved.py --csv data/2026.csv
 
       - name: Analyze table and create indexes
         env:
@@ -72,5 +72,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ignored-matches-2025
+          name: ignored-matches-2026
           path: ignored_matches.csv
