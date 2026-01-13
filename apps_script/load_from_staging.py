@@ -40,14 +40,14 @@ def normalize_name(name: str) -> str:
     name = re.sub(r"\b\d+\b", "", name)  # quita números aislados
     name = re.sub(r"[^\w\s,\.…]", "", name)  # limpia símbolos no deseados
     name = re.sub(r"\.{2,}", ".", name)  # normaliza puntos suspensivos
+    name = re.sub(r"…+$", "", name)  # quita puntos suspensivos finales
     name = re.sub(r"\s+", " ", name)  # normaliza espacios
     name = name.strip()
 
-    # Quita lo que venga después de un segundo nombre potencial
     if "," in name:
         surname, rest = name.split(",", 1)
-        firstname = rest.strip().split()[0] if rest.strip() else ""
-        name = f"{surname.strip()}, {firstname}"
+        rest = rest.strip()
+        name = f"{surname.strip()}, {rest}".strip().rstrip(",")
 
     return name
 
@@ -55,18 +55,31 @@ def resolve_player_id(player_name):
     if not player_name:
         return None
 
+    raw_has_comma = "," in player_name
     name_clean = normalize_name(player_name)
 
     name_variants = [name_clean]
     if "," in name_clean:
         parts = name_clean.split(",", 1)
-        name_variants.append(f"{parts[1].strip()} {parts[0].strip()}")
+        firstname = parts[1].strip()
+        surname = parts[0].strip()
+        name_variants.append(f"{firstname} {surname}")
+        if firstname:
+            name_variants.append(f"{surname}, {firstname}%")
+            name_variants.append(f"{firstname}% {surname}")
+        else:
+            name_variants.append(f"{surname}%")
+        name_variants.append(f"{surname}%")
+    elif raw_has_comma and name_clean:
+        name_variants.append(f"{name_clean}%")
 
     for variant in name_variants:
         url = f"{SUPABASE_URL}/rest/v1/players_min?select=player_id&name=ilike.{variant}"
         res = requests.get(url, headers=HEADERS)
-        if res.ok and len(res.json()) == 1:
-            return res.json()[0]["player_id"]
+        if res.ok:
+            matches = res.json()
+            if len(matches) == 1:
+                return matches[0]["player_id"]
 
     return None
 
