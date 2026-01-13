@@ -55,6 +55,7 @@ def resolve_player_id(player_name):
     if not player_name:
         return None
 
+    raw_has_comma = "," in player_name
     name_clean = normalize_name(player_name)
 
     name_variants = [name_clean]
@@ -68,6 +69,9 @@ def resolve_player_id(player_name):
             name_variants.append(f"{firstname}% {surname}")
         else:
             name_variants.append(f"{surname}%")
+        name_variants.append(f"{surname}%")
+    elif raw_has_comma and name_clean:
+        name_variants.append(f"{name_clean}%")
 
     for variant in name_variants:
         url = f"{SUPABASE_URL}/rest/v1/players_min?select=player_id&name=ilike.{variant}"
