@@ -19,7 +19,10 @@ def parse_line(line: str):
         return None
 
     pos = int(tokens[0])
-    if len(tokens) == 2 and tokens[1].lower() == "bye":
+    if pos > MAX_POS:
+        return None
+
+    if len(tokens) >= 2 and tokens[1].lower() == "bye":
         return {
             "pos": pos,
             "player_name": None,
@@ -42,6 +45,15 @@ def parse_line(line: str):
             seed = int(tokens[idx])
             idx += 1
 
+    country_idx = None
+    for i in range(idx, len(tokens)):
+        if re.fullmatch(r"[A-Z]{3}", tokens[i]):
+            country_idx = i
+            break
+
+    if country_idx is None:
+        return None
+
     while idx < len(tokens):
         token = tokens[idx]
         if re.fullmatch(r"[A-Z]{3}", token):
@@ -51,10 +63,19 @@ def parse_line(line: str):
         name_tokens.append(token)
         idx += 1
 
-    if not any("," in tok for tok in name_tokens):
+    if not name_tokens:
         return None
 
-    player_name = " ".join(name_tokens).replace(" ,", ",").strip()
+    if any("," in tok for tok in name_tokens):
+        player_name = " ".join(name_tokens).replace(" ,", ",").strip()
+    elif len(name_tokens) >= 2:
+        last_name = " ".join(name_tokens[:-1])
+        first_name = name_tokens[-1]
+        player_name = f"{last_name}, {first_name}".strip()
+    else:
+        return None
+
+    player_name = clean_name(player_name)
 
     return {
         "pos": pos,
