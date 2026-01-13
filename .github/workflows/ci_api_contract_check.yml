@@ -47,6 +47,12 @@ jobs:
           fi
 
           if ! jq -e '.assets' release.json >/dev/null; then
+            if jq -e '.message=="Bad credentials" or .status==401' release.json >/dev/null; then
+              echo "::warning::Credenciales inválidas para $DB_REPO; se omite contract check."
+              jq -r '.' release.json || true
+              echo "SKIP_CONTRACT_CHECK=true" >> "$GITHUB_ENV"
+              exit 0
+            fi
             echo "::error::Respuesta inválida del API (sin assets)."
             jq -r '.' release.json || true
             exit 1
