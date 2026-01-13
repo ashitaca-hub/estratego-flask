@@ -34,14 +34,27 @@ jobs:
           AUTH: ${{ env.DB_CONTRACT_PAT }}
         run: |
           if [ -z "$AUTH" ]; then
-            echo "::error::Falta el secreto DB_CONTRACT_PAT con permisos de lectura sobre $DB_REPO"
-            exit 1
+            echo "::warning::Falta el secreto DB_CONTRACT_PAT; se omite contract check para forks/PRs sin secretos."
+            echo "SKIP_CONTRACT_CHECK=true" >> "$GITHUB_ENV"
+            exit 0
           fi
           echo "Consultando último release de $DB_REPO ..."
           curl -sSL -H "Authorization: token $AUTH"                -H "Accept: application/vnd.github+json"                "https://api.github.com/repos/$DB_REPO/releases/latest"                -o release.json
 
           if [ ! -s release.json ]; then
             echo "::error::No se obtuvo respuesta del API releases/latest"
+            exit 1
+          fi
+
+          if ! jq -e '.assets' release.json >/dev/null; then
+            if jq -e '.message=="Bad credentials" or .status==401' release.json >/dev/null; then
+              echo "::warning::Credenciales inválidas para $DB_REPO; se omite contract check."
+              jq -r '.' release.json || true
+              echo "SKIP_CONTRACT_CHECK=true" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "::error::Respuesta inválida del API (sin assets)."
+            jq -r '.' release.json || true
             exit 1
           fi
 
@@ -60,6 +73,7 @@ jobs:
           echo "OK: CONTRACT_DB.yml descargado"
 
       - name: Show contract
+        if: ${{ env.SKIP_CONTRACT_CHECK != 'true' }}
         run: |
           echo "== CONTRACT_DB.yml =="
           cat CONTRACT_DB.yml || true
@@ -67,6 +81,7 @@ jobs:
           cat CONTRACT_DB.expected.yml || true
 
       - name: Validate SemVer major
+        if: ${{ env.SKIP_CONTRACT_CHECK != 'true' }}
         run: |
           DB_VER=$(yq '.version' CONTRACT_DB.yml)
           API_MIN=$(yq '.compatibility.api_min_version' CONTRACT_DB.yml)
@@ -82,6 +97,7 @@ jobs:
           fi
 
       - name: Validate required views/columns
+        if: ${{ env.SKIP_CONTRACT_CHECK != 'true' }}
         run: |
           REQ_VIEW="court_speed_rankig_norm"
           for col in tournament_name surface speed_rank category; do
@@ -94,6 +110,7 @@ jobs:
           echo "View $REQ_VIEW contains required columns."
 
       - name: Validate required RPCs
+        if: ${{ env.SKIP_CONTRACT_CHECK != 'true' }}
         run: |
           req=(get_player_hist_features get_matchup_hist_vector get_tourney_meta)
           for r in "${req[@]}"; do
