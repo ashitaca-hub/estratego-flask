@@ -80,6 +80,69 @@ def parse_line(line: str):
         )
     return entries
 
+
+def parse_line(line: str):
+    entries = []
+    for match in ENTRY_PATTERN.finditer(line):
+        pos = int(match.group("pos"))
+        if pos > MAX_POS:
+            continue
+
+        body = match.group("body").strip()
+        country = match.group("country")
+
+        tokens = body.split()
+        parsed = parse_tokens(pos, tokens, country)
+        if parsed:
+            entries.append(parsed)
+
+    if entries:
+        return entries
+
+    tokens = line.strip().split()
+    if not tokens or not tokens[0].isdigit():
+        return []
+
+    pos = int(tokens[0])
+    if pos > MAX_POS:
+        return []
+
+    if len(tokens) >= 2 and tokens[1].lower() == "bye":
+        return [
+            {
+                "pos": pos,
+                "player_name": None,
+                "seed": None,
+                "tag": "BYE",
+                "country": None,
+            }
+        ]
+
+    tag = None
+    seed = None
+    idx = 1
+    for _ in range(2):
+        if idx < len(tokens) and tokens[idx] in VALID_TAGS:
+            tag = tokens[idx]
+            idx += 1
+        elif idx < len(tokens) and tokens[idx].isdigit():
+            seed = int(tokens[idx])
+            idx += 1
+
+    country_idx = None
+    for i in range(idx, len(tokens)):
+        if re.fullmatch(r"[A-Z]{3}", tokens[i]):
+            country_idx = i
+            break
+
+    if country_idx is None:
+        return []
+
+    name_tokens = tokens[idx:country_idx]
+    country = tokens[country_idx]
+    parsed = parse_tokens(pos, name_tokens, country)
+    return [parsed] if parsed else []
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Uso: python get_atp_draws.py <pdf_url> <out_csv_file>")
