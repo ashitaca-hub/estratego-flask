@@ -58,20 +58,46 @@ def resolve_player_id(player_name):
     raw_has_comma = "," in player_name
     name_clean = normalize_name(player_name)
 
-    name_variants = [name_clean]
+    name_variants = []
+
+    def add_variant(variant):
+        if not variant:
+            return
+        name_variants.append(variant)
+        if "%" not in variant:
+            name_variants.append(f"{variant}%")
+
+    add_variant(name_clean)
     if "," in name_clean:
         parts = name_clean.split(",", 1)
         firstname = parts[1].strip()
         surname = parts[0].strip()
-        name_variants.append(f"{firstname} {surname}")
+        add_variant(f"{firstname} {surname}".strip())
         if firstname:
-            name_variants.append(f"{surname}, {firstname}%")
-            name_variants.append(f"{firstname}% {surname}")
-        else:
-            name_variants.append(f"{surname}%")
-        name_variants.append(f"{surname}%")
+            add_variant(f"{surname}, {firstname}")
+            add_variant(f"{firstname} {surname}")
+        add_variant(surname)
+
+        surname_tokens = surname.split()
+        if len(surname_tokens) > 1:
+            alt_surname = surname_tokens[-1]
+            extra_given = " ".join(surname_tokens[:-1]).strip()
+            alt_firstname = firstname
+            if extra_given and extra_given != firstname:
+                alt_firstname = f"{firstname} {extra_given}".strip()
+            elif not firstname:
+                alt_firstname = extra_given
+            add_variant(f"{alt_surname}, {alt_firstname}".strip().rstrip(","))
+            add_variant(f"{alt_firstname} {alt_surname}".strip())
     elif raw_has_comma and name_clean:
-        name_variants.append(f"{name_clean}%")
+        add_variant(name_clean)
+    else:
+        tokens = name_clean.split()
+        if len(tokens) > 1:
+            surname = tokens[-1]
+            firstname = " ".join(tokens[:-1]).strip()
+            add_variant(f"{surname}, {firstname}")
+            add_variant(f"{firstname} {surname}")
 
     for variant in name_variants:
         url = f"{SUPABASE_URL}/rest/v1/players_min?select=player_id&name=ilike.{variant}"
