@@ -5,85 +5,80 @@ import tempfile
 import requests
 import re
 
-VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q"}
+VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q", "SE"}
 MAX_POS = 32
+ENTRY_PATTERN = re.compile(
+    r"(?P<pos>\d{1,2})\s+(?P<body>.+?)\s+(?P<country>[A-Z]{3})(?=\s+\d{1,2}\s+|$)"
+)
 
 def clean_name(name: str):
     name = re.sub(r"\s+\d+(\s+\d+)*$", "", name)
+    name = re.sub(r"\s*[|]+\s*$", "", name)
     name = name.replace(" ,", ",").strip()
     return name
 
 def parse_line(line: str):
-    tokens = line.strip().split()
-    if not tokens or not tokens[0].isdigit():
-        return None
+    entries = []
+    for match in ENTRY_PATTERN.finditer(line):
+        pos = int(match.group("pos"))
+        if pos > MAX_POS:
+            continue
 
-    pos = int(tokens[0])
-    if pos > MAX_POS:
-        return None
+        body = match.group("body").strip()
+        country = match.group("country")
 
-    if len(tokens) >= 2 and tokens[1].lower() == "bye":
-        return {
-            "pos": pos,
-            "player_name": None,
-            "seed": None,
-            "tag": "BYE",
-            "country": None
-        }
+        tokens = body.split()
+        if not tokens:
+            continue
 
-    tag = None
-    seed = None
-    country = None
-    name_tokens = []
+        if len(tokens) >= 1 and tokens[0].lower() == "bye":
+            entries.append(
+                {
+                    "pos": pos,
+                    "player_name": None,
+                    "seed": None,
+                    "tag": "BYE",
+                    "country": None,
+                }
+            )
+            continue
 
-    idx = 1
-    for _ in range(2):
-        if idx < len(tokens) and tokens[idx] in VALID_TAGS:
-            tag = tokens[idx]
-            idx += 1
-        elif idx < len(tokens) and tokens[idx].isdigit():
-            seed = int(tokens[idx])
-            idx += 1
+        tag = None
+        seed = None
+        idx = 0
+        for _ in range(2):
+            if idx < len(tokens) and tokens[idx] in VALID_TAGS:
+                tag = tokens[idx]
+                idx += 1
+            elif idx < len(tokens) and tokens[idx].isdigit():
+                seed = int(tokens[idx])
+                idx += 1
 
-    country_idx = None
-    for i in range(idx, len(tokens)):
-        if re.fullmatch(r"[A-Z]{3}", tokens[i]):
-            country_idx = i
-            break
+        name_tokens = tokens[idx:]
+        if not name_tokens:
+            continue
 
-    if country_idx is None:
-        return None
+        if any("," in tok for tok in name_tokens):
+            player_name = " ".join(name_tokens).replace(" ,", ",").strip()
+        elif len(name_tokens) >= 2:
+            last_name = " ".join(name_tokens[:-1])
+            first_name = name_tokens[-1]
+            player_name = f"{last_name}, {first_name}".strip()
+        else:
+            continue
 
-    while idx < len(tokens):
-        token = tokens[idx]
-        if re.fullmatch(r"[A-Z]{3}", token):
-            country = token
-            idx += 1
-            break
-        name_tokens.append(token)
-        idx += 1
+        player_name = clean_name(player_name)
 
-    if not name_tokens:
-        return None
-
-    if any("," in tok for tok in name_tokens):
-        player_name = " ".join(name_tokens).replace(" ,", ",").strip()
-    elif len(name_tokens) >= 2:
-        last_name = " ".join(name_tokens[:-1])
-        first_name = name_tokens[-1]
-        player_name = f"{last_name}, {first_name}".strip()
-    else:
-        return None
-
-    player_name = clean_name(player_name)
-
-    return {
-        "pos": pos,
-        "player_name": player_name if player_name else None,
-        "seed": seed,
-        "tag": tag,
-        "country": country,
-    }
+        entries.append(
+            {
+                "pos": pos,
+                "player_name": player_name if player_name else None,
+                "seed": seed,
+                "tag": tag,
+                "country": country,
+            }
+        )
+    return entries
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -110,7 +105,7 @@ if __name__ == "__main__":
             for line in lines:
                 parsed = parse_line(line)
                 if parsed:
-                    entries.append(parsed)
+                    entries.extend(parsed)
 
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df["seed"] = df["seed"].astype("Int64")
