@@ -38,9 +38,10 @@ def normalize_name(name: str) -> str:
     # Eliminar puntuaciones, resultados y residuos al final
     name = re.sub(r"\d{2,}.*$", "", name)  # quita resultados tipo '63 64 ...'
     name = re.sub(r"\b\d+\b", "", name)  # quita números aislados
-    name = re.sub(r"[^\w\s,\.…]", "", name)  # limpia símbolos no deseados
+    name = re.sub(r"[|]", " ", name)  # separadores de tabla
+    name = re.sub(r"\s*[.…]+$", "", name)  # quita puntos suspensivos finales
+    name = re.sub(r"[^\w\s,\.]", "", name)  # limpia símbolos no deseados
     name = re.sub(r"\.{2,}", ".", name)  # normaliza puntos suspensivos
-    name = re.sub(r"…+$", "", name)  # quita puntos suspensivos finales
     name = re.sub(r"\s+", " ", name)  # normaliza espacios
     name = name.strip()
 
@@ -89,6 +90,14 @@ def resolve_player_id(player_name):
                 alt_firstname = extra_given
             add_variant(f"{alt_surname}, {alt_firstname}".strip().rstrip(","))
             add_variant(f"{alt_firstname} {alt_surname}".strip())
+        if " " in firstname:
+            first_tokens = firstname.split()
+            add_variant(f"{surname}, {first_tokens[0]}".strip())
+            add_variant(f"{first_tokens[0]} {surname}".strip())
+        if "-" in surname:
+            add_variant(surname.replace("-", " ").strip())
+        if "-" in firstname:
+            add_variant(firstname.replace("-", " ").strip())
     elif raw_has_comma and name_clean:
         add_variant(name_clean)
         add_variant(f"{name_clean}, %")
