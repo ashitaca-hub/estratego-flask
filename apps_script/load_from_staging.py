@@ -66,7 +66,9 @@ def resolve_player_id(player_name):
             return
         name_variants.append(variant)
         if "%" not in variant:
+            name_variants.append(f"%{variant}")
             name_variants.append(f"{variant}%")
+            name_variants.append(f"%{variant}%")
 
     add_variant(name_clean)
     if "," in name_clean:
