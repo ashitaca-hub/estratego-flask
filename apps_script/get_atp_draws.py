@@ -17,68 +17,52 @@ def clean_name(name: str):
     name = name.replace(" ,", ",").strip()
     return name
 
-def parse_line(line: str):
-    entries = []
-    for match in ENTRY_PATTERN.finditer(line):
-        pos = int(match.group("pos"))
-        if pos > MAX_POS:
-            continue
+def parse_tokens(pos: int, tokens: list[str], country: str | None):
+    if not tokens:
+        return None
 
-        body = match.group("body").strip()
-        country = match.group("country")
+    if len(tokens) >= 1 and tokens[0].lower() == "bye":
+        return {
+            "pos": pos,
+            "player_name": None,
+            "seed": None,
+            "tag": "BYE",
+            "country": None,
+        }
 
-        tokens = body.split()
-        if not tokens:
-            continue
+    tag = None
+    seed = None
+    idx = 0
+    for _ in range(2):
+        if idx < len(tokens) and tokens[idx] in VALID_TAGS:
+            tag = tokens[idx]
+            idx += 1
+        elif idx < len(tokens) and tokens[idx].isdigit():
+            seed = int(tokens[idx])
+            idx += 1
 
-        if len(tokens) >= 1 and tokens[0].lower() == "bye":
-            entries.append(
-                {
-                    "pos": pos,
-                    "player_name": None,
-                    "seed": None,
-                    "tag": "BYE",
-                    "country": None,
-                }
-            )
-            continue
+    name_tokens = tokens[idx:]
+    if not name_tokens:
+        return None
 
-        tag = None
-        seed = None
-        idx = 0
-        for _ in range(2):
-            if idx < len(tokens) and tokens[idx] in VALID_TAGS:
-                tag = tokens[idx]
-                idx += 1
-            elif idx < len(tokens) and tokens[idx].isdigit():
-                seed = int(tokens[idx])
-                idx += 1
+    if any("," in tok for tok in name_tokens):
+        player_name = " ".join(name_tokens).replace(" ,", ",").strip()
+    elif len(name_tokens) >= 2:
+        last_name = " ".join(name_tokens[:-1])
+        first_name = name_tokens[-1]
+        player_name = f"{last_name}, {first_name}".strip()
+    else:
+        return None
 
-        name_tokens = tokens[idx:]
-        if not name_tokens:
-            continue
+    player_name = clean_name(player_name)
 
-        if any("," in tok for tok in name_tokens):
-            player_name = " ".join(name_tokens).replace(" ,", ",").strip()
-        elif len(name_tokens) >= 2:
-            last_name = " ".join(name_tokens[:-1])
-            first_name = name_tokens[-1]
-            player_name = f"{last_name}, {first_name}".strip()
-        else:
-            continue
-
-        player_name = clean_name(player_name)
-
-        entries.append(
-            {
-                "pos": pos,
-                "player_name": player_name if player_name else None,
-                "seed": seed,
-                "tag": tag,
-                "country": country,
-            }
-        )
-    return entries
+    return {
+        "pos": pos,
+        "player_name": player_name if player_name else None,
+        "seed": seed,
+        "tag": tag,
+        "country": country,
+    }
 
 
 def parse_line(line: str):
