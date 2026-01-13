@@ -63,7 +63,6 @@ def resolve_player_id(player_name):
         parts = name_clean.split(",", 1)
         firstname = parts[1].strip()
         surname = parts[0].strip()
-        surname_tokens = [t for t in surname.split() if t]
         name_variants.append(f"{firstname} {surname}")
         if firstname:
             name_variants.append(f"{surname}, {firstname}%")
@@ -71,12 +70,6 @@ def resolve_player_id(player_name):
         else:
             name_variants.append(f"{surname}%")
         name_variants.append(f"{surname}%")
-        if surname_tokens:
-            surname_pattern = "%".join(surname_tokens)
-            name_variants.append(f"%{surname_pattern}%")
-            name_variants.append(f"%{surname_tokens[-1]}%")
-        if firstname and surname_tokens:
-            name_variants.append(f"%{firstname}%{surname_tokens[-1]}%")
     elif raw_has_comma and name_clean:
         name_variants.append(f"{name_clean}%")
 
