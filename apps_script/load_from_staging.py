@@ -91,6 +91,8 @@ def resolve_player_id(player_name):
             add_variant(f"{alt_firstname} {alt_surname}".strip())
     elif raw_has_comma and name_clean:
         add_variant(name_clean)
+        add_variant(f"{name_clean}, %")
+        add_variant(f"{name_clean},%")
     else:
         tokens = name_clean.split()
         if len(tokens) > 1:
@@ -100,8 +102,9 @@ def resolve_player_id(player_name):
             add_variant(f"{firstname} {surname}")
 
     for variant in name_variants:
-        url = f"{SUPABASE_URL}/rest/v1/players_min?select=player_id&name=ilike.{variant}"
-        res = requests.get(url, headers=HEADERS)
+        url = f"{SUPABASE_URL}/rest/v1/players_min"
+        params = {"select": "player_id", "name": f"ilike.{variant}"}
+        res = requests.get(url, headers=HEADERS, params=params)
         if res.ok:
             matches = res.json()
             if len(matches) == 1:
