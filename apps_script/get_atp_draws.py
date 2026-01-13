@@ -10,6 +10,10 @@ MAX_POS = 32
 ENTRY_PATTERN = re.compile(
     r"(?P<pos>\d{1,2})\s+(?P<body>.+?)\s+(?P<country>[A-Z]{3})(?=\s+\d{1,2}\s+|$)"
 )
+DATE_LINE_PATTERN = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b.*\b\d{4}\b",
+    re.IGNORECASE,
+)
 
 def clean_name(name: str):
     name = re.sub(r"\s+\d+(\s+\d+)*$", "", name)
@@ -66,6 +70,9 @@ def parse_tokens(pos: int, tokens: list[str], country: str | None):
 
 
 def parse_line(line: str):
+    if DATE_LINE_PATTERN.search(line):
+        return []
+
     entries = []
     for match in ENTRY_PATTERN.finditer(line):
         pos = int(match.group("pos"))

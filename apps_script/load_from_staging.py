@@ -54,7 +54,7 @@ def normalize_name(name: str) -> str:
 
 def resolve_player_id(player_name):
     if not player_name:
-        return None
+        return None, "nombre vacío"
 
     raw_has_comma = "," in player_name
     name_clean = normalize_name(player_name)
@@ -110,6 +110,7 @@ def resolve_player_id(player_name):
             add_variant(f"{surname}, {firstname}")
             add_variant(f"{firstname} {surname}")
 
+    multi_match_variants = []
     for variant in name_variants:
         url = f"{SUPABASE_URL}/rest/v1/players_min"
         params = {"select": "player_id", "name": f"ilike.{variant}"}
@@ -117,9 +118,15 @@ def resolve_player_id(player_name):
         if res.ok:
             matches = res.json()
             if len(matches) == 1:
-                return matches[0]["player_id"]
+                return matches[0]["player_id"], None
+            if len(matches) > 1:
+                multi_match_variants.append((variant, len(matches)))
 
-    return None
+    if multi_match_variants:
+        sample = ", ".join(f"{variant} ({count})" for variant, count in multi_match_variants[:3])
+        return None, f"coincidencias múltiples: {sample}"
+
+    return None, "sin coincidencias en players_min"
 
 
 
@@ -159,12 +166,13 @@ def main():
     print(f"📥 Filas a procesar para torneo {tourney_id}: {len(staging_rows)}")
 
     for row in staging_rows:
-        player_id = resolve_player_id(row.get("player_name"))
+        player_id, resolve_reason = resolve_player_id(row.get("player_name"))
         insert_draw_entry(tourney_id, row, player_id)
         mark_as_processed(tourney_id, row["pos"])
 
         if not player_id and not row.get("tag"):
-            print(f"[!] No se pudo resolver: {row['player_name']} (pos {row['pos']})")
+            detail = f" -> {resolve_reason}" if resolve_reason else ""
+            print(f"[!] No se pudo resolver: {row['player_name']} (pos {row['pos']}){detail}")
 
     print("✅ Migración completada.")
 
