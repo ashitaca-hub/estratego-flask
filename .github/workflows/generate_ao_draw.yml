@@ -30,7 +30,7 @@ jobs:
       - name: Run script to generate CSV
         run: |
           mkdir -p data
-          python scripts/generate_ao_2026_draw.py
+          python apps_script/generate_ao_2026_draw.py
           # Mueve el output al directorio data con un nombre claro
           mv -f ao_2026_draw.csv data/ao_2026_draw.csv
 
