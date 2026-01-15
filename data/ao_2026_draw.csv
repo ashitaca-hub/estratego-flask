@@ -16,7 +16,7 @@ pos,player_name,seed,tag,country
 15,F. Misolic,,,
 16,"DAVIDOVICH FOKINA, Alejandro",15,,ESP
 17,"BUBLIK, Alexander",13,,KAZ
-18,J. Brooksby,,,
+18,"BROOKSBY, Jenson",,,USA
 19,"UGO CARABELLI, Camilo",,,ARG
 20,M. Fucsovics,,,
 21,"KECMANOVIC, Miomir",,,SRB
@@ -27,15 +27,15 @@ pos,player_name,seed,tag,country
 26,J. Kubler,,,
 27,P. Kypson,,,
 28,"COMESANA, Francisco",,Q,ARG
-29,M. Navone,,,
-30,H. Medjedovic,,,
+29,"NAVONE, Mariano",,,ARG
+30,"MEDJEDOVIC, Hamad",,,SRB
 31,M. Berrettini,,,
 32,"DE MINAUR, Alex",6,,AUS
 33,"ZVEREV, Alexander",3,,GER
 34,"DIALLO, Gabriel",,,CAN
 35,"POPYRIN, Alexei",,,AUS
 36,"MULLER, Alexandre",,,FRA
-37,E. Nava,,,
+37,"NAVA, Emilio",,,USA
 38,K. Jacquet,,,
 39,B. Bonzi,,,
 40,"NORRIE, Cameron",,,GBR
@@ -50,7 +50,7 @@ pos,player_name,seed,tag,country
 49,"MEDVEDEV, Daniil",11,,
 50,J. De Jong,,,
 51,Q. Halys,,,
-52,A. Tabilo,,,
+52,"TABILO, Alejandro",,,CHI
 53,K. Majchrzak,,,
 54,"FEARNLEY, Jacob",,Q,GBR
 55,"MAROZSAN, Fabian",,,HUN
@@ -77,9 +77,9 @@ pos,player_name,seed,tag,country
 76,S. Wawrinka,,,
 77,V. Kopriva,,,
 78,J. Struff,,,
-79,V. Royer,,,
+79,4,"ROYER, Valentin",,,FRA
 80,"FRITZ, Taylor",4,,USA
-81,J. Mensik,,,
+81,"MENSIK, Jakub",3,,CZE
 82,P. Carreno Busta,,,
 83,R. Sakamoto,,,
 84,R. Jodar,,,
@@ -90,7 +90,7 @@ pos,player_name,seed,tag,country
 89,"NAKASHIMA, Brandon",,,USA
 90,B. Van de Zandschulp,,,
 91,J. Shang,,,
-92,R. Bautista Agut,,,
+92,"BAUTISTA AGUT, Roberto",,,ESP
 93,"ATMANE, Terence",,WC,FRA
 94,F. Maestrelli,,,
 95,P. Martinez,,,
@@ -98,8 +98,8 @@ pos,player_name,seed,tag,country
 97,"SHELTON, Benjamin",5,,USA
 98,"HUMBERT, Ugo",,,FRA
 99,D. Sweeny,,,
-100,G. Monfils,,,
-101,A. Mannarino,,,
+100,"MONFILS, Gael",,,FRA
+101,"MANNARINO, Adrian",,,FRA
 102,R. Hijikata,,,
 103,M. Damm Jr,,,
 104,"VACHEROT, Valentin",,WC,MON
@@ -120,12 +120,13 @@ pos,player_name,seed,tag,country
 119,C. Garin,,,
 120,"DARDERI, Luciano",,,ITA
 121,"FONSECA, Joao",,,BRA
-122,E. Spizzirri,,,
+122,"SPIZZIRRI, Eliot",,Q,USA
 123,L. Nardi,,,
 124,Y. Wu,,,
 125,J. Duckworth,,,
 126,D. Prizmic,,,
-127,H. Gaston,,,
+127,"GASTON, Hugo",,Q,FRA
 128,"SINNER, Jannik",2,,ITA
+
 
 
