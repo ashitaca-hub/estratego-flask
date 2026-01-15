@@ -1,13 +1,13 @@
 pos,player_name,seed,tag,country
 1,"ALCARAZ, Carlos",1,,ESP
-2,A. Walton,,,
+2,"WALTON, Adam",,WC,AUS
 3,Y. Hanfmann,,,
 4,Z. Svajda,,,
 5,M. Zheng,,,
 6,"KORDA, Sebastian",,Q,USA
 7,T. Schoolkate,,,
 8,"MOUTET, Corentin",,,FRA
-9,T. Paul,,,
+9,"PAUL, Tommy",4,,USA
 10,"KOVACEVIC, Aleksandar",,LL,USA
 11,T. Tirante,,,
 12,"VUKIC, Aleksandar",,Q,AUS
@@ -18,12 +18,12 @@ pos,player_name,seed,tag,country
 17,"BUBLIK, Alexander",13,,KAZ
 18,"BROOKSBY, Jenson",,,USA
 19,"UGO CARABELLI, Camilo",,,ARG
-20,M. Fucsovics,,,
+20,"FUCSOVICS, Marton",,,HUN
 21,"KECMANOVIC, Miomir",,,SRB
 22,"ETCHEVERRY, Tomas Martin",,Q,ARG
 23,A. Fery,,,
 24,"COBOLLI, Flavio",,,ITA
-25,F. Tiafoe,,,
+25,"TIAFOE, Frances",,,USA
 26,J. Kubler,,,
 27,P. Kypson,,,
 28,"COMESANA, Francisco",,Q,ARG
@@ -49,9 +49,9 @@ pos,player_name,seed,tag,country
 48,"RUBLEV, Andrey",12,,
 49,"MEDVEDEV, Daniil",11,,
 50,J. De Jong,,,
-51,Q. Halys,,,
+51,"HALYS, Quentin",,Q,FRA
 52,"TABILO, Alejandro",,,CHI
-53,K. Majchrzak,,,
+53,"MAJCHRZAK, Kamil",,LL,POL
 54,"FEARNLEY, Jacob",,Q,GBR
 55,"MAROZSAN, Fabian",,,HUN
 56,"RINDERKNECH, Arthur",,WC,FRA
@@ -64,7 +64,7 @@ pos,player_name,seed,tag,country
 63,"BORGES, Nuno",,,POR
 64,"AUGER ALIASSIME, Felix",9,,CAN
 65,"MUSETTI, Lorenzo",7,,ITA
-66,R. Collignon,,,
+66,"COLLIGNON, Raphael",,Q,BEL
 67,"SONEGO, Lorenzo",,,ITA
 68,C. Taberner,,,
 69,"DIMITROV, Grigor",,,BUL
@@ -80,7 +80,7 @@ pos,player_name,seed,tag,country
 79,4,"ROYER, Valentin",,,FRA
 80,"FRITZ, Taylor",4,,USA
 81,"MENSIK, Jakub",3,,CZE
-82,P. Carreno Busta,,,
+82,"CARRENO BUSTA, Pablo",,Q,ESP
 83,R. Sakamoto,,,
 84,R. Jodar,,,
 85,H. Hurkacz,,,
@@ -100,7 +100,7 @@ pos,player_name,seed,tag,country
 99,D. Sweeny,,,
 100,"MONFILS, Gael",,,FRA
 101,"MANNARINO, Adrian",,,FRA
-102,R. Hijikata,,,
+102,"HIJIKATA, Rinky",,Q,AUS
 103,M. Damm Jr,,,
 104,"VACHEROT, Valentin",,WC,MON
 105,"SHAPOVALOV, Denis",,,CAN
@@ -123,10 +123,11 @@ pos,player_name,seed,tag,country
 122,"SPIZZIRRI, Eliot",,Q,USA
 123,L. Nardi,,,
 124,Y. Wu,,,
-125,J. Duckworth,,,
+125,"DUCKWORTH, James",,Q,AUS
 126,D. Prizmic,,,
 127,"GASTON, Hugo",,Q,FRA
 128,"SINNER, Jannik",2,,ITA
+
 
 
 
