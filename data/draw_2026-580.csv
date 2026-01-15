@@ -2,18 +2,18 @@ pos,player_name,seed,tag,country
 1,"ALCARAZ, Carlos",1,,ESP
 2,"WALTON, Adam",,WC,AUS
 3,"HANFMANN, Y.",,,
-4,"SVAJDA, Z.",,,
-5,"ZHENG, M.",,,
+4,"SVAJDA, Zachary",,,
+5,"ZHENG, Michael",,,
 6,"KORDA, Sebastian",,Q,USA
-7,"SCHOOLKATE, T.",,,
+7,"SCHOOLKATE, Tristan",,,
 8,"MOUTET, Corentin",,,FRA
 9,"PAUL, Tommy",4,,USA
 10,"KOVACEVIC, Aleksandar",,LL,USA
-11,"TIRANTE, T.",,,
+11,"TIRANTE, Thiago",,,
 12,"VUKIC, Aleksandar",,Q,AUS
-13,"BUDKOV KJAER, N.",,,
+13,"BUDKOV KJAER, Nicolai",,,
 14,"OPELKA, Reilly",,LL,USA
-15,"MISOLIC, F.",,,
+15,"MISOLIC, Filip",,,
 16,"DAVIDOVICH FOKINA, Alejandro",15,,ESP
 17,"BUBLIK, Alexander",13,,KAZ
 18,"BROOKSBY, Jenson",,,USA
@@ -21,34 +21,34 @@ pos,player_name,seed,tag,country
 20,"FUCSOVICS, Marton",,,HUN
 21,"KECMANOVIC, Miomir",,,SRB
 22,"ETCHEVERRY, Tomas Martin",,Q,ARG
-23,"FERY, A.",,,
+23,"FERY, Arthur",,,
 24,"COBOLLI, Flavio",,,ITA
 25,"TIAFOE, Frances",,,USA
-26,"KUBLER, J.",,,
-27,"KYPSON, P.",,,
+26,"KUBLER, Jason",,,
+27,"KYPSON, Patrick",,,
 28,"COMESANA, Francisco",,Q,ARG
 29,"NAVONE, Mariano",,,ARG
 30,"MEDJEDOVIC, Hamad",,,SRB
-31,"BERRETTINI, M.",,,
+31,"BERRETTINI, Matteo",,,
 32,"DE MINAUR, Alex",6,,AUS
 33,"ZVEREV, Alexander",3,,GER
 34,"DIALLO, Gabriel",,,CAN
 35,"POPYRIN, Alexei",,,AUS
 36,"MULLER, Alexandre",,,FRA
 37,"NAVA, Emilio",,,USA
-38,"JACQUET, K.",,,
-39,"BONZI, B.",,,
+38,"JACQUET, Kyrian",,,
+39,"BONZI, Benjamin",,,
 40,"NORRIE, Cameron",,,GBR
 41,"CERUNDOLO, Francisco",,,ARG
-42,"ZHANG, Z.",,,
-43,"DRAXL, L.",,,
+42,"ZHANG, Zhizhen",,,
+43,"DRAXL, Liam",,,
 44,"DZUMHUR, Damir",,Q,BIH
 45,"CAZAUX, Arthur",,WC,FRA
-46,"FARIA, J.",,,
-47,"ARNALDI, M.",,,
+46,"FARIA, Jaime",,,
+47,"ARNALDI, Matteo",,,
 48,"RUBLEV, Andrey",12,,
 49,"MEDVEDEV, Daniil",11,,
-50,"DE JONG, J.",,,
+50,"DE JONG, Jesper",,,
 51,"HALYS, Quentin",,Q,FRA
 52,"TABILO, Alejandro",,,CHI
 53,"MAJCHRZAK, Kamil",,LL,POL
@@ -57,33 +57,33 @@ pos,player_name,seed,tag,country
 56,"RINDERKNECH, Arthur",,WC,FRA
 57,"TIEN, Learner",,,USA
 58,"GIRON, Marcos",,,USA
-59,"YMER, E.",,,
-60,"SHEVCHENKO, A.",,,
-61,"CERUNDOLO, J.",,,
-62,"THOMPSON, J.",,,
+59,"YMER, Elias",,,
+60,"SHEVCHENKO, Andrei",,,
+61,"CERUNDOLO, Juan Manuel",,,
+62,"THOMPSON, Jordan",,,
 63,"BORGES, Nuno",,,POR
 64,"AUGER ALIASSIME, Felix",9,,CAN
 65,"MUSETTI, Lorenzo",7,,ITA
 66,"COLLIGNON, Raphael",,Q,BEL
 67,"SONEGO, Lorenzo",,,ITA
-68,"TABERNER, C.",,,
+68,"TABERNER, Carlos",,,
 69,"DIMITROV, Grigor",,,BUL
 70,"MACHAC, Tomas",,,CZE
-71,"MOCHIZUKI, S.",,,
-72,"TSITSIPAS, S.",,,
+71,"MOCHIZUKI, Shintaro",,,
+72,"TSITSIPAS, Stefanos",,,
 73,"LEHECKA, Jiri",14,,CZE
-74,"GEA, A.",,,
-75,"DJERE, L.",,,
-76,"WAWRINKA, S.",,,
+74,"GEA, Arthur",,,
+75,"DJERE, Laslo",,,
+76,"WAWRINKA, Stan",,,
 77,"KOPRIVA, V.",,,
 78,"STRUFF, J.",,,
 79,"ROYER, Valentin",,,FRA
 80,"FRITZ, Taylor",4,,USA
 81,"MENSIK, Jakub",3,,CZE
 82,"CARRENO BUSTA, Pablo",,Q,ESP
-83,"SAKAMOTO, R.",,,
-84,"JODAR, R.",,,
-85,"HURKACZ, H.",,,
+83,"SAKAMOTO, Rei",,,
+84,"JODAR, Rafael",,,
+85,"HURKACZ, Hubert",,,
 86,"BERGS, Zizou",,,BEL
 87,"QUINN, Ethan",,Q,USA
 88,"GRIEKSPOOR, Tallon",,,NED
@@ -127,3 +127,4 @@ pos,player_name,seed,tag,country
 126,"PRIZMIC, D.",,,
 127,"GASTON, Hugo",,Q,FRA
 128,"SINNER, Jannik",2,,ITA
+
