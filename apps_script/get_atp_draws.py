@@ -1,14 +1,12 @@
-import pdfplumber
-import pandas as pd
 import sys
 import tempfile
 import requests
 import re
 
 VALID_TAGS = {"WC", "Qualifier", "BYE", "PR", "LL", "Q", "SE"}
-MAX_POS = 32
+MAX_POS = 128
 ENTRY_PATTERN = re.compile(
-    r"(?P<pos>\d{1,2})\s+(?P<body>.+?)\s+(?P<country>[A-Z]{3})(?=\s+\d{1,2}\s+|$)"
+    r"(?<!\d)(?P<pos>\d{1,3})\s+(?P<body>.+?)\s+(?P<country>[A-Z]{3})(?=\s+\d{1,3}\s+|$)"
 )
 DATE_LINE_PATTERN = re.compile(
     r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b.*\b\d{4}\b",
@@ -134,13 +132,9 @@ def parse_line(line: str):
     parsed = parse_tokens(pos, name_tokens, country)
     return [parsed] if parsed else []
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Uso: python get_atp_draws.py <pdf_url> <out_csv_file>")
-        sys.exit(1)
-
-    pdf_url = sys.argv[1]
-    out_csv_file = sys.argv[2]
+def main(pdf_url: str, out_csv_file: str):
+    import pandas as pd
+    import pdfplumber
 
     res = requests.get(pdf_url)
     res.raise_for_status()
@@ -165,3 +159,11 @@ if __name__ == "__main__":
     df["seed"] = df["seed"].astype("Int64")
     df.to_csv(out_csv_file, index=False)
     print(f"✅ Generado CSV con {len(df)} filas: {out_csv_file}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Uso: python get_atp_draws.py <pdf_url> <out_csv_file>")
+        sys.exit(1)
+
+    main(sys.argv[1], sys.argv[2])
