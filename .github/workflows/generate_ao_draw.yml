@@ -3,7 +3,7 @@ name: Generate AO 2026 draw CSV
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 8 * * *"
+   
 
 permissions:
   contents: write
