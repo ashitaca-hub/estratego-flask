@@ -59,14 +59,31 @@ def load_player_name_id_map(cur):
     return name_id_map
 
 def resolve_from_mapping(cur, raw_id, name):
-    csv_id = str(raw_id).strip()
-    cur.execute(f"""
-        SELECT resolved_player_id FROM {DDL_SCHEMA}.player_name_map
-        WHERE csv_id = %s
-    """, (csv_id,))
-    row = cur.fetchone()
-    if row:
-        return row[0]
+    csv_id = str(raw_id).strip() if raw_id not in (None, "") else None
+
+    # 1) ext_atp_id: id oficial de la ATP (ej. "DH50"), permanente y sin
+    #    ambiguedad - es la fuente de verdad una vez rellenado.
+    if csv_id is not None:
+        cur.execute(f"SELECT player_id FROM {DDL_SCHEMA}.players WHERE ext_atp_id = %s", (csv_id,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+
+        # 2) cache historico (csv_id -> player_id) de resoluciones por nombre previas
+        cur.execute(f"""
+            SELECT resolved_player_id FROM {DDL_SCHEMA}.player_name_map
+            WHERE csv_id = %s
+        """, (csv_id,))
+        row = cur.fetchone()
+        if row:
+            resolved_id = row[0]
+            cur.execute(f"""
+                UPDATE {DDL_SCHEMA}.players SET ext_atp_id = %s
+                WHERE player_id = %s AND ext_atp_id IS NULL
+            """, (csv_id, resolved_id))
+            return resolved_id
+
+    # 3) fallback: match exacto por nombre (solo si no es ambiguo)
     cur.execute(f"SELECT player_id FROM {DDL_SCHEMA}.players WHERE lower(name) = lower(%s) ORDER BY player_id", (name.strip(),))
     rows = cur.fetchall()
     if not rows:
@@ -76,11 +93,16 @@ def resolve_from_mapping(cur, raw_id, name):
                          name.strip(), [r[0] for r in rows])
         return None
     resolved_id = rows[0][0]
-    cur.execute(f"""
-        INSERT INTO {DDL_SCHEMA}.player_name_map (csv_id, player_name, resolved_player_id)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (csv_id) DO NOTHING
-    """, (csv_id, name.strip(), resolved_id))
+    if csv_id is not None:
+        cur.execute(f"""
+            INSERT INTO {DDL_SCHEMA}.player_name_map (csv_id, player_name, resolved_player_id)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (csv_id) DO NOTHING
+        """, (csv_id, name.strip(), resolved_id))
+        cur.execute(f"""
+            UPDATE {DDL_SCHEMA}.players SET ext_atp_id = %s
+            WHERE player_id = %s AND ext_atp_id IS NULL
+        """, (csv_id, resolved_id))
     return resolved_id
 
 def resolve_player_id(raw_id, name, name_id_map, cur):
@@ -92,32 +114,46 @@ def resolve_player_id(raw_id, name, name_id_map, cur):
         pass
     return resolve_from_mapping(cur, raw_id, name)
 
+def new_player_id(cur):
+    cur.execute(f"SELECT nextval('{DDL_SCHEMA}.players_player_id_seq')")
+    return cur.fetchone()[0]
+
 def upsert_players(cur, rows):
     seen = set()
     batch = []
     for r in rows:
         for side in ("winner", "loser"):
             raw_id = r.get(f"{side}_id")
-            pid = resolve_from_mapping(cur, raw_id, r.get(f"{side}_name"))
-            if pid is None or pid in seen:
+            name = r.get(f"{side}_name")
+            if not name:
+                continue
+            csv_id = str(raw_id).strip() if raw_id not in (None, "") else None
+            pid = resolve_from_mapping(cur, raw_id, name)
+            is_new = pid is None
+            if is_new:
+                pid = new_player_id(cur)
+                logging.info("Jugador nuevo: %r (ext_atp_id=%s) -> player_id=%s", name.strip(), csv_id, pid)
+            if pid in seen:
                 continue
             seen.add(pid)
             batch.append((
                 pid,
-                r.get(f"{side}_name"),
+                name,
                 norm_hand(r.get(f"{side}_hand")),
                 as_int(r.get(f"{side}_ht")),
-                (r.get(f"{side}_ioc") or None)
+                (r.get(f"{side}_ioc") or None),
+                csv_id,
             ))
     if batch:
         sql = f"""
-            INSERT INTO {DDL_SCHEMA}.players(player_id, name, hand, height_cm, ioc)
+            INSERT INTO {DDL_SCHEMA}.players(player_id, name, hand, height_cm, ioc, ext_atp_id)
             VALUES %s
             ON CONFLICT (player_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 hand = COALESCE(EXCLUDED.hand, {DDL_SCHEMA}.players.hand),
                 height_cm = COALESCE(EXCLUDED.height_cm, {DDL_SCHEMA}.players.height_cm),
-                ioc = COALESCE(EXCLUDED.ioc, {DDL_SCHEMA}.players.ioc)
+                ioc = COALESCE(EXCLUDED.ioc, {DDL_SCHEMA}.players.ioc),
+                ext_atp_id = COALESCE({DDL_SCHEMA}.players.ext_atp_id, EXCLUDED.ext_atp_id)
         """
         execute_values(cur, sql, batch, page_size=1000)
 
