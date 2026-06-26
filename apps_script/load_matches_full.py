@@ -42,8 +42,20 @@ def norm_surface(s):
     return "Unknown"
 
 def load_player_name_id_map(cur):
-    cur.execute(f"SELECT player_id, name FROM {DDL_SCHEMA}.players")
-    return {name.strip(): pid for pid, name in cur.fetchall() if pid is not None and name}
+    cur.execute(f"SELECT player_id, name FROM {DDL_SCHEMA}.players ORDER BY player_id")
+    name_to_ids = {}
+    for pid, name in cur.fetchall():
+        if pid is None or not name:
+            continue
+        name_to_ids.setdefault(name.strip(), []).append(pid)
+    name_id_map = {}
+    for name, ids in name_to_ids.items():
+        if len(ids) > 1:
+            logging.warning("Nombre ambiguo en %s.players para %r: ids %s (se ignora, no se resolvera por nombre)",
+                             DDL_SCHEMA, name, ids)
+            continue
+        name_id_map[name] = ids[0]
+    return name_id_map
 
 def resolve_player_id(raw_id, name, name_id_map):
     pid = as_int(raw_id)

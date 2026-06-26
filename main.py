@@ -483,8 +483,13 @@ def _normalize_sr_id(val: str | None) -> str | None:
 def _resolve_player_int_by_name(name: str | None) -> int | None:
     if not name:
         return None
-    rows = _rest_get(PLAYER_TABLE_NAME, {"name": f"ilike.*{name}*", "limit": 1}, select="player_id,name")
-    return int(rows[0]["player_id"]) if rows else None
+    rows = _rest_get(PLAYER_TABLE_NAME, {"name": f"ilike.*{name}*"}, select="player_id,name")
+    if len(rows) != 1:
+        if len(rows) > 1:
+            logging.warning("Nombre ambiguo en %s, %d coincidencias para %r: %s",
+                             PLAYER_TABLE_NAME, len(rows), name, [r["player_id"] for r in rows])
+        return None
+    return int(rows[0]["player_id"])
 
 def _resolve_player_int_by_sr(sr_id: str | None) -> int | None:
     if not sr_id:

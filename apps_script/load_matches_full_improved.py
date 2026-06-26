@@ -43,8 +43,20 @@ def norm_surface(s):
     return "Unknown"
 
 def load_player_name_id_map(cur):
-    cur.execute(f"SELECT player_id, name FROM {DDL_SCHEMA}.players")
-    return {name.strip(): pid for pid, name in cur.fetchall() if pid is not None and name}
+    cur.execute(f"SELECT player_id, name FROM {DDL_SCHEMA}.players ORDER BY player_id")
+    name_to_ids = {}
+    for pid, name in cur.fetchall():
+        if pid is None or not name:
+            continue
+        name_to_ids.setdefault(name.strip(), []).append(pid)
+    name_id_map = {}
+    for name, ids in name_to_ids.items():
+        if len(ids) > 1:
+            logging.warning("Nombre ambiguo en %s.players para %r: ids %s (se ignora, no se resolvera por nombre)",
+                             DDL_SCHEMA, name, ids)
+            continue
+        name_id_map[name] = ids[0]
+    return name_id_map
 
 def resolve_from_mapping(cur, raw_id, name):
     csv_id = str(raw_id).strip()
@@ -55,17 +67,21 @@ def resolve_from_mapping(cur, raw_id, name):
     row = cur.fetchone()
     if row:
         return row[0]
-    cur.execute(f"SELECT player_id FROM {DDL_SCHEMA}.players WHERE lower(name) = lower(%s)", (name.strip(),))
-    row = cur.fetchone()
-    if row:
-        resolved_id = row[0]
-        cur.execute(f"""
-            INSERT INTO {DDL_SCHEMA}.player_name_map (csv_id, player_name, resolved_player_id)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (csv_id) DO NOTHING
-        """, (csv_id, name.strip(), resolved_id))
-        return resolved_id
-    return None
+    cur.execute(f"SELECT player_id FROM {DDL_SCHEMA}.players WHERE lower(name) = lower(%s) ORDER BY player_id", (name.strip(),))
+    rows = cur.fetchall()
+    if not rows:
+        return None
+    if len(rows) > 1:
+        logging.warning("Nombre ambiguo %r: ids %s (no se crea mapping automatico, requiere resolucion manual)",
+                         name.strip(), [r[0] for r in rows])
+        return None
+    resolved_id = rows[0][0]
+    cur.execute(f"""
+        INSERT INTO {DDL_SCHEMA}.player_name_map (csv_id, player_name, resolved_player_id)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (csv_id) DO NOTHING
+    """, (csv_id, name.strip(), resolved_id))
+    return resolved_id
 
 def resolve_player_id(raw_id, name, name_id_map, cur):
     try:
