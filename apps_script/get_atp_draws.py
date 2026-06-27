@@ -13,6 +13,80 @@ DATE_LINE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Formato alternativo usado por los sitios oficiales de los Grand Slams
+# (ej. wimbledon.com), una entrada por linea: "N. APELLIDO, Nombre PAIS [seed|(tag)]"
+SLAM_LINE_START = re.compile(r"^(?P<pos>\d{1,3})\.\s+(?P<rest>.+)$")
+SLAM_TAG_MAP = {"Q": "Q", "W": "WC", "LL": "LL", "PR": "PR", "SE": "SE"}
+
+
+def parse_slam_line(line: str):
+    m = SLAM_LINE_START.match(line.strip())
+    if not m:
+        return None
+    pos = int(m.group("pos"))
+    if pos > MAX_POS:
+        return None
+    rest = m.group("rest").strip()
+
+    if rest.lower().startswith("bye"):
+        return {"pos": pos, "player_name": None, "seed": None, "tag": "BYE", "country": None}
+
+    # Pie de pagina mal extraido (ej. "... USA Champion:") pegado a la ultima fila
+    rest = re.sub(r"\s+Champion:\s*$", "", rest, flags=re.IGNORECASE).strip()
+
+    seed = None
+    tag = None
+
+    tag_match = re.search(r"\((\w+)\)\s*$", rest)
+    if tag_match:
+        tag = SLAM_TAG_MAP.get(tag_match.group(1).upper(), tag_match.group(1))
+        rest = rest[: tag_match.start()].strip()
+    else:
+        seed_match = re.search(r"(?<!\w)(\d{1,3})\s*$", rest)
+        if seed_match:
+            seed = int(seed_match.group(1))
+            rest = rest[: seed_match.start()].strip()
+
+    # El codigo de pais a veces falta en el texto extraido (p.ej. cuando se
+    # renderiza como bandera/imagen en lugar de texto para esa fila).
+    country = None
+    country_match = re.search(r"(?<![A-Za-z])([A-Z]{3})\s*$", rest)
+    if country_match:
+        country = country_match.group(1)
+        rest = rest[: country_match.start()].strip()
+
+    if "," not in rest:
+        return None
+    surname, given = rest.split(",", 1)
+    surname = surname.strip()
+    given = given.strip()
+    if not surname or not given:
+        return None
+
+    return {
+        "pos": pos,
+        "player_name": f"{surname}, {given}",
+        "seed": seed,
+        "tag": tag,
+        "country": country,
+    }
+
+
+def parse_slam_pdf(pdf_pages) -> list:
+    entries = []
+    for page in pdf_pages:
+        txt = page.extract_text()
+        if not txt:
+            continue
+        for line in txt.split("\n"):
+            line = line.strip()
+            if not line or not line[0].isdigit():
+                continue
+            parsed = parse_slam_line(line)
+            if parsed:
+                entries.append(parsed)
+    return entries
+
 def clean_name(name: str):
     name = re.sub(r"\s+\d+(\s+\d+)*$", "", name)
     name = re.sub(r"\s*[|]+\s*$", "", name)
@@ -154,6 +228,13 @@ def main(pdf_url: str, out_csv_file: str):
                 parsed = parse_line(line)
                 if parsed:
                     entries.extend(parsed)
+
+        if not entries:
+            # El formato "una entrada por linea" de los Grand Slams (ej.
+            # wimbledon.com) no encaja con el parser anterior; lo intentamos
+            # como formato alternativo antes de rendirnos.
+            print("Formato ATP estandar no encontro filas, probando formato Slam...")
+            entries = parse_slam_pdf(pdf.pages)
 
     df = pd.DataFrame(entries, columns=["pos", "player_name", "seed", "tag", "country"])
     df["seed"] = df["seed"].astype("Int64")

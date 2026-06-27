@@ -40,7 +40,7 @@ def normalize_name(name: str) -> str:
     name = re.sub(r"\b\d+\b", "", name)  # quita números aislados
     name = re.sub(r"[|]", " ", name)  # separadores de tabla
     name = re.sub(r"\s*[.…]+$", "", name)  # quita puntos suspensivos finales
-    name = re.sub(r"[^\w\s,\.]", "", name)  # limpia símbolos no deseados
+    name = re.sub(r"[^\w\s,\.\-]", "", name)  # limpia símbolos no deseados (conserva guiones)
     name = re.sub(r"\.{2,}", ".", name)  # normaliza puntos suspensivos
     name = re.sub(r"\s+", " ", name)  # normaliza espacios
     name = name.strip()
