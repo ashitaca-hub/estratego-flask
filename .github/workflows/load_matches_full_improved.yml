@@ -2,6 +2,11 @@ name: Load Matches Full 2026
 
 on:
   workflow_dispatch:
+    inputs:
+      csv_path:
+        description: "CSV a cargar (data/2025.csv o data/2026.csv)"
+        required: false
+        default: "data/2026.csv"
 
 jobs:
   load_2025:
@@ -37,16 +42,18 @@ jobs:
       - name: Dry run (validación sin insertar)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CSV_PATH: ${{ inputs.csv_path }}
         run: |
-          echo "Validando data/2026.csv (dry run)"
-          python apps_script/load_matches_full_improved.py --csv data/2026.csv --dry-run
+          echo "Validando ${CSV_PATH:-data/2026.csv} (dry run)"
+          python apps_script/load_matches_full_improved.py --csv "${CSV_PATH:-data/2026.csv}" --dry-run
 
       - name: Load CSV into matches_full
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CSV_PATH: ${{ inputs.csv_path }}
         run: |
-          echo "Cargando data/2026.csv"
-          python apps_script/load_matches_full_improved.py --csv data/2026.csv
+          echo "Cargando ${CSV_PATH:-data/2026.csv}"
+          python apps_script/load_matches_full_improved.py --csv "${CSV_PATH:-data/2026.csv}"
 
       - name: Analyze table and create indexes
         env:

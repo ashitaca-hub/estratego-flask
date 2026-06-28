@@ -83,8 +83,20 @@ def resolve_from_mapping(cur, raw_id, name):
             """, (csv_id, resolved_id))
             return resolved_id
 
-    # 3) fallback: match exacto por nombre (solo si no es ambiguo)
-    cur.execute(f"SELECT player_id FROM {DDL_SCHEMA}.players WHERE lower(name) = lower(%s) ORDER BY player_id", (name.strip(),))
+    # 3) fallback: match exacto por nombre (solo si no es ambiguo). Se trata el
+    #    guion como un espacio en ambos lados: el CSV de origen escribe algunos
+    #    apellidos con guion ("Auger-Aliassime") mientras que estratego_v1.players
+    #    los tiene guardados con espacio ("Auger Aliassime"), y un match exacto
+    #    sin esta normalizacion falla en silencio para siempre (el jugador nunca
+    #    consigue ext_atp_id y sus partidos quedan en ignored_matches.csv).
+    cur.execute(
+        f"""
+        SELECT player_id FROM {DDL_SCHEMA}.players
+        WHERE lower(replace(name, '-', ' ')) = lower(replace(%s, '-', ' '))
+        ORDER BY player_id
+        """,
+        (name.strip(),),
+    )
     rows = cur.fetchall()
     if not rows:
         return None
@@ -160,11 +172,27 @@ def upsert_players(cur, rows):
 def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
     m_rows, snapshot_rows, ignored = [], [], []
     skipped = 0
+    already_loaded = 0
+
+    # matches_full no tiene una restriccion unica real, asi que sin esta guarda
+    # volver a cargar un CSV ya procesado (p.ej. para rellenar partidos que
+    # antes fallaron por nombre) duplicaria TODO lo que ya estaba bien cargado.
+    tourney_ids = sorted({r.get("tourney_id") for r in rows if r.get("tourney_id")})
+    existing = set()
+    if tourney_ids:
+        cur.execute(
+            f"SELECT tourney_id, match_num FROM {DDL_SCHEMA}.matches_full WHERE tourney_id = ANY(%s)",
+            (tourney_ids,),
+        )
+        existing = {(t, m) for t, m in cur.fetchall()}
 
     for r in rows:
         try:
             tid = r.get('tourney_id')
             mnum = as_int(r.get('match_num'))
+            if tid and (tid, mnum) in existing:
+                already_loaded += 1
+                continue
             wid = resolve_player_id(r.get("winner_id"), r.get("winner_name"), name_id_map, cur)
             lid = resolve_player_id(r.get("loser_id"), r.get("loser_name"), name_id_map, cur)
             reason = None
@@ -239,7 +267,7 @@ def upsert_matches_full(cur, rows, name_id_map, dry_run=False):
             writer.writeheader()
             writer.writerows(ignored)
 
-    return len(m_rows), skipped
+    return len(m_rows), skipped, already_loaded
 
 def main():
     ap = argparse.ArgumentParser()
@@ -256,23 +284,27 @@ def main():
             with conn.cursor() as cur:
                 name_id_map = load_player_name_id_map(cur)
                 batch = []
-                inserted, skipped = 0, 0
+                inserted, skipped, already = 0, 0, 0
                 with open(args.csv, newline="", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
                         batch.append(row)
                         if len(batch) >= 1000:
                             upsert_players(cur, batch)
-                            ins, skip = upsert_matches_full(cur, batch, name_id_map, dry_run=args.dry_run)
+                            ins, skip, alr = upsert_matches_full(cur, batch, name_id_map, dry_run=args.dry_run)
                             inserted += ins
                             skipped += skip
+                            already += alr
                             batch.clear()
                     if batch:
                         upsert_players(cur, batch)
-                        ins, skip = upsert_matches_full(cur, batch, name_id_map, dry_run=args.dry_run)
+                        ins, skip, alr = upsert_matches_full(cur, batch, name_id_map, dry_run=args.dry_run)
                         inserted += ins
                         skipped += skip
+                        already += alr
                 print(f"✅ {inserted} partidos insertados desde {args.csv}")
+                if already:
+                    print(f"ℹ️  {already} partidos ya estaban cargados (omitidos, no duplicados)")
                 if skipped:
                     print(f"⚠️  {skipped} partidos ignorados por datos incompletos (ver {IGNORED_OUTPUT})")
     finally:
