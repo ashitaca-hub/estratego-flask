@@ -209,12 +209,82 @@ def get_tourney_meta(tournament_name: str) -> dict:
         meta["speed_bucket"] = _speed_bucket_from_rank(meta.get("speed_rank")) or "Medium"
     return meta
 
+# tourney_speed_resolved / court_speed_rankig_norm no tienen columna country_code
+# (la consulta de abajo siempre devuelve vacio), asi que el pais del torneo se
+# resuelve con este mapa estatico por tourney_key. Codigos IOC de 3 letras para
+# que casen con players_lookup.country_code (ej. "GBR", no "GB").
+_TOURNEY_COUNTRY_IOC: dict[str, str] = {
+    "acapulco": "MEX",
+    "adelaide": "AUS",
+    "almaty": "KAZ",
+    "antwerp": "BEL",
+    "auckland": "NZL",
+    "australian open": "AUS",
+    "barcelona": "ESP",
+    "basel": "SUI",
+    "bastad": "SWE",
+    "beijing2": "CHN",
+    "belgrade1": "SRB",
+    "brisbane1": "AUS",
+    "bucharest": "ROU",
+    "buenos aires": "ARG",
+    "chengdu2": "CHN",
+    "cincinnati": "USA",
+    "dallas": "USA",
+    "delray beach": "USA",
+    "doha": "QAT",
+    "dubai": "UAE",
+    "eastbourne": "GBR",
+    "estoril": "POR",
+    "geneva": "SUI",
+    "gstaad": "SUI",
+    "halle": "GER",
+    "hamburg": "GER",
+    "hangzhou2": "CHN",
+    "hong kong": "HKG",
+    "houston": "USA",
+    "indian wells": "USA",
+    "kitzbuhel": "AUT",
+    "los cabos": "MEX",
+    "madrid": "ESP",
+    "mallorca": "ESP",
+    "marrakech": "MAR",
+    "marseille": "FRA",
+    "miami": "USA",
+    "monte-carlo": "MON",
+    "montpellier": "FRA",
+    "munich": "GER",
+    "paris": "FRA",
+    "queens/london": "GBR",
+    "rio de janeiro": "BRA",
+    "roland garros": "FRA",
+    "rome": "ITA",
+    "rotterdam": "NED",
+    "s_hertogenbosch": "NED",
+    "santiago": "CHI",
+    "shanghai2": "CHN",
+    "stockholm": "SWE",
+    "stuttgart": "GER",
+    "tokyo": "JPN",
+    "toronto3": "CAN",
+    "turin wtf": "ITA",
+    "umag": "CRO",
+    "us open": "USA",
+    "vienna": "AUT",
+    "washington": "USA",
+    "wimbledon": "GBR",
+    "winston-salem": "USA",
+}
+
+
 def get_tourney_country(tournament_name: str | None) -> str | None:
-    """Devuelve un ISO-2 si lo tienes en tablas; si no, None."""
+    """Devuelve el codigo de pais (IOC-3) donde se juega el torneo, si se conoce."""
     if not tournament_name:
         return None
     key = norm_tourney(tournament_name)
-    # 1) resolved (preferido)
+    if key and key in _TOURNEY_COUNTRY_IOC:
+        return _TOURNEY_COUNTRY_IOC[key]
+    # 1) resolved (preferido, por si en el futuro se rellena esta columna)
     try:
         rows = _get("tourney_speed_resolved",
                     {"tourney_key": f"eq.{key}", "limit": 1},
