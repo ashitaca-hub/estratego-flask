@@ -1,0 +1,101 @@
+name: Sync TML-Database (weekly)
+
+on:
+  schedule:
+    # Lunes 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      year:
+        description: "Año a sincronizar (por defecto, el año en curso)"
+        required: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir psycopg2-binary
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client
+
+      - name: Check DATABASE_URL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Missing DATABASE_URL secret"
+            exit 1
+          fi
+
+      - name: Download CSVs from stats.tennismylife.org
+        env:
+          YEAR_INPUT: ${{ inputs.year }}
+        run: |
+          YEAR="${YEAR_INPUT:-$(date -u +%Y)}"
+          echo "YEAR=$YEAR" >> "$GITHUB_ENV"
+          mkdir -p sync_tmp
+          echo "Descargando ${YEAR}.csv"
+          curl -fsSL "https://stats.tennismylife.org/data/${YEAR}.csv" -o "sync_tmp/${YEAR}.csv"
+          wc -l "sync_tmp/${YEAR}.csv"
+          echo "Descargando ongoing_tourneys.csv (torneos en curso, mas reciente que el anual)"
+          curl -fsSL "https://stats.tennismylife.org/data/ongoing_tourneys.csv" -o "sync_tmp/ongoing_tourneys.csv"
+          wc -l "sync_tmp/ongoing_tourneys.csv"
+
+      - name: Dry run (validación sin insertar)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python apps_script/load_matches_full_improved.py --csv "sync_tmp/${YEAR}.csv" --dry-run
+          python apps_script/load_matches_full_improved.py --csv "sync_tmp/ongoing_tourneys.csv" --dry-run
+
+      - name: Load year CSV into matches_full
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python apps_script/load_matches_full_improved.py --csv "sync_tmp/${YEAR}.csv"
+
+      - name: Load ongoing tourneys into matches_full
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python apps_script/load_matches_full_improved.py --csv "sync_tmp/ongoing_tourneys.csv"
+
+      - name: Analyze table and create indexes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET search_path TO estratego_v1, public; ANALYZE estratego_v1.matches_full;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_winner ON estratego_v1.matches_full(winner_id);"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_loser ON estratego_v1.matches_full(loser_id);"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_tourney_date ON estratego_v1.matches_full(tourney_date);"
+
+      - name: Check unresolved mappings
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "\
+            SELECT * FROM estratego_v1.player_name_map
+            WHERE resolved_player_id IS NULL
+            ORDER BY csv_id;
+          " || echo "⚠️  No se pudieron resolver algunos jugadores. Revisa manualmente."
+
+      - name: Upload ignored matches
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ignored-matches-sync-${{ github.run_id }}
+          path: ignored_matches.csv
