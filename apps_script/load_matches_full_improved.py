@@ -133,6 +133,13 @@ def new_player_id(cur):
 def upsert_players(cur, rows):
     seen = set()
     batch = []
+    # csv_id (o nombre normalizado si no hay csv_id) -> pid recien creado en
+    # ESTE batch. resolve_from_mapping no ve los jugadores nuevos hasta que se
+    # ejecuta el INSERT al final de esta funcion, asi que sin este cache, un
+    # mismo jugador no resuelto que aparece varias veces en el mismo lote de
+    # 1000 filas generaba un player_id nuevo cada vez, todos con el mismo
+    # ext_atp_id -> violacion de la restriccion unica y caida de toda la carga.
+    pending_new_by_key: dict[str, int] = {}
     for r in rows:
         for side in ("winner", "loser"):
             raw_id = r.get(f"{side}_id")
@@ -140,11 +147,16 @@ def upsert_players(cur, rows):
             if not name:
                 continue
             csv_id = str(raw_id).strip() if raw_id not in (None, "") else None
-            pid = resolve_from_mapping(cur, raw_id, name)
-            is_new = pid is None
-            if is_new:
-                pid = new_player_id(cur)
-                logging.info("Jugador nuevo: %r (ext_atp_id=%s) -> player_id=%s", name.strip(), csv_id, pid)
+            dedupe_key = csv_id or name.strip().lower()
+            if dedupe_key in pending_new_by_key:
+                pid = pending_new_by_key[dedupe_key]
+            else:
+                pid = resolve_from_mapping(cur, raw_id, name)
+                is_new = pid is None
+                if is_new:
+                    pid = new_player_id(cur)
+                    pending_new_by_key[dedupe_key] = pid
+                    logging.info("Jugador nuevo: %r (ext_atp_id=%s) -> player_id=%s", name.strip(), csv_id, pid)
             if pid in seen:
                 continue
             seen.add(pid)
