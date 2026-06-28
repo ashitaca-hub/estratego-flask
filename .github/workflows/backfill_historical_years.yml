@@ -1,0 +1,81 @@
+name: Backfill Historical Years (2015-2024)
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "Años a cargar, separados por espacio"
+        required: false
+        default: "2015 2016 2017 2018 2019 2020 2021 2022 2023 2024"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir psycopg2-binary
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client
+
+      - name: Check DATABASE_URL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Missing DATABASE_URL secret"
+            exit 1
+          fi
+
+      - name: Download and load each year (secuencial)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          YEARS: ${{ inputs.years }}
+        run: |
+          mkdir -p backfill_tmp
+          for YEAR in ${YEARS:-2015 2016 2017 2018 2019 2020 2021 2022 2023 2024}; do
+            echo "=================================================="
+            echo "Año $YEAR: descargando"
+            echo "=================================================="
+            curl -fsSL "https://raw.githubusercontent.com/Tennismylife/TML-Database/master/${YEAR}.csv" -o "backfill_tmp/${YEAR}.csv"
+            wc -l "backfill_tmp/${YEAR}.csv"
+
+            echo "Año $YEAR: dry run"
+            python apps_script/load_matches_full_improved.py --csv "backfill_tmp/${YEAR}.csv" --dry-run
+
+            echo "Año $YEAR: carga real"
+            python apps_script/load_matches_full_improved.py --csv "backfill_tmp/${YEAR}.csv"
+
+            if [ -f ignored_matches.csv ]; then
+              mv ignored_matches.csv "backfill_tmp/ignored_${YEAR}.csv"
+            fi
+          done
+
+      - name: Analyze table and create indexes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET search_path TO estratego_v1, public; ANALYZE estratego_v1.matches_full;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_winner ON estratego_v1.matches_full(winner_id);"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_loser ON estratego_v1.matches_full(loser_id);"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX IF NOT EXISTS idx_matches_full_tourney_date ON estratego_v1.matches_full(tourney_date);"
+
+      - name: Upload ignored matches (por año)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ignored-matches-backfill-${{ github.run_id }}
+          path: backfill_tmp/ignored_*.csv
+          if-no-files-found: ignore
